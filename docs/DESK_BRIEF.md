@@ -36,7 +36,7 @@ Recommendation: **`bounty.xe.network`** for the bounty portal and **`support.xe.
 
 Why `xe.network` rather than `test.network`:
 
-- Payouts happen at mainnet genesis and the programme is meant to continue on mainnet. Reporter accounts, tracking IDs and award records should not be tied to a testnet brand that rotates with each network reset (`testnet-0005` is the current one).
+- Payouts happen at mainnet launch and the programme is meant to continue on mainnet. Reporter accounts, tracking IDs and award records should not be tied to a testnet brand that rotates with each network reset (`testnet-0005` is the current one).
 - Support is for XE, not for the testnet.
 - `test.network/bounty` stays as the rules and marketing page and links in. Nothing there breaks.
 
@@ -44,7 +44,7 @@ Why `bounty` rather than `bugs`: the thing reporters are looking for is the prog
 
 If a single hostname is preferred, `desk.xe.network` with `/bounty` and `/support` works and is what the working name assumes.
 
-Either way there is also a staging instance at `desk.test.network`, per the project rule that everything ships to `*.test.network` first (§14). It holds throwaway data and is not the bounty portal; the production instance on `xe.network` is, and it reads the testnet node until genesis.
+Either way there is also a staging instance at `desk.test.network`, per the project rule that everything ships to `*.test.network` first (§14). It holds throwaway data and is not the bounty portal; the production instance on `xe.network` is, and it reads the testnet node until mainnet launch.
 
 ## 4. Roles
 
@@ -88,7 +88,7 @@ ticket
   disclosed_at    when the public issue went up (private reports)
   award_xe        micro-units, set on acceptance
   payout_address  XE address, reporter-supplied or generated in the portal
-  paid_ref        transaction hash at genesis
+  paid_ref        transaction hash at mainnet launch
 
   -- workflow
   status          new | triaging | needs-info | accepted | fixing | patched | disclosed | awarded | paid | closed
@@ -211,7 +211,7 @@ Web support is the same ticket via a form at `support.xe.network`, with email ma
 
 ## 12. Awards and payout
 
-Acceptance sets `award_xe` within the tier ceiling, which is a published config value, not a column. A Treasurer approves awards; approvals are signed events in the chained log. At genesis, `GET /v1/export/payouts.csv` produces `(ticket, address, micro-units)` for every `awarded` ticket with an approved award and a payout address.
+Acceptance sets `award_xe` within the tier ceiling, which is a published config value, not a column. A Treasurer approves awards; approvals are signed events in the chained log. At mainnet launch, `GET /v1/export/payouts.csv` produces `(ticket, address, micro-units)` for every `awarded` ticket with an approved award and a payout address.
 
 That export is a treasury movement, which under the Operating Agreement is a reserved matter. It is therefore an input to a member resolution in the DAO harness, not something the desk executes. The desk records `paid_ref` when the harness reports the transaction. Same rule as everywhere else: the tool prepares, the keyset signs.
 
@@ -261,7 +261,7 @@ Anything else is a justification in the commit.
 - **Server-rendered, agent-readable.** HTML from Jinja, JSON at `/v1`, markdown twins, SSE for live. A page that cannot be curled is a bug. This is what makes the agent loop in §7 and the human view in §6 the same data.
 - **Frozen paths.** Ticket ids and their URLs appear in payout resolutions and in disclosure credits; they keep their URL and meaning forever. They may redirect (a hostname decision in §16 Q1 is survivable), never change.
 - **Two registers of language.** Public copy (portal, bot messages, reply templates) and programme copy (the rules, the tier definitions, anything the awards depend on) are separate YAML files with separate vocabularies and a kill-list lint between them that fails the build. Reply templates are public register; they must never promise an award, which is the lint's first entry.
-- **Testnet is the rehearsal.** A staging desk at `desk.test.network` with throwaway data takes every release first. The production desk is one deployment on `xe.network` (§3) whose `XE_NODE_URL` points at the testnet node until genesis and at mainnet after; the network badge is drawn from the node's `network_id` by positive match on mainnet. One codebase; `XE_NODE_URL` and `PUBLIC_BASE_URL` are the only differences between any two instances.
+- **Testnet is the rehearsal.** A staging desk at `desk.test.network` with throwaway data takes every release first. The production desk is one deployment on `xe.network` (§3) whose `XE_NODE_URL` points at the testnet node until mainnet launch and at mainnet after; the network badge is drawn from the node's `network_id` by positive match on mainnet. One codebase; `XE_NODE_URL` and `PUBLIC_BASE_URL` are the only differences between any two instances.
 - **Minimal dependencies, boring choices.** The list above, and the justifications above.
 
 Separate repository, `xeprotocol/desk`, GPL-3.0-or-later, public from the start.

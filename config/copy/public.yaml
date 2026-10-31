@@ -12,7 +12,7 @@ sub: >-
 footer: XE Network
 footer_line: The bounty desk for the agent-native network, run in the open.
 kicker: Bounty
-punchline: Read in private. Answered in public. Paid at genesis.
+punchline: Read in private. Answered in public. Paid at mainnet launch.
 # Social cards (og:image) for the fixed pages: a title and one line each. Tickets draw their own.
 cards:
   scope:
@@ -69,7 +69,7 @@ support:
     and the team will warn everyone. Never paste a seed or key into a question.
   topics:
     getting-started: What XE is, how to take part, where the testnet and the explorer are.
-    launch-token: Mainnet, genesis, when and how the token becomes available, what is known and what is not.
+    launch-token: Mainnet launch, when and how the token becomes available, what is known and what is not.
     wallet-keys: Making a wallet, keeping the seed safe, what can and cannot be recovered.
     sending-receiving: Transactions, addresses, fees, something that did not arrive.
     nodes: Running a node at home or on a server, what it earns, what it needs.
@@ -189,7 +189,7 @@ reply_templates:
 
     Closing this as answered so the next person finds it; reply here if it did not resolve it for you.
   support_launch: |-
-    There is no announced date. Mainnet follows the testnet, and the token exists from mainnet genesis;
+    There is no announced date. Mainnet follows the testnet, and the token exists from mainnet launch;
     when a date is set it will be on xe.network first, not in a private message or a chat. Anything
     claiming otherwise is not from us.
   support_lost_key: |-

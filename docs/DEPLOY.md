@@ -1,6 +1,6 @@
 # Deploying the XE desk
 
-One codebase, two deployments: staging at `desk.test.network` (both hosts set to it), production at `bounty.xe.network` + `support.xe.network`. Both read the testnet node until genesis. Everything below runs on the VPS under Docker Compose; nothing runs on a laptop.
+One codebase, two deployments: staging at `desk.test.network` (both hosts set to it), production at `bounty.xe.network` + `support.xe.network`. Both read the testnet node until mainnet launch. Everything below runs on the VPS under Docker Compose; nothing runs on a laptop.
 
 ## 0. Prerequisites on the VPS
 

@@ -77,7 +77,7 @@ github:
     fixing:     { name: fixing,      color: "0969da", description: "A fix is in progress" }
     patched:    { name: patched,     color: "8250df", description: "Fix merged; see the reply for the PR" }
     disclosed:  { name: disclosed,   color: "8250df", description: "Private report, now public" }
-    awarded:    { name: awarded,     color: "ff6900", description: "Award set; paid at genesis" }
+    awarded:    { name: awarded,     color: "ff6900", description: "Award set; paid at mainnet launch" }
     paid:       { name: paid,        color: "ff6900", description: "Paid" }
     closed:
       duplicate:    { name: duplicate,    color: "cfd3d7", description: "Duplicate of an earlier report" }

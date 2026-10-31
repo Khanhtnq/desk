@@ -50,7 +50,7 @@ new → triaging → accepted → fixing → patched → awarded → paid
 - `accepted`: it's real and will be fixed; there is (or should be) an internal ticket.
 - `fixing`: a PR is open. `patched`: the fix is merged. The reporter must be told; this is where the outbox comes in.
 - `disclosed`: a private report, now public because the fix shipped. Needs a linked patch ref; the desk opens the public GitHub issue itself with the reporter credited.
-- `awarded`: a treasurer has approved an amount. `paid`: it went out at genesis, with a `paid_ref`.
+- `awarded`: a treasurer has approved an amount. `paid`: it went out at mainnet launch, with a `paid_ref`.
 
 **Thread.** Three kinds of writing, kept apart:
 
@@ -94,7 +94,7 @@ Read them on the desk only; the body and attachments come out of the vault for y
 
 **Awards (treasurers)**
 
-On a `patched` or `disclosed` ticket with an assessed tier, set the amount in XE and approve. The desk refuses more than twice the tier's ceiling without a note explaining it. Status `awarded`. Awards are paid at mainnet genesis to the address the reporter bound on `/account` by signing with its key; the desk never takes an address from a GitHub comment. `/v1/team/payouts.csv` is the payment list: only approved awards with bound addresses appear, so chase reporters without one (the ticket page shows it). After payment, status `paid` with the transaction as `paid_ref`.
+On a `patched` or `disclosed` ticket with an assessed tier, set the amount in XE and approve. The desk refuses more than twice the tier's ceiling without a note explaining it. Status `awarded`. Awards are paid at mainnet launch to the address the reporter bound on `/account` by signing with its key; the desk never takes an address from a GitHub comment. `/v1/team/payouts.csv` is the payment list: only approved awards with bound addresses appear, so chase reporters without one (the ticket page shows it). After payment, status `paid` with the transaction as `paid_ref`.
 
 ## 6. Agents
 
@@ -141,7 +141,7 @@ An issue closed on GitHub by someone before the desk ruled is left open on the d
 
 - Someone owns the queue each day. Morning: `/team/outbox` to zero, then `new` tickets to `triaging` with proposals adopted or rejected, then anything `needs-info` older than two weeks closed `stale` with the `needs_info` reply left as the last word.
 - Whoever holds `tier` rules on anything `accepted` without one, weekly at least.
-- Treasurers approve awards as tickets reach `patched`/`disclosed`, not in a batch at genesis.
+- Treasurers approve awards as tickets reach `patched`/`disclosed`, not in a batch at mainnet launch.
 - `/live` is the event stream; `/log` is the ledger. The worker writes a daily note with the counts, so the log reads as a diary.
 - Policy (tiers, ceilings, areas, templates, scope text) is `config/desk.yaml` and `config/copy/*.yaml`, changed by pull request, hashed and published at `GET /v1`. Nobody edits policy from a screen.
 

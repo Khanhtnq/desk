@@ -406,7 +406,7 @@ async def edit_user(ctx: Ctx, db: Db, who: Who, request: Request, uid: int, body
 
 @router.get("/payouts.csv")
 async def payouts_csv(ctx: Ctx, db: Db, who: Who, request: Request):
-    """Approved awards with a bound payout address, one row each, for the genesis allocation. Tickets
+    """Approved awards with a bound payout address, one row each, for the mainnet-launch payout. Tickets
     with an approved award and no address are listed too, with the address blank, so nobody is missed."""
     _team(who, request)
     require(who.principal, "export:payouts")
