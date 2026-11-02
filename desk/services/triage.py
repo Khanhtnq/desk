@@ -119,7 +119,10 @@ class Row:
 
     @property
     def kind(self) -> str:
-        return "support" if self.verdict == "support" else "bounty"
+        """Every triage row is a bounty ticket. "support" in the triage is a verdict (not a security bug,
+        an operational or usage matter, closed as answered on the bounty), not a move to the support door:
+        these are GitHub issues from researchers, and the support site is for holders and the community."""
+        return "bounty"
 
     def status(self) -> tuple[str, str | None]:
         """(status, closed_reason) per brief §10."""
@@ -350,7 +353,7 @@ async def import_rows(
     for r in rows:
         t = by_key[r.key]
         changes: dict = {
-            "area": topic_for(r.area) if r.kind == "support" else r.area,
+            "area": r.area,
             "claimed_tier": r.claimed_tier,
             "assessed_tier": r.assessed_tier,
             "verdict": r.verdict,
@@ -428,17 +431,6 @@ def _note_text(r: Row) -> str:
     return "\n\n".join(parts).strip()
 
 
-# The triage classed everything by bounty area. A row the triage calls support is filed under a topic
-# instead; the testnet rows were all faucet and node questions, anything else is "other".
-_TOPIC_FOR_AREA = {"ops-testnet": "testnet-faucet", "node-api": "nodes", "p2p-sync": "nodes"}
-
-
-def topic_for(area: str | None) -> str | None:
-    if not area:
-        return None
-    return _TOPIC_FOR_AREA.get(area, "other")
-
-
 async def _find(db: AsyncSession, r: Row) -> Ticket | None:
     if r.is_email:
         return await tsvc.find_by_source(db, "email", "", r.key)
@@ -454,7 +446,7 @@ async def _create(ctx: Context, db: AsyncSession, r: Row, body: str) -> Ticket:
             visibility="private",
             source="email",
             source_ref=r.key,
-            area=topic_for(r.area) if r.kind == "support" else r.area,
+            area=r.area,
             claimed_tier=r.claimed_tier,
             source_created_at=IMPORT_DATE,
         )
@@ -468,7 +460,7 @@ async def _create(ctx: Context, db: AsyncSession, r: Row, body: str) -> Ticket:
             source_repo=r.repo,
             source_ref=r.key,
             source_url=r.url,
-            area=topic_for(r.area) if r.kind == "support" else r.area,
+            area=r.area,
             claimed_tier=r.claimed_tier,
         )
     return await tsvc.create(ctx, db, "desk", spec)

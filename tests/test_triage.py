@@ -92,8 +92,9 @@ def test_status_mapping(triage_text):
     assert by["40"].status() == ("closed", "answered") and by["40"].verdict == "notice"
     assert by["74"].status() == ("closed", "invalid")
     assert by["34"].status() == ("closed", "withdrawn")
-    assert by["99"].status() == ("closed", "answered") and by["99"].kind == "support"
-    assert by["3"].status() == ("closed", "stale") and by["3"].kind == "support"
+    # "support" is a verdict on the bounty, not a move to the support door
+    assert by["99"].status() == ("closed", "answered") and by["99"].kind == "bounty"
+    assert by["3"].status() == ("closed", "stale") and by["3"].kind == "bounty"
     assert (
         by["21"].status() == ("accepted", None)
         and by["21"].gate == "decide"

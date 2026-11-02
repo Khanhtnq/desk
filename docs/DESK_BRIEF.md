@@ -187,7 +187,7 @@ The rules page keeps saying "report on GitHub". That stays true; GitHub becomes 
   | duplicate | `closed` / `duplicate` | `duplicate_of`; `internal_ref` of the target |
   | notice | `closed` / `answered` | `verdict = notice` |
   | invalid | `closed` / `invalid` | |
-  | support (faucet, stale genesis, the `#1027` incident) | `kind = support`, `closed` / `answered` | `internal_ref` kept (`faucet#10`, `#1027`) |
+  | support (faucet, stale genesis, the `#1027` incident) | `verdict = support`, `closed` / `answered` (or `stale`); stays a bounty ticket, since it is a researcher's GitHub issue, not a community question | `internal_ref` kept (`faucet#10`, `#1027`) |
 
 - Creates E1, E2 and E3 as private tickets from the emails, with the payout addresses in `payout_address` and the reporters invited by email to claim them. E1 imports as `closed` / `duplicate` of #14, whose own ticket is `patched` on `#1028`; whether a duplicate of a fixed finding is paid is a programme decision, not the importer's.
 - Imports the facts as facts, not as proposals. The doc is already the team's ruling, so re-proposing it to the people who made it would be noise; the import event records the triage agent token as the source and the engineering pass as the authority. Proposals start with the first new ticket after import.
