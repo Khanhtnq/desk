@@ -581,24 +581,47 @@ async def disclose(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> N
     )
 
 
+# An amount may be set from `accepted` on (the awards pass does that); approval waits for the fix.
+AWARD_APPROVABLE_STATUSES = ("patched", "disclosed", "awarded", "paid")
+
+
+def award_approvable(t: Ticket) -> str | None:
+    """None when the award may be approved now; otherwise the reason it may not, for the button and the 409."""
+    if t.award_xe is None:
+        return "nothing to approve"
+    if t.status not in AWARD_APPROVABLE_STATUSES:
+        return f"approval waits for the fix: the ticket is {t.status}, not patched or disclosed"
+    return None
+
+
 async def set_award(
-    ctx: Context, db: AsyncSession, p: Principal, t: Ticket, award_xe: int | None, *, approve: bool = False
+    ctx: Context, db: AsyncSession, p: Principal, t: Ticket, award_xe: int | None, *, approve: bool | None = None
 ) -> None:
+    """Set the amount, approve it, or take approval back. `approve` None leaves approval as it is; True
+    needs a set amount on a patched or disclosed ticket; False clears it (the amount stays)."""
     cfg = ctx.config
     if award_xe is not None:
         if award_xe < 0:
             raise HTTPException(400, "award must be ≥ 0")
+        if t.award_approved_at and award_xe != t.award_xe:
+            raise HTTPException(409, "the award is approved; take approval back before changing the amount")
         ceiling = cfg.ceiling_micro(t.assessed_tier)
         if ceiling and award_xe > ceiling * 2:
             raise HTTPException(
                 400, f"award exceeds twice the {t.assessed_tier} ceiling; exceptional awards need a note"
             )
         t.award_xe = award_xe
-    if approve:
-        if t.award_xe is None:
-            raise HTTPException(400, "nothing to approve")
+    if approve is True:
+        why = award_approvable(t)
+        if why:
+            raise HTTPException(409 if t.award_xe is not None else 400, why)
         t.award_approved_by = p.user.id if p.user else None
         t.award_approved_at = utcnow()
+    elif approve is False:
+        if t.status in ("awarded", "paid"):
+            raise HTTPException(409, f"the ticket is {t.status}; the award stands")
+        t.award_approved_by = None
+        t.award_approved_at = None
     await ctx.events.append(
         db,
         "ticket.award",

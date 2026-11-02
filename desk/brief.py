@@ -291,7 +291,8 @@ def build_agent_brief(
         _p(
             "A whole number of XE, never more than twice the assessed tier's ceiling, with a reason of at",
             "least 20 characters that says where in the band and why (see Suggesting an award). Only a",
-            "treasurer can adopt it, and adopting sets the amount without approving it. A new proposal",
+            "treasurer can adopt it, and adopting sets the amount without approving it; approval comes once",
+            "the ticket is patched or disclosed. A new proposal",
             "supersedes your earlier one. The amount belongs here and in your note, nowhere public.",
         )
     )

@@ -295,11 +295,17 @@
         if (isNaN(xe)) return say(fmsg, "enter an amount in XE", false);
         try { await api("POST", T("/award"), { award_xe: Math.round(xe * 1e6) }); reload(); } catch (e) { say(fmsg, e.message, false); }
       });
-      $("#approve-award").addEventListener("click", async () => {
+      if ($("#approve-award")) $("#approve-award").addEventListener("click", async () => {
         const xe = $("#award-xe").value;
         const ok = await ask({ title: `Approve ${xe} XE for ${tid}?`, body: "The award is recorded against you in the log and goes on the treasurer's payout list. The reporter is not told here; set the status to awarded when it is time, and the leaderboard updates then.", ok: "Approve" });
         if (!ok) return;
         try { await api("POST", T("/award"), { approve: true }); flash(`Award of ${xe} XE approved.`); reload(); } catch (e) { say(fmsg, e.message, false); }
+      });
+      if ($("#unapprove-award")) $("#unapprove-award").addEventListener("click", async () => {
+        const xe = $("#award-xe").value;
+        const ok = await ask({ title: `Take back approval of ${xe} XE for ${tid}?`, body: "The amount stays set; it leaves the payout list until approved again. Recorded against you in the log.", ok: "Take it back" });
+        if (!ok) return;
+        try { await api("POST", T("/award"), { approve: false }); flash("Approval taken back; the amount is still set."); reload(); } catch (e) { say(fmsg, e.message, false); }
       });
     }
     if ($("#attach-reporter")) $("#attach-reporter").addEventListener("click", async () => {

@@ -639,5 +639,6 @@ async def ticket_page(request: Request, tid: str):
             "url": tsvc.ticket_url(c, t),
             "internal_url": c.settings.internal_url(t.internal_ref),
             "tier_fields": ("assessed_tier",),
+            "award_block": tsvc.award_approvable(t) if t.kind == "bounty" else None,
         },
     )

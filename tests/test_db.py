@@ -331,8 +331,30 @@ async def test_agent_proposes_an_award_and_a_treasurer_sets_it(ctx, db):
     await tsvc.set_status(ctx, db, treasurer, t, "triaging")
     await tsvc.set_status(ctx, db, treasurer, t, "accepted")
     assert t.id in [d.id for d in await tsvc.awards_due(db, ctx.config, treasurer)]
+    # approval waits for the fix: not from accepted
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_award(ctx, db, treasurer, t, None, approve=True)
+    assert e.value.status_code == 409 and "patched" in e.value.detail and t.award_approved_at is None
+    assert tsvc.award_approvable(t) is not None
+    await tsvc.set_status(ctx, db, treasurer, t, "patched")
+    assert tsvc.award_approvable(t) is None
     await tsvc.set_award(ctx, db, treasurer, t, None, approve=True)
+    assert t.award_approved_at is not None
     assert t.id not in [d.id for d in await tsvc.awards_due(db, ctx.config, treasurer)]
+    # an approved amount cannot be changed, but approval can be taken back and the amount stays
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_award(ctx, db, treasurer, t, 1_000_000_000)
+    assert e.value.status_code == 409
+    await tsvc.set_award(ctx, db, treasurer, t, None, approve=False)
+    assert t.award_approved_at is None and t.award_approved_by is None and t.award_xe == 2_000_000_000
+    assert t.id in [d.id for d in await tsvc.awards_due(db, ctx.config, treasurer)]
+    await tsvc.set_award(ctx, db, treasurer, t, None, approve=None)  # None leaves approval alone
+    assert t.award_approved_at is None
+    await tsvc.set_award(ctx, db, treasurer, t, None, approve=True)
+    await tsvc.set_status(ctx, db, treasurer, t, "awarded")
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_award(ctx, db, treasurer, t, None, approve=False)  # awarded: the award stands
+    assert e.value.status_code == 409 and t.award_approved_at is not None
     grouped = await psvc.pending_field_for(db, [t.id], "award_xe")
     assert grouped == {}  # adopted, so no longer pending
 

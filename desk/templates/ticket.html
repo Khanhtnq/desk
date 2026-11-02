@@ -73,7 +73,12 @@
   <div class="row" style="margin-top:12px">
     <input type="number" id="award-xe" placeholder="XE" value="{{ (t.award_xe // 1000000) if t.award_xe is not none else '' }}" style="max-width:140px" {{ "disabled" if t.award_approved_at }}>
     <button class="ghost mini" id="save-award" type="button" {{ "disabled" if t.award_approved_at }}>Set award</button>
-    <button class="mini" id="approve-award" type="button" {{ "disabled" if t.award_xe is none or t.award_approved_at }}>{{ "Approved" if t.award_approved_at else "Approve" }}</button>
+    {% if t.award_approved_at %}
+    <button class="ghost mini" id="unapprove-award" type="button" {{ "disabled" if t.status in ("awarded", "paid") }}>Take approval back</button>
+    {% else %}
+    <button class="mini" id="approve-award" type="button" {{ "disabled" if award_block }} {% if award_block %}title="{{ award_block }}"{% endif %}>Approve</button>
+    {% if award_block and t.award_xe is not none %}<span class="k">{{ award_block }}</span>{% endif %}
+    {% endif %}
   </div>
   {% endif %}
   <div class="row" style="margin-top:12px" id="reporter-row">

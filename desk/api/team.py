@@ -55,7 +55,7 @@ class DecideIn(BaseModel):
 
 class AwardIn(BaseModel):
     award_xe: int | None = None
-    approve: bool = False
+    approve: bool | None = None  # True approves, False takes approval back, None leaves it
 
 
 class NewTicketIn(BaseModel):
