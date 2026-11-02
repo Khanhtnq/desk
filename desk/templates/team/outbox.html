@@ -4,10 +4,10 @@
 {% block content %}
 <div class="tag"><span>Outbox</span></div>
 {% if site == "support" %}
-<h1>Closed means answered.</h1>
+<h1>Questions still waiting for an answer.</h1>
 <p class="sub">Questions moved to needs-info or closed without a word to the person who asked since. Open each and write the answer; it posts back to where the question came from and the ticket leaves this list.</p>
 {% else %}
-<h1>Patched means told.</h1>
+<h1>Reporters who haven't heard back.</h1>
 <p class="sub">Tickets whose status moved past triage but whose reporter has not heard since. Open each, pick a template, send the reply; the worker mirrors it to GitHub and the ticket leaves this list.</p>
 {% endif %}
 {% if not tickets %}
