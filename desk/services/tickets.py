@@ -352,10 +352,13 @@ async def awards_due(db: AsyncSession, cfg: Config, p: Principal) -> list[Ticket
     return list((await db.execute(q)).scalars().all())
 
 
-async def outbox(db: AsyncSession, cfg: Config, p: Principal) -> list[Ticket]:
-    """Tickets whose status moved past triage but whose public thread has not been told since. A reply
-    sets told_at; set_status sets status_changed_at."""
-    q = select(Ticket).where(Ticket.status.notin_(("new", "triaging")), Ticket.status_changed_at.isnot(None))
+async def outbox(db: AsyncSession, cfg: Config, p: Principal, kind: str = "bounty") -> list[Ticket]:
+    """Tickets whose status moved past triage but whose thread has not been told since. A reply sets
+    told_at; set_status sets status_changed_at. For the bounty that is fixed-but-silent; for support it is
+    a question moved to needs-info or closed without anyone having written to the asker."""
+    q = select(Ticket).where(
+        Ticket.kind == kind, Ticket.status.notin_(("new", "triaging")), Ticket.status_changed_at.isnot(None)
+    )
     if not can(p, "read:private"):
         q = q.where(Ticket.visibility == "public")
     q = q.where((Ticket.told_at.is_(None)) | (Ticket.told_at < Ticket.status_changed_at))

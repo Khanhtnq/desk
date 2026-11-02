@@ -235,9 +235,11 @@ async def decide_bulk(ctx: Ctx, db: Db, who: Who, request: Request, body: BulkIn
 
 
 @router.get("/outbox")
-async def outbox(ctx: Ctx, db: Db, who: Who, request: Request):
+async def outbox(ctx: Ctx, db: Db, who: Who, request: Request, kind: str = "bounty"):
     _team(who, request)
-    rows = await tsvc.outbox(db, ctx.config, who.principal)
+    if kind not in ("bounty", "support"):
+        raise HTTPException(400, "kind is bounty or support")
+    rows = await tsvc.outbox(db, ctx.config, who.principal, kind=kind)
     return {"tickets": [tsvc.to_dict(ctx, t, who.principal) for t in rows]}
 
 

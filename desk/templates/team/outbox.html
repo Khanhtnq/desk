@@ -3,20 +3,25 @@
 {% block title %}Outbox{% endblock %}
 {% block content %}
 <div class="tag"><span>Outbox</span></div>
+{% if site == "support" %}
+<h1>Closed means answered.</h1>
+<p class="sub">Questions moved to needs-info or closed without a word to the person who asked since. Open each and write the answer; it posts back to where the question came from and the ticket leaves this list.</p>
+{% else %}
 <h1>Patched means told.</h1>
 <p class="sub">Tickets whose status moved past triage but whose reporter has not heard since. Open each, pick a template, send the reply; the worker mirrors it to GitHub and the ticket leaves this list.</p>
+{% endif %}
 {% if not tickets %}
-<p class="mute">Empty. Everyone has been told.</p>
+<p class="mute">Empty. Everyone has been {{ "answered" if site == "support" else "told" }}.</p>
 {% else %}
 <table class="tickets">
-<thead><tr><th>#</th><th>Finding</th><th>Status</th><th>Tier</th><th>Source</th><th>Moved</th><th>Last told</th></tr></thead>
+<thead><tr><th>#</th><th>{{ "Question" if site == "support" else "Finding" }}</th><th>Status</th>{% if site != "support" %}<th>Tier</th>{% endif %}<th>Source</th><th>Moved</th><th>Last told</th></tr></thead>
 <tbody>
 {% for t in tickets %}
 <tr>
   <td class="n">{{ m.tlink(t) }}{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}</td>
-  <td class="title"><a href="/{{ 'bounty' if t.kind == 'bounty' else 'support' }}/{{ t.id }}">{{ t.title }}</a></td>
+  <td class="title"><a href="/{{ t.id }}">{{ t.title }}</a></td>
   <td>{{ m.status(t) }}</td>
-  <td>{{ m.tier(t.assessed_tier) }}</td>
+  {% if site != "support" %}<td>{{ m.tier(t.assessed_tier) }}</td>{% endif %}
   <td>{{ m.source(t) }}</td>
   <td class="num">{{ t.status_changed_at|dt }}</td>
   <td class="num">{{ t.told_at|dt or "never" }}</td>

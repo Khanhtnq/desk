@@ -561,7 +561,7 @@ async def outbox(request: Request):
         p, csrf = await principal(db, request)
         if not p.is_team:
             return RedirectResponse("/team/login?next=/team/outbox", status_code=302)
-        rows = await tsvc.outbox(db, c.config, p)
+        rows = await tsvc.outbox(db, c.config, p, kind=site_for(request))
     return render(request, "team/outbox.html", {"p": p, "csrf": csrf, "tickets": rows})
 
 

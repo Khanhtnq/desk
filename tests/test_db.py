@@ -573,6 +573,13 @@ async def test_support_questions_take_topics_not_areas(ctx, db):
         await tsvc.set_facts(ctx, db, team, t, {"area": "consensus"})
     await tsvc.set_facts(ctx, db, team, t, {"area": "safety"})
     assert t.area == "safety"
+    # the support outbox is its own list: a question closed as answered with no answer written
+    await tsvc.set_status(ctx, db, team, t, "triaging")
+    await tsvc.set_status(ctx, db, team, t, "closed", closed_reason="answered")
+    assert [x.id for x in await tsvc.outbox(db, ctx.config, team, kind="support")] == [t.id]
+    assert await tsvc.outbox(db, ctx.config, team) == []  # the bounty outbox never shows a question
+    await thread.add_reply(ctx, db, team, t, "A seed cannot be recovered by anyone; a new wallet is the way.")
+    assert await tsvc.outbox(db, ctx.config, team, kind="support") == []
 
 
 async def test_payout_binding_needs_matching_key(ctx, db):
