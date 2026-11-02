@@ -186,8 +186,8 @@ details > p, details > table, details > div { margin-top:10px; color:var(--fg-2)
 .prose li { margin:4px 0; } .prose b, .prose strong { color:var(--fg); }
 .prose blockquote { margin:0; padding-left:14px; border-left:2px solid var(--brand); color:var(--mute); }
 ol.prose li { margin:10px 0; }
-dl.facts { display:grid; grid-template-columns:max-content 1fr; gap:8px 22px; font-size:15px; margin:0 0 10px; }
-dl.facts dt { font:500 12px/1.6 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--mute); } dl.facts dd { margin:0; color:var(--fg); }
+dl.facts { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:8px 22px; font-size:15px; margin:0 0 10px; }
+dl.facts dt { font:500 12px/1.6 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--mute); } dl.facts dd { margin:0; color:var(--fg); min-width:0; overflow-wrap:anywhere; }
 
 /* ---- footer: a ruled strip in the page colour --------------------------------------------- */
 footer { border-top:1px solid var(--stroke); padding:40px 0 32px; color:var(--text-low); }
@@ -235,7 +235,7 @@ table.tickets td .mono { font-size:12px; }
 .ticket .main { min-width:0; }
 .ticket h1 { font-size:clamp(24px, 2.6vw, 32px); margin-bottom:10px; }
 .ticket .head { grid-column:1 / -1; }
-.facts dl.facts { grid-template-columns:120px 1fr; }
+.ticket .facts { min-width:0; } .facts dl.facts { grid-template-columns:120px minmax(0,1fr); }
 .facts select, .facts input[type=text] { padding:6px 8px; font-size:14px; min-height:34px; }
 .facts .edit { display:none; } .facts.editing .edit { display:block; } .facts.editing .show { display:none; }
 .thread .msg-item { padding:16px 0; border-top:1px solid var(--line); }
