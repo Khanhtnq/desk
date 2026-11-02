@@ -91,8 +91,11 @@ def ctx():
     return c
 
 
-async def _team(ctx, db, roles=("reviewer", "tier", "treasurer", "admin")):
-    u = await users.create_user(ctx, db, "test", "lead@xe.network", "Lead", list(roles))
+async def _team(ctx, db, roles=("reviewer", "tier", "treasurer", "admin"), email="lead@xe.network"):
+    """A team member. A second call in the same test needs its own email; one is derived from the roles."""
+    if await users.by_email(db, email):
+        email = "-".join(sorted(roles)) + "@xe.network"
+    u = await users.create_user(ctx, db, "test", email, "Lead", list(roles))
     return authz.Principal(kind="user", user=u, roles=set(roles))
 
 
