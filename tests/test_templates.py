@@ -41,8 +41,10 @@ def test_reply_templates_do_not_promise(config):
     for name, text in config.reply_templates.items():
         low = text.lower()
         assert "will be paid" not in low and "guarantee" not in low, name
-        # every reply that leaves a ticket open points back at it; the closing ones need not
-        assert "{ticket_url}" in text or name in ("invalid", "notice", "duplicate", "closed"), name
+        # every bounty reply that leaves a ticket open points back at it; the closing ones need not, and
+        # support answers land in the thread the question came from and close it as answered
+        closing = name in ("invalid", "notice", "duplicate", "closed") or name.startswith("support_")
+        assert "{ticket_url}" in text or closing, name
 
 
 def test_md_paths():
