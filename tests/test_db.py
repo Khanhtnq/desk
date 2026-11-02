@@ -417,6 +417,52 @@ async def test_internal_tracker_moves_a_new_ticket_through_triaging(ctx, db):
     assert other[0].id == t.id and other[1] is False
 
 
+def _pull(number, title, body="", state="open", merged=False):
+    return {
+        "number": number, "title": title, "body": body, "state": state,
+        "merged_at": "2026-10-21T10:00:00Z" if merged else None,
+        "html_url": f"https://github.com/xeprotocol/xe/pull/{number}",
+    }
+
+
+async def test_a_fixing_pull_moves_the_ticket_and_a_mention_only_links(ctx, db):
+    repo = "xeprotocol/xe"
+    t, _ = await sync.upsert_issue(ctx, db, repo, _issue(70, "Vote replay"))
+    # "fixes #70" while open: new -> triaging -> accepted -> fixing, every hop logged
+    assert await sync.link_pull(ctx, db, repo, _pull(80, "Reject replayed votes", "Fixes #70")) == 1
+    assert t.status == "fixing"
+    evs = await EventLog.page(db, 0, 100, ref=t.id, descending=False)
+    moves = [(e.payload["from"], e.payload["to"]) for e in evs if e.kind == "ticket.status"]
+    assert moves == [("new", "triaging"), ("triaging", "accepted"), ("accepted", "fixing")]
+    assert {e.payload["via"] for e in evs if e.kind == "ticket.status"} == {f"github:{repo}#80"}
+    # the same PR seen again (webhook "synchronize"): nothing new, nothing moved
+    assert await sync.link_pull(ctx, db, repo, _pull(80, "Reject replayed votes", "Fixes #70")) == 0
+    assert t.status == "fixing"
+    # merged: patched, and so into the outbox
+    await sync.link_pull(ctx, db, repo, _pull(80, "Reject replayed votes", "Fixes #70", state="closed", merged=True))
+    assert t.status == "patched"
+    assert t.id in [x.id for x in await tsvc.outbox(db, ctx.config, await _team(ctx, db))]
+    # a bare mention links but does not move
+    t2, _ = await sync.upsert_issue(ctx, db, repo, _issue(71, "Related nit"))
+    assert await sync.link_pull(ctx, db, repo, _pull(81, "Tidy the voter", "see #71")) == 1
+    assert t2.status == "new" and len(await thread.patches_for(db, t2)) == 1
+    # a fixing PR closed unmerged drops the ticket back to accepted; a second live PR keeps it at fixing
+    t3, _ = await sync.upsert_issue(ctx, db, repo, _issue(72, "Fork on equal height"))
+    await sync.link_pull(ctx, db, repo, _pull(82, "First attempt", "Closes #72"))
+    await sync.link_pull(ctx, db, repo, _pull(83, "Second attempt", "Closes #72"))
+    assert t3.status == "fixing"
+    await sync.link_pull(ctx, db, repo, _pull(82, "First attempt", "Closes #72", state="closed"))
+    assert t3.status == "fixing"  # 83 is still open
+    await sync.link_pull(ctx, db, repo, _pull(83, "Second attempt", "Closes #72", state="closed"))
+    assert t3.status == "accepted"
+    # past patched, GitHub never moves a ticket
+    team = await _team(ctx, db, roles=("reviewer", "treasurer"))
+    await tsvc.set_award(ctx, db, team, t, 1_000_000, approve=True)
+    await tsvc.set_status(ctx, db, team, t, "awarded")
+    await sync.link_pull(ctx, db, repo, _pull(84, "Follow-up", "Fixes #70", state="closed", merged=True))
+    assert t.status == "awarded"
+
+
 # ---- triage import ----------------------------------------------------------------------------------
 
 

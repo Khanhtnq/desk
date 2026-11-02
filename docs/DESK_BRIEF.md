@@ -163,7 +163,7 @@ Disclosure rule, enforced: a private ticket becomes public when a reviewer marks
 
 Two-way, scoped to `xeprotocol/xe`, `xeprotocol/dao`, `xeprotocol/sdk` and whatever else is added in config.
 
-- **Import.** Every existing issue becomes a ticket with `source=github`, the reporter mapped by GitHub login (claimed when they sign in), comments kept as the public thread, and linked PRs as patch refs. Every PR that references an issue is attached to it.
+- **Import.** Every existing issue becomes a ticket with `source=github`, the reporter mapped by GitHub login (claimed when they sign in), comments kept as the public thread, and linked PRs as patch refs. Every PR that references an issue is attached to it; a PR that says `fixes #n` also moves the ticket to `fixing` when it opens and `patched` when it merges.
 - **Inbound.** New issues become tickets. New comments append to the public thread. Labels are set by the tool, not by hand.
 - **Outbound.** A public reply posted in the tool is posted on the issue. A status change sets the label (`triaged`, `accepted`, `duplicate`, `invalid`, `needs-repro`, `fixing`, `patched`, `disclosed`). Closing a ticket closes the issue with the reason. The tool's labels are the only labels. Labels follow status automatically; replies and closes always go through a human.
 - **Patched means told.** When a ticket reaches `patched`, the tool drafts the public reply (fix, PR, what the reporter can verify) and puts the ticket in the outbox. The internal ticket number is not part of the reply unless the Reviewer leaves it in.

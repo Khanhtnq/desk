@@ -216,6 +216,12 @@ def issue_refs(text: str) -> list[int]:
     return seen
 
 
+def closing_refs(text: str) -> set[int]:
+    """Only the issues a PR says it fixes (`fixes #n`, `closes #n`, `resolves #n`). A bare `#n` is a
+    mention, which links but is never read as a fix."""
+    return {int(m.group(1)) for m in CLOSES.finditer(text or "")}
+
+
 PUBLIC_TAG = re.compile(r"(?<![\w/#])(?:(?P<owner>[\w.-]+)/)?(?P<repo>[A-Za-z][\w.-]*)#(?P<num>\d+)\b")
 
 

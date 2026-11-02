@@ -113,7 +113,7 @@ def build_agent_brief(
     add(
         _p(
             f"6. `POST {b}/v1/tickets/{{id}}/patch-refs` with `{{ref}}` (`#27`, `dao#1`, `owner/repo#5`)",
-            "when a PR or commit addresses it.",
+            "when a PR or commit addresses it and GitHub has not already linked it (see `/patch-refs`).",
         )
     )
     add(f"7. `GET {b}/v1/me` tells you who you are, your scopes, and your owner's standing instructions.")
@@ -273,6 +273,20 @@ def build_agent_brief(
             f"`{a}` → {', '.join(f'`{x}`' for x in sorted(bs))}" for a, bs in table.items() if bs
         )
         add(f"- {kind}: {moves}")
+    add("")
+    add(
+        _p(
+            "GitHub moves some statuses by itself, so do not propose what it will do anyway. A PR in a",
+            "watched repo whose title or body says `fixes #n`, `closes #n` or `resolves #n` links itself to",
+            "the ticket for issue `n` and moves it to `fixing` when it opens and `patched` when it merges",
+            "(closed unmerged with nothing else open: back to `accepted`). A bare `#n` mention links only.",
+            f"An internal {tracker} ticket naming the report moves it to `accepted` while open and",
+            "`patched` when closed as completed. Nothing on GitHub moves a ticket past `patched`:",
+            "disclosure, award and payment are people's decisions. Your job on status is the rest:",
+            "`triaging` and `needs-info` early, `closed` with a reason, and `patched` only when a fix",
+            "exists that GitHub cannot see (a commit, another repo), with the patch ref linked first.",
+        )
+    )
     add("")
     add("### `reply_draft`")
     add("")

@@ -21,6 +21,8 @@ Imported history: the 90 rows of the triage document (`BOUNTY_TRIAGE.md`, kept o
 
 The engineering tracker, `xeprotocol/core`, is read, never written. When an internal ticket names a public report (`xe#63` in its title or body), the desk links it as `internal_ref` and follows its state: open → the report is `accepted`; closed as completed → `patched` and into the outbox; closed as not planned → a note for a human to rule on.
 
+Pull requests in the public repos are watched too (poll every two minutes, webhook live). A PR whose title or body references an issue is linked to that issue's ticket under Patches, with its state kept current. A PR that says it *fixes* the issue (`fixes #27`, `closes #27`, `resolves #27`) also moves the ticket: `fixing` when it opens, `patched` when it merges, and back to `accepted` if it is closed unmerged and no other PR is open against the ticket. A bare `#27` mention links but moves nothing, since it usually means "related to". Nothing on GitHub moves a ticket past `patched`; disclosure, award and payment are people's decisions. Both paths walk the allowed transitions one hop at a time, so a `new` ticket whose fix merges reads `triaging → accepted → patched` in the log, each hop `via: github:xe#31` or `via: internal`.
+
 ## 3. The ticket
 
 **Facts** a reviewer sets, or adopts from an agent's proposal:
@@ -48,7 +50,7 @@ new → triaging → accepted → fixing → patched → awarded → paid
 - `new`: nobody has read it. `triaging`: someone has.
 - `needs-info`: we asked the reporter for something; the clock is theirs.
 - `accepted`: it's real and will be fixed; there is (or should be) an internal ticket.
-- `fixing`: a PR is open. `patched`: the fix is merged. The reporter must be told; this is where the outbox comes in.
+- `fixing`: a PR is open. `patched`: the fix is merged. Both are set by GitHub when the PR says `fixes #n` (§2); by hand otherwise. The reporter must be told; this is where the outbox comes in.
 - `disclosed`: a private report, now public because the fix shipped. Needs a linked patch ref; the desk opens the public GitHub issue itself with the reporter credited.
 - `awarded`: a treasurer has approved an amount. The amount can be set from `accepted` on (agents propose it, a treasurer adopts); approval is allowed only once the ticket is `patched` or `disclosed`, and can be taken back until it is `awarded`. `paid`: it went out at mainnet launch, with a `paid_ref`.
 
@@ -86,7 +88,7 @@ Set `assessed_tier` on accepted tickets. Adopting an agent's tier proposal also 
 
 **When the fix lands (anyone)**
 
-Link the PR on the ticket (`#27`, `dao#1`, or a full `owner/repo#5`). Status to `fixing` when the PR opens, `patched` when it merges; the internal tracker closing moves it to `patched` by itself. The ticket now sits in the outbox until someone replies. Use the `patched` template: it names the PR and tells the reporter what happens next.
+Write `fixes #27` in the PR description and the desk does the rest: the PR is linked, the ticket goes to `fixing` when the PR opens and `patched` when it merges (§2). If the PR cannot say so (a commit, a repo the desk does not watch, a ticket that came in by email or Discord and has no issue), link it on the ticket by hand (`#27`, `dao#1`, `owner/repo#5`) and set the status yourself. Either way the ticket now sits in the outbox until someone replies. Use the `patched` template: it names the PR and tells the reporter what happens next.
 
 **Private reports**
 
@@ -119,7 +121,7 @@ There is no scope for replies, status, tier or awards, and there never will be. 
 4. Read the code. Reproduce if it can.
 5. `POST /v1/tickets/{id}/notes` with its reading: what the report claims, what the code does, whether it reproduces, what it would take to fix.
 6. `POST /v1/tickets/{id}/proposals/bulk` with up to twelve proposals, each with a `reason`. A repeat proposal on the same field from the same token supersedes the earlier one, so it can revise.
-7. `POST /v1/tickets/{id}/patch-refs` if it finds a PR that addresses it.
+7. `POST /v1/tickets/{id}/patch-refs` if it finds a PR or commit that addresses it and GitHub has not already linked it. It should not propose `fixing` or `patched` for a PR that says `fixes #n`; GitHub does that (§2).
 
 **Adopting.** On the ticket page each pending proposal has adopt and reject. On the list, filter **pending** and work down; `/v1/team/proposals/bulk` does many at once. Adopting a `status` proposal applies the status along the normal rules; adopting a `reply_draft` puts the text in the reply editor for you to edit and send, it never sends itself. Reject with a word of reason: the agent's owner sees the rejections and that's how the prompt improves.
 

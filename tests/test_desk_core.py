@@ -272,6 +272,8 @@ def test_patch_token_parsing():
 
 def test_issue_refs_prefer_closing_keywords():
     assert gh.issue_refs("Fixes #15 and touches #89; see #15 again") == [15, 89]
+    assert gh.closing_refs("Fixes #15 and touches #89; resolves: #16") == {15, 16}
+    assert gh.closing_refs("see #15") == set()
     assert gh.issue_refs("no refs here, PR-123 is not one") == []
     assert gh.issue_refs("owner/repo#4 is cross-repo") == []
 

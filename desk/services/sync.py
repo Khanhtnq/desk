@@ -1,8 +1,9 @@
 """GitHub <-> desk.
 
 Inbound: issues become tickets (idempotent on repo+number), comments become public-thread messages,
-PRs that reference an issue become patch refs. Runs as a full import, a `since` poll, or per webhook
-delivery; all three go through the same `upsert_*` functions.
+PRs that reference an issue become patch refs, and a PR that says it fixes the issue (`fixes #n`) moves
+the ticket: `fixing` while open, `patched` once merged. Runs as a full import, a `since` poll, or per
+webhook delivery; all three go through the same `upsert_*` functions.
 
 Outbound: the status label on the issue (the tool's labels only; anything else on the issue is left
 alone), queued replies as comments, and close/reopen when the desk closes or reopens. A private
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..authz import SYSTEM
 from ..context import Context
-from ..models import Note, Reply, Reporter, SyncCursor, Ticket
+from ..models import Note, PatchRef, Reply, Reporter, SyncCursor, Ticket
 from . import github as gh
 from . import thread
 from . import tickets as tsvc
@@ -144,10 +145,15 @@ async def upsert_comment(ctx: Context, db: AsyncSession, t: Ticket, comment: dic
 
 
 async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> int:
-    """Attach a PR to every ticket whose issue it references. Returns how many links were new."""
-    refs = gh.issue_refs(f"{pull.get('title') or ''}\n{pull.get('body') or ''}")
+    """Attach a PR to every ticket whose issue it references, and let a PR that says it fixes the issue
+    move the ticket: `fixing` while open, `patched` once merged, back to `accepted` if it is closed
+    unmerged and nothing else is open against the ticket. A bare `#n` mention links only. Returns how
+    many links were new."""
+    text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
+    refs = gh.issue_refs(text)
     if not refs:
         return 0
+    fixes = gh.closing_refs(text)
     state = "merged" if pull.get("merged_at") else (pull.get("state") or "open")
     n = 0
     for issue_no in refs:
@@ -168,7 +174,49 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
         )
         if pr is not None:
             n += 1
+        if issue_no in fixes:
+            await _follow_pull_state(ctx, db, t, repo, int(pull["number"]), state)
     return n
+
+
+# A fixing PR drives the public ticket the way the internal tracker does. Only forward along the
+# allowed path, only from statuses before `patched`, and never past it: what happens after a fix ships
+# (disclosure, award, payment) is a person's call. Every change is SYSTEM with via="github:<repo>#<pr>".
+PRE_PATCH = ("new", "triaging", "needs-info", "accepted", "fixing")
+
+
+async def _follow_pull_state(
+    ctx: Context, db: AsyncSession, t: Ticket, repo: str, number: int, state: str
+) -> bool:
+    if t.kind != "bounty" or t.status not in PRE_PATCH:
+        return False
+    via = f"github:{repo}#{number}"
+    ref = f"{repo.split('/')[-1]}#{number}"
+    if state == "merged":
+        target, reason = "patched", f"{ref} merged"
+    elif state == "open":
+        if t.status == "fixing":
+            return False
+        target, reason = "fixing", f"{ref} opened"
+    else:  # closed without merging
+        if t.status != "fixing" or await _other_live_patches(db, t, repo, str(number)):
+            return False
+        target, reason = "accepted", f"{ref} closed unmerged"
+    if tsvc.status_path(t.kind, t.status, target) is None:
+        return False
+    await tsvc.set_status_via_path(ctx, db, SYSTEM, t, target, reason=reason, via=via)
+    return True
+
+
+async def _other_live_patches(db: AsyncSession, t: Ticket, repo: str, ref: str) -> bool:
+    """Is any other PR against this ticket still open or merged?"""
+    q = select(PatchRef.id).where(
+        PatchRef.ticket_id == t.id,
+        PatchRef.kind == "pr",
+        PatchRef.state.in_(("open", "merged")),
+        ~((PatchRef.repo == repo) & (PatchRef.ref == ref)),
+    )
+    return (await db.execute(q)).first() is not None
 
 
 async def import_repo(
