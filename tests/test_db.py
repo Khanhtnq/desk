@@ -3,8 +3,10 @@ of the actual doc. Skipped unless DESK_TEST_DATABASE_URL is set, e.g.
 DESK_TEST_DATABASE_URL=postgresql+asyncpg://desk:pw@db:5432/desk_test (a scratch database; it is wiped).
 
 The image carries neither pytest nor this directory; mount the tests and install pytest for the run.
-Run on the VPS (see docs/DEPLOY.md):
+Build first, or the tests run against whatever code the image was last built from. On the VPS (see
+docs/DEPLOY.md):
 
+  docker compose build app
   docker compose exec db psql -U desk -d desk -c "CREATE DATABASE desk_test"   # "already exists" is fine
   docker compose run --rm --no-deps -v $PWD/tests:/app/tests \
     -e DESK_TEST_DATABASE_URL=postgresql+asyncpg://desk:$(grep ^POSTGRES_PASSWORD .env | cut -d= -f2)@db:5432/desk_test \

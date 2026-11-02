@@ -57,9 +57,10 @@ docker compose run --rm --no-deps -v $PWD/tests:/app/tests app \
   sh -c "pip install -q pytest pytest-asyncio && pytest -q tests/test_xe_wire.py tests/test_desk_core.py tests/test_triage.py tests/test_templates.py"
 ```
 
-Database tests (a scratch database the tests wipe):
+Database tests (a scratch database the tests wipe). Build first: `docker compose run` uses the image as last built, and only `tests/` is mounted in, so without a build the new tests run against the old code.
 
 ```sh
+docker compose build app
 docker compose up -d --wait db            # --wait: returns once Postgres is healthy, not merely started
 docker compose exec db psql -U desk -d desk -c "CREATE DATABASE desk_test"   # "already exists" is fine
 docker compose run --rm --no-deps -v $PWD/tests:/app/tests \
