@@ -511,6 +511,64 @@ async def set_status(
     )
 
 
+# Statuses a walked path may end on but never pass through: each is a decision in its own right.
+TERMINAL = frozenset({"closed", "awarded", "paid"})
+
+
+def status_path(kind: str, current: str, target: str) -> list[str] | None:
+    """The shortest run of allowed transitions from `current` to `target`, excluding `current` itself;
+    `[]` when already there, None when unreachable. Only forward edges of TRANSITIONS are walked, the
+    terminal statuses are never intermediates, and the path never re-enters `current`."""
+    if current == target:
+        return []
+    table = TRANSITIONS.get(kind, {})
+    seen = {current}
+    frontier: list[list[str]] = [[current]]
+    while frontier:
+        nxt: list[list[str]] = []
+        for path in frontier:
+            for s in sorted(table.get(path[-1], set())):
+                if s == target:
+                    return path[1:] + [s]
+                if s in seen or s in TERMINAL:
+                    continue
+                seen.add(s)
+                nxt.append(path + [s])
+        frontier = nxt
+    return None
+
+
+async def set_status_via_path(
+    ctx: Context,
+    db: AsyncSession,
+    p: Principal,
+    t: Ticket,
+    status: str,
+    *,
+    closed_reason: str | None = None,
+    reason: str = "",
+    via: str = "",
+) -> list[str]:
+    """set_status, hop by hop, when the target is more than one move away. Every hop is a real status
+    change with the same `via` and reason, so each is logged and hooked exactly as a click would be;
+    only the last hop carries `closed_reason`. Returns the hops taken. No path at all is the usual 409,
+    raised before anything moves."""
+    if status not in STATUSES:
+        raise HTTPException(400, f"unknown status {status!r}")
+    path = status_path(t.kind, t.status, status)
+    if path is None:
+        raise HTTPException(409, f"{t.kind} ticket cannot go from {t.status} to {status}")
+    if not path:
+        await set_status(ctx, db, p, t, status, closed_reason=closed_reason, reason=reason, via=via)
+        return []
+    for hop in path:
+        last = hop == path[-1]
+        await set_status(
+            ctx, db, p, t, hop, closed_reason=closed_reason if last else None, reason=reason, via=via
+        )
+    return path
+
+
 async def disclose(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> None:
     """Private → public: the body comes out of the vault, the status goes to disclosed, and the GitHub
     issue is opened by the worker (event `ticket.disclose_requested`)."""

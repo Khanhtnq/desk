@@ -261,8 +261,10 @@ def build_agent_brief(
     add("")
     add(
         _p(
-            'A string, or `{"status": "closed", "closed_reason": "duplicate"}`. A person adopting it',
-            "applies the normal rules, so propose a move that is allowed from where the ticket is:",
+            'A string, or `{"status": "closed", "closed_reason": "duplicate"}`. The target may be several',
+            "hops away: on adoption the desk walks the shortest allowed path from the ticket's current",
+            "status, one logged hop at a time, never passing through `closed`, `awarded` or `paid`. The",
+            "moves are:",
         )
     )
     add("")

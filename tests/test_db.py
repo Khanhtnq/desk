@@ -245,6 +245,63 @@ async def test_agent_proposes_human_adopts(ctx, db):
     assert not any("Thanks, reproduced" in str(e.payload) for e in pub), "drafts never land in the public log"
 
 
+def test_status_path_walks_forward_edges_only():
+    assert tsvc.status_path("bounty", "new", "accepted") == ["triaging", "accepted"]
+    assert tsvc.status_path("bounty", "new", "patched") == ["triaging", "accepted", "patched"]
+    assert tsvc.status_path("bounty", "new", "closed") == ["closed"]
+    assert tsvc.status_path("bounty", "new", "new") == []
+    assert tsvc.status_path("bounty", "paid", "fixing") is None
+    # awarded is a terminal: no walking through it to paid
+    assert tsvc.status_path("bounty", "patched", "paid") is None
+    # closed is a terminal too: new → closed → triaging is not a path, but new → triaging is
+    assert tsvc.status_path("bounty", "closed", "accepted") == ["triaging", "accepted"]
+    assert tsvc.status_path("support", "new", "needs-info") == ["triaging", "needs-info"]
+    assert tsvc.status_path("support", "new", "accepted") is None
+
+
+async def test_adopting_a_far_status_walks_the_path(ctx, db):
+    p = await _team(ctx, db, roles=("reviewer",))
+    agent = await _agent(ctx, db, p.user)
+    # new → accepted, via triaging: two status events, one via
+    t = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="a", source="web"))
+    pr = await psvc.propose(ctx, db, agent, t, "status", "accepted", "reproduced and in scope")
+    out = await psvc.decide(ctx, db, p, pr, True)
+    assert out["status"] == "accepted" and out["path"] == ["triaging", "accepted"]
+    assert t.status == "accepted"
+    evs = await EventLog.page(db, 0, 100, ref=t.id, descending=False)
+    moves = [(e.payload["from"], e.payload["to"]) for e in evs if e.kind == "ticket.status"]
+    assert moves == [("new", "triaging"), ("triaging", "accepted")]
+    assert {e.payload["via"] for e in evs if e.kind == "ticket.status"} == {f"proposal:{pr.id}"}
+    # new → patched: three hops
+    t2 = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="b", source="web"))
+    pr2 = await psvc.propose(ctx, db, agent, t2, "status", "patched", "fix landed")
+    out = await psvc.decide(ctx, db, p, pr2, True)
+    assert out["path"] == ["triaging", "accepted", "patched"] and t2.status == "patched"
+    # paid → fixing: no path, 409, nothing moves, proposal stays pending
+    t3 = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="c", source="web"))
+    for st in ("triaging", "accepted", "patched", "awarded", "paid"):
+        await tsvc.set_status(ctx, db, p, t3, st, force=True)
+    pr3 = await psvc.propose(ctx, db, agent, t3, "status", "fixing", "regressed")
+    with pytest.raises(HTTPException) as e:
+        await psvc.decide(ctx, db, p, pr3, True)
+    assert e.value.status_code == 409 and "paid to fixing" in e.value.detail
+    assert t3.status == "paid" and pr3.state == "pending"
+    # closed as duplicate from new: one hop, with the reason
+    t4 = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="d", source="web"))
+    await tsvc.set_facts(ctx, db, p, t4, {"duplicate_of": t.id})
+    pr4 = await psvc.propose(
+        ctx, db, agent, t4, "status", {"status": "closed", "closed_reason": "duplicate"}, "same as a"
+    )
+    out = await psvc.decide(ctx, db, p, pr4, True)
+    assert out["path"] == ["closed"] and t4.status == "closed" and t4.closed_reason == "duplicate"
+    # the current status is a no-op, as before
+    pr5 = await psvc.propose(ctx, db, agent, t2, "status", "patched", "already there")
+    moves = sum(e.kind == "ticket.status" for e in await EventLog.page(db, 0, 100, ref=t2.id))
+    out = await psvc.decide(ctx, db, p, pr5, True)
+    assert out["path"] == [] and t2.status == "patched"
+    assert sum(e.kind == "ticket.status" for e in await EventLog.page(db, 0, 100, ref=t2.id)) == moves
+
+
 async def test_agent_proposes_an_award_and_a_treasurer_sets_it(ctx, db):
     reviewer = await _team(ctx, db, roles=("reviewer", "tier"))
     agent = await _agent(ctx, db, reviewer.user)

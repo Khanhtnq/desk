@@ -113,9 +113,12 @@ async def decide(
             status = value if isinstance(value, str) else value.get("status")
             reason_c = None if isinstance(value, str) else value.get("closed_reason")
             require_field(p, "status")
-            await tsvc.set_status(
+            # an agent may propose a status several hops away; the desk walks the allowed path, one
+            # logged hop at a time, inside this transaction
+            out["path"] = await tsvc.set_status_via_path(
                 ctx, db, p, t, status, closed_reason=reason_c, reason=reason, via=f"proposal:{pr.id}"
             )
+            out["status"] = t.status
         elif pr.field == "award_xe":
             # sets the amount only; approval stays a separate, deliberate click
             require(p, "award", t)
