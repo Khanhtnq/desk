@@ -245,6 +245,36 @@ async def test_agent_proposes_human_adopts(ctx, db):
     assert not any("Thanks, reproduced" in str(e.payload) for e in pub), "drafts never land in the public log"
 
 
+async def test_agent_proposes_an_award_and_a_treasurer_sets_it(ctx, db):
+    reviewer = await _team(ctx, db, roles=("reviewer", "tier"))
+    agent = await _agent(ctx, db, reviewer.user)
+    t = await tsvc.create(ctx, db, reviewer.actor, tsvc.NewTicket(kind="bounty", title="x", source="web"))
+    await tsvc.set_facts(ctx, db, reviewer, t, {"assessed_tier": "medium"}, reason="t")
+    for bad, why in ((2500.5, "float"), ("2500", "string"), (-1, "negative"), (True, "bool"), (5001, "over 2x ceiling")):
+        with pytest.raises(HTTPException) as e:
+            await psvc.propose(ctx, db, agent, t, "award_xe", bad, "a reason long enough to pass the check")
+        assert e.value.status_code == 400, why
+    with pytest.raises(HTTPException):
+        await psvc.propose(ctx, db, agent, t, "award_xe", 2000, "short")
+    pr = await psvc.propose(ctx, db, agent, t, "award_xe", 2000, "Top of the band: precise, right fix suggested.")
+    with pytest.raises(HTTPException) as e:
+        await psvc.decide(ctx, db, reviewer, pr, True)  # setting an award needs the treasurer role
+    assert e.value.status_code == 403 and pr.state == "pending" and t.award_xe is None
+    treasurer = await _team(ctx, db, roles=("reviewer", "treasurer"))
+    out = await psvc.decide(ctx, db, treasurer, pr, True)
+    assert out["award_xe"] == 2_000_000_000 and t.award_xe == 2_000_000_000
+    assert t.award_approved_at is None, "adopting sets the amount; approval is a separate act"
+    due = await tsvc.awards_due(db, ctx.config, treasurer)
+    assert t.id not in [d.id for d in due], "a new ticket is not yet due; it has to be accepted first"
+    await tsvc.set_status(ctx, db, treasurer, t, "triaging")
+    await tsvc.set_status(ctx, db, treasurer, t, "accepted")
+    assert t.id in [d.id for d in await tsvc.awards_due(db, ctx.config, treasurer)]
+    await tsvc.set_award(ctx, db, treasurer, t, None, approve=True)
+    assert t.id not in [d.id for d in await tsvc.awards_due(db, ctx.config, treasurer)]
+    grouped = await psvc.pending_field_for(db, [t.id], "award_xe")
+    assert grouped == {}  # adopted, so no longer pending
+
+
 async def test_a_member_is_renamed_and_future_replies_carry_it(ctx, db):
     team = await _team(ctx, db)
     spec = tsvc.NewTicket(kind="bounty", title="Renaming test", body="b" * 50)

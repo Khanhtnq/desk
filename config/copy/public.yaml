@@ -86,6 +86,7 @@ labels:
   log: Log
   scope: Scope
   release: Release view
+  awards: Awards
   outbox: Outbox
   team: Team
   open: Open

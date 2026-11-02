@@ -96,8 +96,9 @@ def test_agent_brief_carries_every_vocabulary(config):
     for k in config.effort_bands:
         assert f"| `{k}` |" in txt
     assert "https://bounty.xe.network/v1/tickets/{id}/proposals/bulk" in txt
-    # the award is a human decision; the brief tells the agent to recommend one, with a reason, in the note
-    assert "## Suggesting an award" in txt and "**Award:**" in txt
+    # the award is a human decision; the agent proposes award_xe with a reason and repeats it in the note
+    assert "## Suggesting an award" in txt and "**Award:**" in txt and "### `award_xe`" in txt
+    assert "`award_xe`" in txt.split("## Proposals")[1]
     assert "never appears in a reply draft" in txt
     assert "## Your token" not in txt
     # with a token, its own section leads, and the owner's standing instructions are quoted

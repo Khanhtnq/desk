@@ -156,9 +156,11 @@ def build_agent_brief(
     add("")
     add(
         _p(
-            "There is no proposal field for the award; a person sets it. Your job is to make that decision",
-            "easy. Once the verdict is `valid` or `likely-valid` and a tier is set or you are proposing one,",
-            "end your note with one line:",
+            "A person sets the award; your job is to make that decision easy. Once the verdict is `valid` or",
+            "`likely-valid` and a tier is set or you are proposing one, do two things. Propose `award_xe`: a",
+            "whole number of XE inside the assessed band, with a reason of one or two sentences about the",
+            "report (adopting it sets the amount; a treasurer approves separately). And end your note with",
+            "one line:",
         )
     )
     add("")
@@ -278,6 +280,17 @@ def build_agent_brief(
             "their editor; they edit and send. Write in the programme's voice: plain, specific, no promise",
             "of an award, no tier named unless it has been set, nothing about other reports. On a private",
             "ticket say the fact, not the detail.",
+        )
+    )
+    add("")
+    add("### `award_xe`")
+    add("")
+    add(
+        _p(
+            "A whole number of XE, never more than twice the assessed tier's ceiling, with a reason of at",
+            "least 20 characters that says where in the band and why (see Suggesting an award). Only a",
+            "treasurer can adopt it, and adopting sets the amount without approving it. A new proposal",
+            "supersedes your earlier one. The amount belongs here and in your note, nowhere public.",
         )
     )
     add("")

@@ -361,4 +361,28 @@
       try { await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); reload(); } catch (e) { tell("Could not adopt", e.message); }
     });
   }
+
+  // ---- awards page ---------------------------------------------------------------------------
+  if ($(".awards")) {
+    const amsg = $("#awards-msg");
+    $$("[data-adopt-award]").forEach(b => b.addEventListener("click", async () => {
+      try { await api("POST", `/v1/team/proposals/${b.dataset.adoptAward}/adopt`, {}); reload(); }
+      catch (e) { say(amsg, e.message, false); }
+    }));
+    $$("[data-reject-award]").forEach(b => b.addEventListener("click", async () => {
+      try { await api("POST", `/v1/team/proposals/${b.dataset.rejectAward}/reject`, {}); reload(); }
+      catch (e) { say(amsg, e.message, false); }
+    }));
+    $$("[data-set-award]").forEach(b => b.addEventListener("click", async () => {
+      const tid = b.dataset.setAward, xe = parseFloat($(`[data-award-input="${tid}"]`).value);
+      if (isNaN(xe) || xe < 0) return say(amsg, `enter an amount in XE for ${tid}`, false);
+      try { await api("POST", `/v1/team/tickets/${tid}/award`, { award_xe: Math.round(xe * 1e6) }); reload(); }
+      catch (e) { say(amsg, `${tid}: ${e.message}`, false); }
+    }));
+    if ($("#adopt-all-awards")) $("#adopt-all-awards").addEventListener("click", async () => {
+      const ids = $$("[data-adopt-award]:not([disabled])").map(b => parseInt(b.dataset.adoptAward, 10));
+      if (!ids.length || !await ask({ title: `Set ${ids.length} awards from the proposed amounts?`, body: "Each amount is recorded against you in the log as set, not approved. Approve them one by one on the tickets when you have read the reasons.", ok: "Set all" })) return;
+      try { await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); reload(); } catch (e) { tell("Could not adopt", e.message); }
+    });
+  }
 })();

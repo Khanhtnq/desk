@@ -515,6 +515,45 @@ async def release(request: Request):
     )
 
 
+@router.get("/team/awards", response_class=HTMLResponse)
+async def awards(request: Request):
+    """Every valid bounty ticket that still needs an amount, or has one awaiting approval, with the
+    pending award proposals beside it. Adopting sets the amount; approving is the second, separate click."""
+    c = get_context()
+    async with session() as db:
+        p, csrf = await principal(db, request)
+        if not p.is_team:
+            return RedirectResponse("/team/login?next=/team/awards", status_code=302)
+        rows = await tsvc.awards_due(db, c.config, p)
+        pending = await psvc.pending_field_for(db, [t.id for t in rows], "award_xe")
+        owners = await users.token_owners(db) if pending else {}
+        reporters = {
+            r.id: r
+            for r in (
+                await db.execute(select(Reporter).where(Reporter.id.in_([t.reporter_id for t in rows if t.reporter_id])))
+            ).scalars().all()
+        } if rows else {}
+    total_proposed = sum(int(prs[0].value.get("value") or 0) for prs in pending.values())
+    total_set = sum((t.award_xe or 0) for t in rows) // 1_000_000
+    return render(
+        request,
+        "team/awards.html",
+        {
+            "p": p,
+            "csrf": csrf,
+            "tickets": rows,
+            "pending": pending,
+            "owners": owners,
+            "reporters": reporters,
+            "can_award": can(p, "award"),
+            "total_proposed": total_proposed,
+            "total_set": total_set,
+            "unset": sum(1 for t in rows if t.award_xe is None),
+            "unapproved": sum(1 for t in rows if t.award_xe is not None and not t.award_approved_at),
+        },
+    )
+
+
 @router.get("/team/outbox", response_class=HTMLResponse)
 async def outbox(request: Request):
     c = get_context()

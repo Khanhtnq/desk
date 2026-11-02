@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Awards{% endblock %}
+{% block content %}
+<div class="release awards">
+<div class="tag"><span>Awards</span></div>
+<h1>Every valid report that still needs a number.</h1>
+<p class="sub">Accepted, fixing, patched and disclosed bounty tickets with no award, and awarded ones not yet approved, most severe first. Agents propose an amount with a reason; adopting sets it. Approval is the second, separate click on the ticket, and only a treasurer can do either.</p>
+<div class="counts">
+  <div><b>{{ unset }}</b>without an amount</div>
+  <div><b>{{ unapproved }}</b>set, not approved</div>
+  <div><b>{{ "{:,}".format(total_proposed) }} XE</b>proposed, pending</div>
+  <div><b>{{ "{:,}".format(total_set) }} XE</b>set so far</div>
+</div>
+{% if not can_award %}<p class="msg err" style="display:block">You can read this page but setting an award needs the treasurer role.</p>{% endif %}
+{% if can_award and pending %}
+<div class="row" style="margin:16px 0"><button class="mini" id="adopt-all-awards" type="button">Adopt every proposed amount ({{ pending|length }})</button><span class="k" style="margin-left:12px">Sets the newest proposal on each ticket. Nothing is approved.</span></div>
+{% endif %}
+<div id="awards-msg" class="msg" style="display:none"></div>
+<table class="tickets">
+<thead><tr><th>#</th><th>Finding</th><th>Status</th><th>Tier · ceiling</th><th>Reporter</th><th>Proposed</th><th>Award</th></tr></thead>
+<tbody>
+{% for t in tickets %}
+{% set prs = pending.get(t.id, []) %}
+{% set top = prs[0] if prs else none %}
+<tr data-ticket="{{ t.id }}">
+  <td class="n">{{ m.tlink(t) }}</td>
+  <td class="title"><a href="/{{ t.id }}">{{ t.title }}</a>{% if top and top.reason %}<span class="k">{{ top.reason }}</span>{% endif %}</td>
+  <td>{{ m.status(t) }}</td>
+  <td class="mono">{{ m.tier(t.assessed_tier) }}{% if t.assessed_tier %} <span class="k">{{ "{:,}".format(cfg.ceiling_micro(t.assessed_tier) // 1000000) }}</span>{% endif %}</td>
+  <td class="k">{% set r = reporters.get(t.reporter_id) %}{% if r %}{{ r.display_name or r.github_login or r.email or ("reporter " ~ r.id) }}{% else %}<span class="pill private">none</span>{% endif %}</td>
+  <td class="mono">
+    {% if top %}<b>{{ "{:,}".format(top.value.value|int) }} XE</b>
+      <span class="k">#{{ top.id }}{% if owners.get(top.token_id) %} · {{ owners[top.token_id] }}{% endif %}{% if prs|length > 1 %} · +{{ prs|length - 1 }} more{% endif %}</span>
+      {% if can_award %}<div class="row" style="margin-top:4px"><button type="button" class="mini" data-adopt-award="{{ top.id }}" {{ "disabled" if t.award_approved_at }}>Adopt</button><button type="button" class="ghost mini" data-reject-award="{{ top.id }}">Reject</button></div>{% endif %}
+    {% else %}<span class="k">none yet</span>{% endif %}
+  </td>
+  <td class="mono">
+    {% if t.award_xe is not none %}<b>{{ t.award_xe|xe }} XE</b> {% if t.award_approved_at %}<span class="pill paid">approved</span>{% else %}<span class="pill pending">set</span>{% endif %}
+    {% elif can_award %}<div class="row"><input type="number" min="0" step="1" placeholder="XE" data-award-input="{{ t.id }}" style="max-width:110px"><button type="button" class="ghost mini" data-set-award="{{ t.id }}">Set</button></div>
+    {% else %}—{% endif %}
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="7" class="k">Nothing waiting. Every valid report has an approved award.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

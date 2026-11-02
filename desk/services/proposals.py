@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..authz import Principal, can, require_field
+from ..authz import Principal, can, require, require_field
 from ..context import Context
 from ..models import PROPOSAL_FIELDS, AgentToken, Proposal, Ticket
 from . import tickets as tsvc
@@ -31,6 +31,14 @@ async def propose(
         raise HTTPException(400, "status proposals are a string or {status, closed_reason}")
     if field == "reply_draft" and not isinstance(value, str):
         raise HTTPException(400, "a reply draft is a string")
+    if field == "award_xe":
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise HTTPException(400, "award_xe is a whole number of XE, 0 or more")
+        ceiling = ctx.config.ceiling_micro(t.assessed_tier) // 1_000_000
+        if ceiling and value > ceiling * 2:
+            raise HTTPException(400, f"award_xe exceeds twice the {t.assessed_tier} ceiling ({ceiling} XE)")
+        if not reason or len(reason.strip()) < 20:
+            raise HTTPException(400, "an award proposal needs a reason of at least 20 characters")
     # collapse a repeat proposal from the same token on the same field
     q = select(Proposal).where(
         Proposal.ticket_id == t.id,
@@ -59,6 +67,21 @@ async def propose(
         db, "proposal.created", p.actor, payload, ref=t.id, public=t.visibility == "public"
     )
     return pr
+
+
+async def pending_field_for(db: AsyncSession, ticket_ids: list[str], field: str) -> dict[str, list[Proposal]]:
+    """Pending proposals on one field across many tickets, newest first per ticket (the awards page)."""
+    if not ticket_ids:
+        return {}
+    q = (
+        select(Proposal)
+        .where(Proposal.ticket_id.in_(ticket_ids), Proposal.field == field, Proposal.state == "pending")
+        .order_by(Proposal.created_at.desc())
+    )
+    out: dict[str, list[Proposal]] = {}
+    for pr in (await db.execute(q)).scalars().all():
+        out.setdefault(pr.ticket_id, []).append(pr)
+    return out
 
 
 async def pending_for(db: AsyncSession, t: Ticket) -> list[Proposal]:
@@ -93,6 +116,11 @@ async def decide(
             await tsvc.set_status(
                 ctx, db, p, t, status, closed_reason=reason_c, reason=reason, via=f"proposal:{pr.id}"
             )
+        elif pr.field == "award_xe":
+            # sets the amount only; approval stays a separate, deliberate click
+            require(p, "award", t)
+            await tsvc.set_award(ctx, db, p, t, int(value) * 1_000_000)
+            out["award_xe"] = int(value) * 1_000_000
         else:
             require_field(p, pr.field)
             out["diff"] = await tsvc.set_facts(

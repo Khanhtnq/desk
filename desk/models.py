@@ -91,6 +91,7 @@ PROPOSAL_FIELDS = (
     "area",
     "status",
     "reply_draft",
+    "award_xe",   # whole XE; adopting needs the treasurer role, like setting the award directly
 )
 AGENT_SCOPES = ("read:public", "read:private", "write:notes", "write:proposals", "write:patch-refs")
 ROLES = ("reviewer", "tier", "treasurer", "admin")

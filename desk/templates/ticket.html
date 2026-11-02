@@ -142,12 +142,12 @@
     {% for pr in proposals %}
     <div class="proposal {{ pr.state }}" data-proposal="{{ pr.id }}" data-field="{{ pr.field }}">
       <div class="f">{{ pr.field.replace('_', ' ') }}{% if pr.field == "assessed_tier" and not can_tier %} <span class="pill private">tier role</span>{% endif %}</div>
-      <div class="v">{% if pr.field == "reply_draft" %}<span class="k">draft, {{ pr.value.value|length }} chars</span>{% elif pr.field == "assessed_tier" or pr.field == "claimed_tier" %}{{ m.tier(pr.value.value) }}{% else %}{{ pr.value.value }}{% endif %}</div>
+      <div class="v">{% if pr.field == "reply_draft" %}<span class="k">draft, {{ pr.value.value|length }} chars</span>{% elif pr.field == "assessed_tier" or pr.field == "claimed_tier" %}{{ m.tier(pr.value.value) }}{% elif pr.field == "award_xe" %}{{ "{:,}".format(pr.value.value|int) }} XE{% if not can_award %} <span class="pill private">treasurer</span>{% endif %}{% else %}{{ pr.value.value }}{% endif %}</div>
       {% if pr.reason %}<div class="r">{{ pr.reason }}</div>{% endif %}
       <div class="by">#{{ pr.id }} · token {{ pr.token_id }}{% if owners.get(pr.token_id) %} <span class="for">for {{ owners[pr.token_id] }}</span>{% endif %} · {{ pr.created_at|dt }}{% if pr.state != "pending" %} · {{ pr.state }}{% if pr.decided_at %} {{ pr.decided_at|dt }}{% endif %}{% endif %}</div>
       {% if team and pr.state == "pending" %}
       <div class="acts">
-        <button type="button" data-adopt="{{ pr.id }}" {{ "disabled" if pr.field == "assessed_tier" and not can_tier }}>{{ "Use as draft" if pr.field == "reply_draft" else "Adopt" }}</button>
+        <button type="button" data-adopt="{{ pr.id }}" {{ "disabled" if (pr.field == "assessed_tier" and not can_tier) or (pr.field == "award_xe" and not can_award) }}>{{ "Use as draft" if pr.field == "reply_draft" else "Adopt" }}</button>
         <button type="button" class="ghost" data-reject="{{ pr.id }}">Reject</button>
       </div>
       {% endif %}

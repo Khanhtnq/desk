@@ -2,5 +2,5 @@
 {% macro tier(v) %}{% if v %}<span class="tier {{ v }}">{{ cfg.tier_label(v) }}</span>{% else %}<span class="mute">—</span>{% endif %}{% endmacro %}
 {% macro status(t) %}<span class="pill {{ t.status }}">{{ copy.labels.get(t.status, t.status) }}{% if t.closed_reason %} · {{ t.closed_reason }}{% endif %}</span>{% endmacro %}
 {% macro gate(g) %}{% if g %}<span class="pill {{ g }}">{{ cfg.gates.get(g, g) }}</span>{% else %}<span class="mute">—</span>{% endif %}{% endmacro %}
-{% macro tlink(t) %}<a href="/{{ 'bounty' if t.kind == 'bounty' else 'support' }}/{{ t.id }}">{{ t.id }}</a>{% endmacro %}
+{% macro tlink(t) %}<a href="/{{ t.id }}">{{ t.id }}</a>{% endmacro %}
 {% macro source(t) %}{% if t.source == "github" and t.source_url %}<a class="mono" href="{{ t.source_url }}" rel="noopener">{{ t.source_repo.split('/')[-1] }}#{{ t.source_ref }}</a>{% elif t.source == "email" %}<span class="mono">email</span>{% elif t.source == "discord" and t.source_url and team %}<a class="mono" href="{{ t.source_url }}" rel="noopener">discord</a>{% else %}<span class="mono">{{ t.source }}</span>{% endif %}{% endmacro %}
