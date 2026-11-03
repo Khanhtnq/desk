@@ -330,15 +330,24 @@ def _principal_for(tok: AgentToken) -> Principal:
     return Principal(kind="token", token=tok, scopes=set())
 
 
+# The sheet is a snapshot. It may start a ticket off, walking the allowed path from where the ticket is,
+# and it may still move one nobody has taken past triage. A ticket at `accepted` or beyond got there by a
+# person's click, an internal ticket or a PR after the sheet was written; re-importing the sheet does not
+# undo that (it once moved four awarded tickets back to accepted).
+IMPORT_MOVES_FROM = ("new", "triaging", "needs-info")
+
+
 async def import_rows(
     ctx: Context, db: AsyncSession, rows: list[Row], *, email_bodies: dict[str, str] | None = None
 ) -> dict:
     """Apply the rows. Tickets that the GitHub import created are updated; tickets it did not (no
-    token, or the three emails) are created. Re-running is safe: facts are compared before writing
-    and notes are added once."""
+    token, or the three emails) are created. Re-running is safe: facts are compared before writing,
+    notes are added once, and a status a person or GitHub has moved on since is left where it is."""
     tok = await triage_token(ctx, db)
     agent = _principal_for(tok)
-    stats = {"rows": len(rows), "created": 0, "updated": 0, "notes": 0, "patches": 0, "skipped": 0}
+    stats = {
+        "rows": len(rows), "created": 0, "updated": 0, "notes": 0, "patches": 0, "skipped": 0, "status_kept": 0
+    }
     by_key: dict[str, Ticket] = {}
 
     # pass 1: tickets exist
@@ -380,17 +389,12 @@ async def import_rows(
             stats["updated"] += 1
         status, reason = r.status()
         if (t.status, t.closed_reason) != (status, reason):
-            await tsvc.set_status(
-                ctx,
-                db,
-                SYSTEM,
-                t,
-                status,
-                closed_reason=reason,
-                reason="triage import",
-                force=True,
-                via="triage",
-            )
+            if t.status in IMPORT_MOVES_FROM and tsvc.status_path(t.kind, t.status, status) is not None:
+                await tsvc.set_status_via_path(
+                    ctx, db, SYSTEM, t, status, closed_reason=reason, reason="triage import", via="triage"
+                )
+            else:
+                stats["status_kept"] += 1
         for ptk in r.patches:
             if await thread.add_patch_ref(ctx, db, SYSTEM, t, repo=ptk.repo, ref=ptk.ref, note=ptk.note):
                 stats["patches"] += 1
