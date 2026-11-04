@@ -129,7 +129,8 @@
   const loginForm = $("#login-form");
   if (loginForm) {
     const msg = $("#login-msg"), next = loginForm.dataset.next || "/";
-    const go = () => { location.href = next.startsWith("/") ? next : "/"; };
+    const safe = (n) => (n && n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\")) ? n : "/";
+    const go = () => { location.href = safe(next); };
     $("#passkey-login").addEventListener("click", async () => {
       try {
         if (!window.PublicKeyCredential) throw new Error("this browser has no passkey support; use the code");

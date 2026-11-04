@@ -401,7 +401,11 @@ async def leaderboard(db: AsyncSession) -> list[dict]:
             Reporter.id, Reporter.github_login, Reporter.display_name, func.sum(Ticket.award_xe), func.count()
         )
         .join(Ticket, Ticket.reporter_id == Reporter.id)
-        .where(Ticket.status.in_(("awarded", "paid")), Ticket.award_approved_at.isnot(None))
+        .where(
+            Ticket.status.in_(("awarded", "paid")),
+            Ticket.award_approved_at.isnot(None),
+            Ticket.visibility == "public",  # a private award is the team's business until disclosure
+        )
         .group_by(Reporter.id)
         .order_by(func.sum(Ticket.award_xe).desc())
     )
@@ -457,6 +461,7 @@ async def set_facts(
             text = t.body
             t.visibility = "private"
             set_body(ctx, t, text)
+            await seal_thread(ctx, db, t)
         else:
             setattr(t, k, v)
         diff[k] = {"from": old, "to": v}
@@ -525,6 +530,15 @@ async def set_status(
     t.status_changed_at = utcnow()
     if status == "disclosed" and t.disclosed_at is None:
         t.disclosed_at = utcnow()
+    if status == "disclosed" and t.visibility == "private":
+        # the one disclosure path, whoever called: the body leaves the vault and the ticket goes public
+        # here, so a proposal, a walked path or a force can never leave a sealed ticket at "disclosed"
+        text = body_for(ctx, t)
+        t.visibility = "public"
+        t.body, t.body_sealed = text, None
+        await ctx.events.append(
+            db, "ticket.disclosed", p.actor, {"ticket": t.id, "title": t.title}, ref=t.id, public=True
+        )
     await ctx.events.append(
         db,
         "ticket.status",
@@ -601,16 +615,39 @@ async def set_status_via_path(
     return path
 
 
+async def seal_thread(ctx: Context, db: AsyncSession, t: Ticket) -> dict:
+    """A ticket just went private: everything that arrived while it was public follows the body into the
+    vault (thread messages, attachment blobs), and any reply still queued for a public mirror is pulled
+    back. Returns counts. Replies keep their plain row, as they do on tickets born private."""
+    if not ctx.vault.available:
+        raise HTTPException(503, "the vault key is not loaded; the ticket cannot be made private")
+    from pathlib import Path
+
+    from ..models import Attachment, Message, Reply
+
+    n_msg = n_att = n_rep = 0
+    for m in (await db.execute(select(Message).where(Message.ticket_id == t.id))).scalars().all():
+        if m.body_sealed is None and m.body:
+            m.body_sealed, m.body = ctx.vault.seal_text(m.body), ""
+            n_msg += 1
+    for a in (await db.execute(select(Attachment).where(Attachment.ticket_id == t.id))).scalars().all():
+        if not a.sealed:
+            path = Path(ctx.settings.blob_dir) / a.blob_path
+            if path.exists():
+                path.write_bytes(ctx.vault.seal(path.read_bytes()))
+            a.sealed = True
+            n_att += 1
+    q = select(Reply).where(Reply.ticket_id == t.id, Reply.mirror == "queued")
+    for r in (await db.execute(q)).scalars().all():
+        r.mirror = "none"
+        n_rep += 1
+    return {"messages": n_msg, "attachments": n_att, "replies_unqueued": n_rep}
+
+
 async def disclose(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> None:
-    """Private → public: the body comes out of the vault, the status goes to disclosed, and the GitHub
-    issue is opened by the worker (event `ticket.disclose_requested`)."""
+    """Private → public. The work is in set_status (status `disclosed` unseals and flips visibility, and
+    logs `ticket.disclosed`); the worker then opens the GitHub issue. Kept as the named entry point."""
     await set_status(ctx, db, p, t, "disclosed")
-    text = body_for(ctx, t)
-    t.visibility = "public"
-    t.body, t.body_sealed = text, None
-    await ctx.events.append(
-        db, "ticket.disclosed", p.actor, {"ticket": t.id, "title": t.title}, ref=t.id, public=True
-    )
 
 
 # An amount may be set from `accepted` on (the awards pass does that); approval waits for the fix.

@@ -16,11 +16,12 @@ from markupsafe import Markup, escape
 from sqlalchemy import select
 
 from . import __version__, brand
-from .auth import resolve
+from .auth import resolve, safe_next
 from .authz import ANON, Principal, can
 from .brief import build_agent_brief
 from .context import get_context
 from .db import session
+from .api.public import log_scope
 from .log import EventLog, event_to_dict
 from .mirror import build_llms_txt, md_path
 from .models import Reporter
@@ -342,7 +343,9 @@ async def log_entry(request: Request, index: int):
         ev = await EventLog.get(db, index)
         if ev is None or (not ev.public and not can(p, "read:private")):
             raise HTTPException(404, "no such entry")
-    return render(request, "log_entry.html", {"p": p, "csrf": csrf, "ev": ev, "d": event_to_dict(ev)})
+    return render(
+        request, "log_entry.html", {"p": p, "csrf": csrf, "ev": ev, "d": event_to_dict(ev, full=p.is_team)}
+    )
 
 
 @router.get("/live", response_class=HTMLResponse)
@@ -358,11 +361,12 @@ async def live(request: Request):
 
 @router.get("/signin", response_class=HTMLResponse)
 async def signin(request: Request, next: str | None = None):
+    nxt = safe_next(get_context().settings, next, "/my")
     async with session() as db:
         p, csrf = await principal(db, request)
     if getattr(request.state, "reporter", None) is not None:
-        return RedirectResponse(next if next and next.startswith("/") else "/my", status_code=302)
-    return render(request, "reporter/signin.html", {"p": p, "csrf": csrf, "next": next or "/my"})
+        return RedirectResponse(nxt, status_code=302)
+    return render(request, "reporter/signin.html", {"p": p, "csrf": csrf, "next": nxt})
 
 
 @router.get("/report", response_class=HTMLResponse)
@@ -431,11 +435,12 @@ async def team_home(request: Request):
 
 @router.get("/team/login", response_class=HTMLResponse)
 async def login(request: Request, next: str = "/"):
+    nxt = safe_next(get_context().settings, next, "/")
     async with session() as db:
         p, csrf = await principal(db, request)
     if p.is_team:
-        return RedirectResponse(next if next.startswith("/") else "/", status_code=302)
-    return render(request, "team/login.html", {"p": p, "csrf": csrf, "next": next})
+        return RedirectResponse(nxt, status_code=302)
+    return render(request, "team/login.html", {"p": p, "csrf": csrf, "next": nxt})
 
 
 @router.get("/team/invite/{token}", response_class=HTMLResponse)
@@ -592,7 +597,7 @@ async def ticket_page(request: Request, tid: str):
         proposals = await psvc.pending_for(db, t) if can(p, "read:notes", t) else []
         replies = await thread.replies_for(db, t) if p.is_team else []
         dup = await tsvc.get(db, t.duplicate_of) if t.duplicate_of else None
-        events = await EventLog.page(db, 0, 50, ref=t.id, public_only=not can(p, "read:private", t))
+        events = await EventLog.page(db, 0, 50, ref=t.id, **log_scope(p, t))
         team_users = await users.list_users(db) if p.is_team else []
         owners = await users.token_owners(db) if (notes or proposals) else {}
         reporters = await rsvc.list_for_picker(db) if p.is_team else []

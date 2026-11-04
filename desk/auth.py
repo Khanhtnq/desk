@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -177,6 +178,19 @@ async def end_reporter_session(db: AsyncSession, request: Request) -> None:
     raw = request.cookies.get(REPORTER_COOKIE)
     if raw:
         await db.execute(delete(ReporterSession).where(ReporterSession.token_hash == hash_secret(raw)))
+
+
+def safe_next(settings, nxt: str | None, default: str = "/my") -> str:
+    """A post-sign-in destination: a path on this deployment (not protocol-relative, not a backslash
+    trick), or an absolute URL on one of its hosts. Anything else is the default."""
+    if not nxt:
+        return default
+    if nxt.startswith("/") and not nxt.startswith(("//", "/\\")):
+        return nxt
+    u = urlsplit(nxt)
+    if u.scheme == settings.scheme and u.hostname in settings.hosts.values():
+        return nxt
+    return default
 
 
 async def create_reporter_link(
@@ -493,8 +507,9 @@ async def resolve(db: AsyncSession, request: Request) -> Auth:
         if t is None:
             raise HTTPException(401, "token is unknown, expired or revoked")
         owner = (await db.execute(select(User).where(User.id == t.owner_id))).scalar_one_or_none()
-        if owner is None or not owner.active:
-            raise HTTPException(401, "token owner is not active")
+        if owner is None or not owner.active or not owner.roles:
+            # a token is an extension of a team member; no roles, no team member, no token
+            raise HTTPException(401, "token owner is not an active team member")
         return Auth(Principal(kind="token", token=t, scopes=set(t.scopes)))
     got = await session_from_request(db, request)
     if got:

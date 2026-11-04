@@ -142,7 +142,7 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
         db,
         "reply.sent",
         p.actor,
-        {"ticket": t.id, "reply": r.id, "mirror": mirror, "body": body},
+        {"ticket": t.id, "reply": r.id, "mirror": mirror, "chars": len(body)},
         ref=t.id,
         public=t.visibility == "public",
     )
@@ -210,6 +210,10 @@ async def add_patch_ref(
     repo, ref = repo.strip(), str(ref).strip()
     if not repo or not ref or kind not in ("pr", "commit"):
         raise HTTPException(400, "repo, ref and kind (pr|commit) are required")
+    url = url.strip()
+    if url and not url.lower().startswith("https://"):
+        # the page renders it as a link; nothing but https ever goes in an href here
+        raise HTTPException(400, "a patch ref url must be https://")
     exists = (
         await db.execute(
             select(PatchRef).where(PatchRef.ticket_id == t.id, PatchRef.repo == repo, PatchRef.ref == ref)

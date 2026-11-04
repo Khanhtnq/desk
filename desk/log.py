@@ -1,12 +1,16 @@
 """The chained log: append-only, signed, hash-chained. If it is not in the log, it did not happen.
 
-  event.hash = sha256("xe-desk/event/v1\\0" || canonical_json({index, ts, kind, actor, payload, prev_hash}))
+  v2: event.hash = sha256("xe-desk/event/v2\\0" || canonical_json({index, ts, kind, actor, payload,
+                                                                   prev_hash, public, ref}))
+  v1: the same without public and ref (rows written before 4 Nov 2026; `events.v` says which)
   event.signature = ed25519(hash_bytes) by the `log` key
 
-Appends serialise on a row lock over log_head so two writers can never fork the chain. `verify()`
-replays the whole chain and recomputes every hash and signature. Events on private tickets are
-written with public=False: they are in the chain (and count in the hash) but are not served to the
-public log. Payloads never carry a private body or an attachment; ids and field values only.
+Appends serialise on a row lock over log_head so two writers can never fork the chain, and refuse rather
+than write unsigned when a log key is configured. `verify()` replays the whole chain, recomputes every
+hash, and checks every signature against the one configured key. Events on private tickets are written with
+public=False: they are in the chain (and, from v2, in the hash) but are not served to the public log.
+Payloads never carry a private body, an attachment, a signature or an address; ids and field values only,
+and `event_to_dict(full=False)` drops the few operational fields (ip) that only the team should see.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from xe.keys import verify_hex_signature
 
-from .canonical import DOMAIN_EVENT, digest
+from .canonical import DOMAIN_EVENT, DOMAIN_EVENT_V2, digest
 from .models import Event, LogHead
 from .signer import Signer, SignerError
 
@@ -33,18 +37,34 @@ class Head:
     hash: str
 
 
-def event_hash(index: int, ts: int, kind: str, actor: str, payload: dict, prev_hash: str) -> str:
-    return digest(
-        DOMAIN_EVENT,
-        {
-            "index": index,
-            "ts": ts,
-            "kind": kind,
-            "actor": actor,
-            "payload": payload,
-            "prev_hash": prev_hash,
-        },
-    ).hex()
+def event_hash(
+    index: int,
+    ts: int,
+    kind: str,
+    actor: str,
+    payload: dict,
+    prev_hash: str,
+    *,
+    public: bool = True,
+    ref: str = "",
+    v: int = 2,
+) -> str:
+    body: dict[str, Any] = {
+        "index": index,
+        "ts": ts,
+        "kind": kind,
+        "actor": actor,
+        "payload": payload,
+        "prev_hash": prev_hash,
+    }
+    if v >= 2:
+        body["public"] = bool(public)
+        body["ref"] = ref
+    return digest(DOMAIN_EVENT_V2 if v >= 2 else DOMAIN_EVENT, body).hex()
+
+
+class LogError(RuntimeError):
+    """The log could not be written as the deployment promises (a configured key that will not sign)."""
 
 
 class EventLog:
@@ -74,14 +94,15 @@ class EventLog:
         head = (await db.execute(select(LogHead).where(LogHead.id == 1).with_for_update())).scalar_one()
         index = head.index + 1
         ts = ts if ts is not None else time.time_ns()
-        h = event_hash(index, ts, kind, actor, payload, head.hash)
+        h = event_hash(index, ts, kind, actor, payload, head.hash, public=public, ref=ref, v=2)
         signer_pk, sig = "", ""
         if self.signer.has("log"):
             try:
                 signer_pk = self.signer.public_key("log")
                 sig = self.signer.sign("log", "event.sign", bytes.fromhex(h))
-            except SignerError:
-                signer_pk, sig = "", ""
+            except SignerError as e:
+                # a configured key that will not sign is an outage, not a reason to write an unsigned row
+                raise LogError(f"log key will not sign: {e}") from e
         ev = Event(
             index=index,
             ts=ts,
@@ -94,6 +115,7 @@ class EventLog:
             signature=sig,
             public=public,
             ref=ref,
+            v=2,
         )
         db.add(ev)
         head.index = index
@@ -124,12 +146,15 @@ class EventLog:
         ref: str | None = None,
         public_only: bool = True,
         descending: bool = True,
+        kinds: tuple[str, ...] | None = None,
     ) -> list[Event]:
         q = select(Event)
         if public_only:
             q = q.where(Event.public.is_(True))
         if kind:
             q = q.where(Event.kind == kind)
+        if kinds is not None:
+            q = q.where(Event.kind.in_(kinds))
         if ref:
             q = q.where(Event.ref == ref)
         q = (
@@ -170,8 +195,10 @@ class EventLog:
             start = rows[-1].index + 1
 
     @staticmethod
-    async def verify(db: AsyncSession) -> dict:
-        """Replay the chain. Returns {ok, count, head, first_error}."""
+    async def verify(db: AsyncSession, expected_signer: str = "") -> dict:
+        """Replay the chain. Returns {ok, count, head, first_error}. With `expected_signer` (the
+        deployment's published log key) every event must carry a signature by that key: a stripped
+        signature or a re-signed chain fails, which is the point of publishing the key."""
         prev = ZERO
         expected_index = 0
         count = 0
@@ -191,12 +218,22 @@ class EventLog:
                     "first_error": f"prev_hash mismatch at {ev.index}",
                     "head": last_hash,
                 }
-            h = event_hash(ev.index, ev.ts, ev.kind, ev.actor, ev.payload, ev.prev_hash)
+            h = event_hash(
+                ev.index, ev.ts, ev.kind, ev.actor, ev.payload, ev.prev_hash,
+                public=ev.public, ref=ev.ref, v=ev.v,
+            )
             if h != ev.hash:
                 return {
                     "ok": False,
                     "count": count,
                     "first_error": f"hash mismatch at {ev.index}",
+                    "head": last_hash,
+                }
+            if expected_signer and (not ev.signature or ev.signer != expected_signer):
+                return {
+                    "ok": False,
+                    "count": count,
+                    "first_error": f"event {ev.index} is not signed by the log key",
                     "head": last_hash,
                 }
             if ev.signature:
@@ -223,17 +260,43 @@ class EventLog:
         }
 
 
-def event_to_dict(ev: Event) -> dict:
+# Payload keys only a team member sees. Agent tokens and reporters get the event without them; the hash
+# still covers the stored payload, so a reader with the full view can verify, and nobody else needs to.
+TEAM_ONLY_KEYS = frozenset({"ip", "address"})
+
+# What a reporter is shown of their own private ticket's log: the record of what happened to it, not the
+# team's working layer (notes, proposals, fact reasons, who read it).
+REPORTER_KINDS = (
+    "ticket.created",
+    "ticket.status",
+    "ticket.disclosed",
+    "ticket.renamed",
+    "ticket.kind",
+    "ticket.award",
+    "reply.sent",
+    "reply.mirrored",
+    "attachment.added",
+    "patch.linked",
+    "github.state",
+    "github.disclosed",
+)
+
+
+def event_to_dict(ev: Event, *, full: bool = True) -> dict:
+    payload = ev.payload
+    if not full and isinstance(payload, dict) and TEAM_ONLY_KEYS & payload.keys():
+        payload = {k: v for k, v in payload.items() if k not in TEAM_ONLY_KEYS}
     return {
         "index": ev.index,
         "ts": ev.ts,
         "kind": ev.kind,
         "actor": ev.actor,
-        "payload": ev.payload,
+        "payload": payload,
         "prev_hash": ev.prev_hash,
         "hash": ev.hash,
         "signer": ev.signer,
         "signature": ev.signature,
         "ref": ev.ref,
         "public": ev.public,
+        "v": ev.v,
     }

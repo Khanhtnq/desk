@@ -12,6 +12,7 @@ from typing import Any
 # Domain tags. Each kind of signed payload gets its own tag so a signature can never be replayed
 # as a different kind of thing.
 DOMAIN_EVENT = b"xe-desk/event/v1\x00"
+DOMAIN_EVENT_V2 = b"xe-desk/event/v2\x00"  # adds public and ref to the hashed envelope
 DOMAIN_LOGIN = b"xe/desk/login/v1\x00"
 DOMAIN_PAYOUT = b"xe/desk/payout/v1\x00"
 DOMAIN_WITHDRAW = b"xe/desk/withdraw/v1\x00"

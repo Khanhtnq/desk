@@ -16,7 +16,7 @@ from sse_starlette.sse import EventSourceResponse
 from .. import __version__
 from ..authz import can
 from ..db import session
-from ..log import EventLog, event_to_dict
+from ..log import REPORTER_KINDS, EventLog, event_to_dict
 from ..models import HealthCheck, SeenDelivery
 from ..services import github as gh
 from ..services import proposals as psvc
@@ -163,6 +163,11 @@ async def get_ticket(ctx: Ctx, db: Db, who: Who, tid: str):
 @router.get("/tickets/{tid}/thread")
 async def get_thread(ctx: Ctx, db: Db, who: Who, tid: str):
     t = await tsvc.get_for(db, who.principal, tid)
+    if t.visibility == "private":
+        # sealed messages open here: "who has seen this" must include this route
+        payload = {"ticket": t.id, "what": "thread"}
+        await ctx.events.append(db, "ticket.read", who.principal.actor, payload, ref=t.id, public=False)
+        await db.commit()
     return {"ticket": t.id, "messages": [_message(ctx, t, m) for m in await thread.messages_for(db, t)]}
 
 
@@ -172,13 +177,26 @@ async def get_patches(db: Db, who: Who, tid: str):
     return {"ticket": t.id, "patch_refs": [_patch(pr) for pr in await thread.patches_for(db, t)]}
 
 
+def log_scope(p, t) -> dict:
+    """How much of a ticket's log a principal sees: the team and its agents everything; the owning reporter
+    of a private ticket the record of what happened to it (not notes, proposals, reasons or reads);
+    everyone else the public events."""
+    if can(p, "read:notes", t):
+        return {"public_only": False}
+    if can(p, "read:private", t):
+        return {"public_only": False, "kinds": REPORTER_KINDS}
+    return {"public_only": True}
+
+
+def _ev(e, who: Who) -> dict:
+    return event_to_dict(e, full=who.principal.is_team)
+
+
 @router.get("/tickets/{tid}/log")
 async def ticket_log(db: Db, who: Who, tid: str, offset: int = 0, limit: int = Query(100, le=500)):
     t = await tsvc.get_for(db, who.principal, tid)
-    rows = await EventLog.page(
-        db, offset, limit, ref=t.id, public_only=not can(who.principal, "read:private", t)
-    )
-    return {"ticket": t.id, "events": [event_to_dict(e) for e in rows]}
+    rows = await EventLog.page(db, offset, limit, ref=t.id, **log_scope(who.principal, t))
+    return {"ticket": t.id, "events": [_ev(e, who) for e in rows]}
 
 
 @router.get("/leaderboard")
@@ -207,7 +225,7 @@ async def log_page(
     rows = await EventLog.page(
         db, offset, limit, kind=kind, ref=ref, public_only=not can(who.principal, "read:private")
     )
-    return {"events": [event_to_dict(e) for e in rows], "offset": offset}
+    return {"events": [_ev(e, who) for e in rows], "offset": offset}
 
 
 @router.get("/log/head")
@@ -218,9 +236,10 @@ async def log_head(db: Db):
 
 @router.get("/log/verify")
 @router.get("/events/verify")
-async def log_verify(db: Db):
-    """Replays the whole chain: every hash recomputed, every signature checked, head compared."""
-    return await EventLog.verify(db)
+async def log_verify(ctx: Ctx, db: Db):
+    """Replays the whole chain: every hash recomputed, every signature checked against the published log
+    key, head compared."""
+    return await EventLog.verify(db, ctx.signer.public_key("log") if ctx.signer.has("log") else "")
 
 
 @router.get("/log/{index}")
@@ -228,19 +247,20 @@ async def log_entry(db: Db, who: Who, index: int):
     ev = await EventLog.get(db, index)
     if ev is None or (not ev.public and not can(who.principal, "read:private")):
         raise HTTPException(404, "no such entry")
-    return event_to_dict(ev)
+    return _ev(ev, who)
 
 
 @router.get("/events")
 async def events_since(db: Db, who: Who, since: int = -1, limit: int = Query(200, le=1000)):
     rows = await EventLog.since(db, since, limit, public_only=not can(who.principal, "read:private"))
-    return {"events": [event_to_dict(e) for e in rows], "next": rows[-1].index if rows else since}
+    return {"events": [_ev(e, who) for e in rows], "next": rows[-1].index if rows else since}
 
 
 @router.get("/events/stream")
 async def events_stream(ctx: Ctx, request: Request, who: Who, since: int | None = None):
     """Server-sent events, one `entry` per log event. `since` (or Last-Event-ID) replays from an index."""
     private_ok = can(who.principal, "read:private")
+    full = who.principal.is_team
     start = since
     if start is None:
         hdr = request.headers.get("last-event-id")
@@ -252,7 +272,8 @@ async def events_stream(ctx: Ctx, request: Request, who: Who, since: int | None 
         async with session() as db:
             if last is not None:
                 for ev in await EventLog.since(db, last, 1000, public_only=not private_ok):
-                    yield {"event": "entry", "id": str(ev.index), "data": json.dumps(event_to_dict(ev))}
+                    d = event_to_dict(ev, full=full)
+                    yield {"event": "entry", "id": str(ev.index), "data": json.dumps(d)}
                     last = ev.index
             else:
                 last = (await EventLog.head(db)).index
@@ -272,11 +293,11 @@ async def events_stream(ctx: Ctx, request: Request, who: Who, since: int | None 
                                 yield {
                                     "event": "entry",
                                     "id": str(ev.index),
-                                    "data": json.dumps(event_to_dict(ev)),
+                                    "data": json.dumps(event_to_dict(ev, full=full)),
                                 }
                     yield {"event": "ping", "data": str(int(time.time()))}
                     continue
-                d = ev if isinstance(ev, dict) else event_to_dict(ev)
+                d = ev if isinstance(ev, dict) else event_to_dict(ev, full=full)
                 if last is not None and d["index"] <= last:
                     continue
                 if not d.get("public", True) and not private_ok:

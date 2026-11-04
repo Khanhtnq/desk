@@ -259,7 +259,7 @@ async def queued_replies(db: AsyncSession, platform: str, limit: int = 50) -> li
     q = (
         select(Reply, Ticket)
         .join(Ticket, Ticket.id == Reply.ticket_id)
-        .where(Reply.mirror == "queued", Ticket.source == platform)
+        .where(Reply.mirror == "queued", Ticket.source == platform, Ticket.visibility == "public")
         .order_by(Reply.created_at.asc())
         .limit(limit)
     )

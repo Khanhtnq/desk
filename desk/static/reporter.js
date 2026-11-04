@@ -4,7 +4,11 @@
   const $ = (s, r) => (r || document).querySelector(s);
   const csrf = () => (document.querySelector('meta[name="desk-csrf"]') || {}).content || "";
   const say = (sel, msg, ok) => { const el = $(sel); if (!el) return; el.textContent = msg; el.className = "msg " + (ok ? "ok" : "err"); el.style.display = ""; };
-  const nextPath = () => { const l = $(".login"); return (l && l.dataset.next) || new URLSearchParams(location.search).get("next") || "/my"; };
+  const safe = (n) => (n && n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\")) ? n : "/my";
+  const nextPath = () => {
+    const l = $(".login");
+    return safe((l && l.dataset.next) || new URLSearchParams(location.search).get("next"));
+  };
 
   async function api(method, path, body, raw) {
     const headers = { "Accept": "application/json", "X-Desk-CSRF": csrf() };

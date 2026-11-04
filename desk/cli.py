@@ -417,7 +417,7 @@ def verify_log():
 
         ctx = _ctx()
         async with session() as db:
-            r = await EventLog.verify(db)
+            r = await EventLog.verify(db, ctx.signer.public_key("log") if ctx.signer.has("log") else "")
         typer.echo(json.dumps(r))
         await ctx.aclose()
         if not r["ok"]:

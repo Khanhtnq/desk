@@ -408,15 +408,18 @@ async def edit_user(ctx: Ctx, db: Db, who: Who, request: Request, uid: int, body
 
 @router.get("/payouts.csv")
 async def payouts_csv(ctx: Ctx, db: Db, who: Who, request: Request):
-    """Approved awards with a bound payout address, one row each, for the mainnet-launch payout. Tickets
-    with an approved award and no address are listed too, with the address blank, so nobody is missed."""
+    """Tickets at `awarded` with an approved amount, one row each, for the mainnet-launch payout. Those
+    with no bound address are listed too, address blank, so nobody is missed; paid and closed never are."""
     _team(who, request)
     require(who.principal, "export:payouts")
     rows = await rsvc.payout_rows(db)
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(
-        ["ticket", "title", "tier", "award_xe", "approved_at", "reporter_id", "reporter", "xe_address"]
+        [
+            "ticket", "title", "status", "tier", "award_xe", "approved_at", "reporter_id", "reporter",
+            "xe_address",
+        ]
     )
     for r in rows:
         w.writerow(r)

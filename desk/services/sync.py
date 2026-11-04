@@ -31,6 +31,9 @@ from .tickets import NewTicket, utcnow
 log = logging.getLogger("desk.sync")
 BOT_LOGINS = {"github-actions[bot]", "dependabot[bot]"}
 DESK_MARK = "<!-- xe-desk -->"
+# While the desk has not ruled, the GitHub issue is the reporter's draft and edits flow in. From `accepted`
+# on, the desk's copy is what was assessed and stays as it was.
+EDITABLE_STATUSES = ("new", "triaging", "needs-info")
 
 
 def _dt(s: str | None) -> datetime | None:
@@ -110,8 +113,20 @@ async def upsert_issue(
         if created and first_touch and (ctx.config.desk.get("github") or {}).get("first_touch_note", True):
             await thread.add_note(ctx, db, SYSTEM, t, f"Imported from {repo}#{number}. First touch pending.")
     else:
-        if t.body_editable and t.visibility == "public" and (t.title != title or t.body != body):
+        if (
+            t.body_editable
+            and t.visibility == "public"
+            and t.status in EDITABLE_STATUSES
+            and (t.title != title or t.body != body)
+        ):
+            # the issue is the reporter's draft until the desk rules on it; after that the record is fixed
+            # and later edits on GitHub stay on GitHub. Every rewrite that does land is an event.
+            pairs = (("title", t.title, title[:512]), ("body", t.body, body))
+            changed = [k for k, a, b in pairs if a != b]
             t.title, t.body = title[:512], body
+            await ctx.events.append(
+                db, "ticket.edited", "desk", {"ticket": t.id, "fields": changed, "via": "github"}, ref=t.id
+            )
         if t.github_state != state:
             t.github_state = state
             await ctx.events.append(db, "github.state", "desk", {"ticket": t.id, "state": state}, ref=t.id)
@@ -129,7 +144,9 @@ async def upsert_comment(ctx: Context, db: AsyncSession, t: Ticket, comment: dic
     user = comment.get("user") or {}
     login = user.get("login") or ""
     body = comment.get("body") or ""
-    is_team = DESK_MARK in body or login == ctx.settings.github_bot_login
+    # team authorship is the bot account and nothing else; the marker is a public string anyone can type,
+    # so it only ever strips, never vouches
+    is_team = bool(ctx.settings.github_bot_login) and login == ctx.settings.github_bot_login
     m = await thread.add_message(
         ctx,
         db,
@@ -459,7 +476,8 @@ async def push_state(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticke
 
 async def mirror_reply(ctx: Context, db: AsyncSession, client: gh.GitHub, r: Reply) -> bool:
     t = await tsvc.get(db, r.ticket_id)
-    if t is None or t.source != "github" or not t.source_repo:
+    if t is None or t.source != "github" or not t.source_repo or t.visibility != "public":
+        # a ticket made private after the reply was queued keeps the reply at home
         r.mirror = "none"
         return False
     if not client.enabled:

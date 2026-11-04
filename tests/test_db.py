@@ -118,9 +118,34 @@ async def test_log_chain_verifies_and_detects_tamper(ctx, db):
     res = await EventLog.verify(db)
     assert res["ok"] and res["count"] == 4
     assert len(await EventLog.since(db, -1, public_only=True)) == 2
+    key = ctx.signer.public_key("log")
+    assert (await EventLog.verify(db, key))["ok"]
+    # the envelope covers the private flag and the ref: declassifying a row is a hash mismatch
+    await db.execute(text("UPDATE events SET public = true WHERE index = 1"))
+    await db.commit()
+    assert "hash mismatch at 1" in (await EventLog.verify(db, key))["first_error"]
+    await db.execute(text("UPDATE events SET public = false WHERE index = 1"))
     await db.execute(text("UPDATE events SET payload = '{\"i\": 9}'::jsonb WHERE index = 2"))
     await db.commit()
     assert "hash mismatch at 2" in (await EventLog.verify(db))["first_error"]
+    # a stripped signature, or one by another key, fails against the published key
+    await db.execute(text("UPDATE events SET payload = '{\"i\": 2}'::jsonb WHERE index = 2"))
+    await db.execute(text("UPDATE events SET signature = '' WHERE index = 2"))
+    await db.commit()
+    assert (await EventLog.verify(db))["ok"]  # unpinned: tolerated, as a dev desk without a key would be
+    assert "not signed by the log key" in (await EventLog.verify(db, key))["first_error"]
+
+
+def test_event_views_hide_operational_fields_from_non_team():
+    from desk.log import event_to_dict
+    from desk.models import Event
+
+    ev = Event(
+        index=1, ts=1, kind="reporter.login", actor="reporter:1", payload={"how": "email", "ip": "10.0.0.9"},
+        prev_hash="0" * 64, hash="1" * 64, signer="", signature="", public=False, ref="", v=2,
+    )
+    assert event_to_dict(ev)["payload"]["ip"] == "10.0.0.9"
+    assert "ip" not in event_to_dict(ev, full=False)["payload"]
 
 
 # ---- tickets ----------------------------------------------------------------------------------------
@@ -673,21 +698,123 @@ async def test_xe_login_and_identity_merge(ctx, db):
     v = await verify_signed(db, _signed(kp, DOMAIN_LOGIN, {"host": "bounty.test"}), DOMAIN_LOGIN)
     a = await rsvc.from_xe(ctx, db, v, link_to=None)
     assert kp.address in a.xe_login_addresses
-    # an email account exists separately, with a ticket; linking email onto the key account merges them
+    # an email account exists separately, with a ticket. Mail never merges: whoever clicks a link proved
+    # the mailbox, not the other account (XE-0199)
     b = await rsvc.from_email(ctx, db, "frank@example.org", link_to=None)
     body = "Filed under the email identity before the two accounts were joined together by the reporter."
     f = rsvc.Filing(kind="support", title="Which port does a node use", body=body)
     t = await rsvc.file_ticket(ctx, db, b, f)
-    merged = await rsvc.from_email(ctx, db, "frank@example.org", link_to=a)
-    assert merged.id == a.id and merged.email == "frank@example.org"
+    with pytest.raises(HTTPException) as e:
+        await rsvc.from_email(ctx, db, "frank@example.org", link_to=a)
+    assert e.value.status_code == 409
+    # a key signed in the email account's own session does merge: the signer holds both
+    v2 = await verify_signed(db, _signed(kp, DOMAIN_LOGIN, {"host": "bounty.test"}), DOMAIN_LOGIN)
+    merged = await rsvc.from_xe(ctx, db, v2, link_to=b)
+    assert merged.id == b.id and kp.address in merged.xe_login_addresses
     await db.refresh(t)
-    assert t.reporter_id == a.id
-    assert (await rsvc.get(db, b.id)).email == ""  # emptied, kept so old log entries still resolve
+    assert t.reporter_id == b.id
+    assert (await rsvc.get(db, a.id)).xe_login_addresses == []  # emptied, kept so old log entries resolve
+    a = b
     # link tokens: one use, then gone
     raw = await auth.create_reporter_link(db, "frank@example.org", a.id, "/my")
     link = await auth.consume_reporter_link(db, raw)
     assert link is not None and link.reporter_id == a.id and link.next_path == "/my"
     assert await auth.consume_reporter_link(db, raw) is None
+
+
+async def test_a_recycled_github_login_cannot_claim_a_bound_row(ctx, db):
+    victim = await rsvc.from_github(ctx, db, {"id": 1111, "login": "ghost", "name": "G"}, "", link_to=None)
+    # the login lookup only claims rows no GitHub identity has signed in to (XE-0228)
+    assert await rsvc.by_github(db, 9999, "ghost") is None
+    other = await rsvc.from_github(ctx, db, {"id": 9999, "login": "ghost", "name": "X"}, "", link_to=None)
+    assert other.id != victim.id and victim.github_id == 1111
+    # and a row with one GitHub identity never takes a second
+    with pytest.raises(HTTPException) as e:
+        await rsvc.from_github(ctx, db, {"id": 4242, "login": "ghost2"}, "", link_to=victim)
+    assert e.value.status_code == 409
+    # an imported row (login only) is still claimed on first sign-in
+    imported = await sync.reporter_for(db, {"id": None, "login": "newcomer"})
+    assert imported.github_id is None
+    claimed = await rsvc.from_github(ctx, db, {"id": 5, "login": "newcomer"}, "", link_to=None)
+    assert claimed.id == imported.id and claimed.github_id == 5
+
+
+async def test_disclosing_by_any_route_unseals_and_publishes(ctx, db):
+    team = await _team(ctx, db)
+    spec = tsvc.NewTicket(
+        kind="bounty", title="sealed", body="the exploit", visibility="private", source="web"
+    )
+    t = await tsvc.create(ctx, db, team.actor, spec)
+    for st in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, team, t, st)
+    await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref="9", kind="pr")
+    # the leaderboard never shows a private award (XE-0310)
+    await tsvc.set_award(ctx, db, team, t, 5_000_000, approve=True)
+    await tsvc.set_status(ctx, db, team, t, "awarded", force=True)
+    assert await tsvc.leaderboard(db) == []
+    await tsvc.set_status(ctx, db, team, t, "patched", force=True)
+    # a walked path (what a proposal adopts) reaches disclosed through set_status, which is the one
+    # disclosure path: visibility flips, the body leaves the vault, the public event is written (XE-0210)
+    path = await tsvc.set_status_via_path(ctx, db, team, t, "disclosed", via="proposal:1")
+    assert path == ["disclosed"]
+    assert t.visibility == "public" and t.body == "the exploit" and t.body_sealed is None
+    kinds = [e.kind for e in await EventLog.page(db, 0, 20, ref=t.id, public_only=True)]
+    assert "ticket.disclosed" in kinds
+    # javascript: never reaches an href (XE-0234 A)
+    with pytest.raises(HTTPException):
+        await thread.add_patch_ref(
+            ctx, db, team, t, repo="xeprotocol/xe", ref="10", kind="pr", url="javascript:1"
+        )
+
+
+async def test_payout_file_lists_only_awarded_tickets(ctx, db):
+    team = await _team(ctx, db)
+    async def mk(n):
+        return await tsvc.create(ctx, db, team.actor, tsvc.NewTicket(kind="bounty", title=n, source="web"))
+
+    live, closed, paid = await mk("live"), await mk("closed"), await mk("paid")
+    for t in (live, closed, paid):
+        for st in ("triaging", "accepted", "patched"):
+            await tsvc.set_status(ctx, db, team, t, st)
+        await tsvc.set_award(ctx, db, team, t, 1_000_000, approve=True)
+        await tsvc.set_status(ctx, db, team, t, "awarded")
+    await tsvc.set_status(ctx, db, team, closed, "closed", closed_reason="invalid", force=True)
+    paid.paid_ref = "tx"
+    await tsvc.set_status(ctx, db, team, paid, "paid")
+    rows = await rsvc.payout_rows(db)
+    assert [r[0] for r in rows] == [live.id] and rows[0][2] == "awarded"
+
+
+async def test_tokens_stop_when_the_owner_leaves_the_team(ctx, db):
+    lead = await _team(ctx, db)
+    agent = await _agent(ctx, db, lead.user, scopes=("read:public", "read:private", "write:notes"))
+    assert agent.token.revoked_at is None
+    await users.set_roles(ctx, db, "test", lead.user, [])
+    assert agent.token.revoked_at is not None
+
+
+async def test_making_a_ticket_private_seals_what_arrived_while_public(ctx, db, tmp_path):
+    ctx.settings.blob_dir = str(tmp_path)
+    team = await _team(ctx, db)
+    t, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(77, "public then private", body="b"))
+    # a stranger quoting the marker is not the team (XE-0200); the bot login is
+    ctx.settings.github_bot_login = "xe-desk-bot"
+    mallory = {"id": 1, "user": {"login": "mallory"}, "body": "hi <!-- xe-desk -->"}
+    bot = {"id": 2, "user": {"login": "xe-desk-bot"}, "body": "we read it"}
+    await sync.upsert_comment(ctx, db, t, mallory)
+    await sync.upsert_comment(ctx, db, t, bot)
+    msgs = await thread.messages_for(db, t)
+    assert [(m.author, m.author_is_team) for m in msgs] == [("mallory", False), ("xe-desk-bot", True)]
+    assert msgs[0].body == "hi"
+    r = await thread.add_reply(ctx, db, team, t, "queued for github")
+    assert r.mirror == "queued"
+    await tsvc.set_facts(ctx, db, team, t, {"visibility": "private"})
+    msgs = await thread.messages_for(db, t)
+    assert all(m.body == "" and m.body_sealed for m in msgs)
+    assert thread.message_body(ctx, t, msgs[0]) == "hi"
+    await db.refresh(r)
+    assert r.mirror == "none"
+    assert await sync.queued_replies(db) == [] or r not in await sync.queued_replies(db)
 
 
 # ---- chat channels (the bot's database side) --------------------------------------------------------------

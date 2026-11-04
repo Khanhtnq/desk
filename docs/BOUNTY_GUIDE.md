@@ -23,6 +23,8 @@ The engineering tracker, `xeprotocol/core`, is read, never written. When an inte
 
 Pull requests in the public repos are watched too (poll every two minutes, webhook live). A PR whose title or body references an issue is linked to that issue's ticket under Patches, with its state kept current. A PR that says it *fixes* the issue (`fixes #27`, `closes #27`, `resolves #27`) also moves the ticket: `fixing` when it opens, `patched` when it merges, and back to `accepted` if it is closed unmerged and no other PR is open against the ticket. A bare `#27` mention links but moves nothing, since it usually means "related to". Nothing on GitHub moves a ticket past `patched`; disclosure, award and payment are people's decisions. Both paths walk the allowed transitions one hop at a time, so a `new` ticket whose fix merges reads `triaging → accepted → patched` in the log, each hop `via: github:xe#31` or `via: internal`.
 
+Two things GitHub cannot do. Edits to an issue's title or body flow into the ticket only while it is `new`, `triaging` or `needs-info`; from `accepted` on, the desk's copy is what was assessed and stays as it was (each edit that does land is a `ticket.edited` event). And the **team** badge on a thread message comes from the author being the desk's bot account, nothing else; the `<!-- xe-desk -->` footer on mirrored replies is a public string and vouches for nobody.
+
 ## 3. The ticket
 
 **Facts** a reviewer sets, or adopts from an agent's proposal:

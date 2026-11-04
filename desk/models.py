@@ -117,6 +117,7 @@ class Event(Base):
     signature: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     ref: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)  # ticket id, mostly
+    v: Mapped[int] = mapped_column(Integer, nullable=False, default=2, server_default="1")  # hash envelope
 
 
 class LogHead(Base):

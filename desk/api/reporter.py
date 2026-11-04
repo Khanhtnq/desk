@@ -7,10 +7,11 @@ read access to their own private tickets and nothing else.
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from collections import defaultdict
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
@@ -53,15 +54,7 @@ def _reporter(who: Who, request: Request, *, write: bool = True) -> Reporter:
 
 
 def _safe_next(ctx: Ctx, nxt: str | None, default: str = "/my") -> str:
-    """A post-sign-in destination: a path on this deployment, or an absolute URL on one of its hosts."""
-    if not nxt:
-        return default
-    if nxt.startswith("/") and not nxt.startswith("//"):
-        return nxt
-    u = urlsplit(nxt)
-    if u.scheme == ctx.settings.scheme and u.hostname in ctx.settings.hosts.values():
-        return nxt
-    return default
+    return auth.safe_next(ctx.settings, nxt, default)
 
 
 async def _sign_in(ctx: Ctx, db, request: Request, response: Response, r: Reporter, how: str) -> dict:
@@ -112,9 +105,18 @@ async def github_start(ctx: Ctx, db: Db, who: Who, request: Request, next: str |
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{q}", status_code=302)
 
 
+def _link_target(ch: Challenge, who: Who) -> int | None:
+    """The account a sign-in adds its identity to: only the one the asking browser is still signed in as.
+    A state handed to another browser (login CSRF) is a plain sign-in there, never a merge."""
+    want = ch.detail.get("link_to")
+    if want and who.reporter is not None and who.reporter.id == want:
+        return want
+    return None
+
+
 @router.get("/auth/github/callback")
 async def github_callback(
-    ctx: Ctx, db: Db, request: Request, code: str = "", state: str = "", error: str = ""
+    ctx: Ctx, db: Db, who: Who, request: Request, code: str = "", state: str = "", error: str = ""
 ):
     ch = (await db.execute(select(Challenge).where(Challenge.id == state))).scalar_one_or_none()
     if ch is None or ch.kind != "oauth" or ch.expires_at < auth.now():
@@ -148,8 +150,8 @@ async def github_callback(
             email = ""
     if not isinstance(user, dict) or "id" not in user:
         raise HTTPException(400, "GitHub returned no user; start again")
-    link_to = await rsvc.get(db, ch.detail.get("link_to")) if ch.detail.get("link_to") else None
-    r = await rsvc.from_github(ctx, db, user, email, link_to=link_to)
+    want = _link_target(ch, who)
+    r = await rsvc.from_github(ctx, db, user, email, link_to=await rsvc.get(db, want) if want else None)
     resp = RedirectResponse(ch.detail.get("next") or "/my", status_code=302)
     await _sign_in(ctx, db, request, resp, r, "github")
     return resp
@@ -196,7 +198,7 @@ async def discord_start(ctx: Ctx, db: Db, who: Who, request: Request, next: str 
 
 @router.get("/auth/discord/callback")
 async def discord_callback(
-    ctx: Ctx, db: Db, request: Request, code: str = "", state: str = "", error: str = ""
+    ctx: Ctx, db: Db, who: Who, request: Request, code: str = "", state: str = "", error: str = ""
 ):
     ch = (await db.execute(select(Challenge).where(Challenge.id == state))).scalar_one_or_none()
     if ch is None or ch.kind != "oauth-discord" or ch.expires_at < auth.now():
@@ -223,7 +225,8 @@ async def discord_callback(
         user = (await client.get("https://discord.com/api/users/@me", headers=h)).json()
     if not isinstance(user, dict) or "id" not in user:
         raise HTTPException(400, "Discord returned no user; start again")
-    link_to = await rsvc.get(db, ch.detail.get("link_to")) if ch.detail.get("link_to") else None
+    want = _link_target(ch, who)
+    link_to = await rsvc.get(db, want) if want else None
     r = await channels.from_platform(
         ctx,
         db,
@@ -251,6 +254,9 @@ async def _email_link(ctx: Ctx, db, who: Who, email: str, next_path: str) -> boo
     """Create a one-time link and mail it. Signed in, the link adds the address to that account and the
     mail says so; otherwise it is a sign-in. Commits. Returns whether mail went out."""
     existing = await rsvc.by_email(db, email)
+    if who.reporter and existing and existing.id != who.reporter.id:
+        # never a merge by mail: the person who clicks is not the person who asked
+        raise HTTPException(409, "that address is already on another account; sign in there to use it")
     link_to = who.reporter.id if who.reporter else (existing.id if existing else None)
     raw = await auth.create_reporter_link(db, email, link_to, next_path)
     await db.commit()
@@ -260,9 +266,11 @@ async def _email_link(ctx: Ctx, db, who: Who, email: str, next_path: str) -> boo
     if who.reporter:
         subject = f"Confirm this address for {name}"
         text = (
-            f"Open this link within fifteen minutes to confirm the address. The desk will then tell you "
-            f"here when the team replies to your reports:\n\n{url}\n\n"
-            "If you did not ask for it, ignore it; nothing is linked."
+            "Open this link within fifteen minutes, in the browser where you asked for it, to confirm "
+            "the address. The desk will then tell you here when the team replies to your reports:"
+            f"\n\n{url}\n\n"
+            "If you did not ask for it, ignore it. The link only works in the signed-in browser that "
+            "asked, and it never moves an existing account."
         )
     else:
         subject = f"Sign in to {name}"
@@ -274,20 +282,29 @@ async def _email_link(ctx: Ctx, db, who: Who, email: str, next_path: str) -> boo
 
 @router.post("/auth/email")
 async def email_start(ctx: Ctx, db: Db, who: Who, request: Request, body: EmailIn):
-    """Send a one-time link. The response is the same whether or not the address is known."""
+    """Send a one-time link. Signed out, the response is the same whether or not the address is known."""
     _limit(request)
+    if who.reporter is not None:
+        _reporter(who, request)  # adding an address to an account is a write: CSRF applies
     sent = await _email_link(ctx, db, who, rsvc.clean_email(body.email), _safe_next(ctx, body.next))
     note = None if sent else "mail is not configured on this desk; ask the team"
     return {"ok": True, "sent": sent, "note": note}
 
 
 @router.get("/auth/email/{token}")
-async def email_finish(ctx: Ctx, db: Db, request: Request, token: str):
+async def email_finish(ctx: Ctx, db: Db, who: Who, request: Request, token: str):
     _limit(request)
     link = await auth.consume_reporter_link(db, token)
     if link is None:
         raise HTTPException(400, "that link has expired or was already used; ask for a new one")
-    link_to = await rsvc.get(db, link.reporter_id) if link.reporter_id else None
+    link_to = None
+    if link.reporter_id:
+        # a link that adds an address to an account works only in the browser signed in as that account
+        if who.reporter is None or who.reporter.id != link.reporter_id:
+            raise HTTPException(
+                400, "open this link in the browser where you asked for it, signed in to the same account"
+            )
+        link_to = who.reporter
     r = await rsvc.from_email(ctx, db, link.email, link_to=link_to)
     resp = RedirectResponse(link.next_path or "/my", status_code=302)
     await _sign_in(ctx, db, request, resp, r, "email")
@@ -299,10 +316,13 @@ async def email_finish(ctx: Ctx, db: Db, request: Request, token: str):
 
 @router.post("/auth/xe")
 async def xe_login(ctx: Ctx, db: Db, who: Who, request: Request, response: Response, req: auth.SignedRequest):
-    """A signed request under xe/desk/login/v1. Payload: {"host": <this host>}; anything else is ignored.
-    The address the key derives to is the identity. Signed in already: adds the address to that account."""
+    """A signed request under xe/desk/login/v1. Payload: {"host": <this host>}, and it is checked, so a
+    signature made for another deployment is no use here. The address the key derives to is the identity.
+    Signed in already: adds the address to that account."""
     _limit(request)
     v = await auth.verify_signed(db, req, DOMAIN_LOGIN)
+    if str(v.payload.get("host") or "").lower() not in {h.lower() for h in ctx.settings.hosts.values()}:
+        raise HTTPException(401, "the signed host is not this desk; sign in on the page you are on")
     r = await rsvc.from_xe(ctx, db, v, link_to=who.reporter)
     return await _sign_in(ctx, db, request, response, r, "xe")
 
@@ -431,12 +451,16 @@ async def get_attachment(ctx: Ctx, db: Db, who: Who, tid: str, n: int):
         raise HTTPException(403, "attachments open for the reporter and the team only")
     a, data = await rsvc.open_attachment(ctx, db, who.principal, t, n)
     await db.commit()
-    safe = a.filename.replace('"', "")
+    # headers are latin-1; the real name travels RFC 5987-encoded beside an ASCII fallback
+    ascii_name = re.sub(r'[^A-Za-z0-9._-]', "_", a.filename.encode("ascii", "replace").decode()) or "file"
+    disposition = f'attachment; filename="{ascii_name}"'
+    if ascii_name != a.filename:
+        disposition += f"; filename*=UTF-8''{quote(a.filename, safe='')}"
     return Response(
         content=data,
         media_type="application/octet-stream",  # never rendered inline, whatever it claims to be
         headers={
-            "Content-Disposition": f'attachment; filename="{safe}"',
+            "Content-Disposition": disposition,
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "no-store",
             "X-Desk-SHA256": a.sha256,

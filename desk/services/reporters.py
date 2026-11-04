@@ -54,7 +54,13 @@ async def by_github(db: AsyncSession, github_id: int | None, login: str) -> Repo
         if r:
             return r
     if login:
-        q = select(Reporter).where(Reporter.github_login == login).order_by(Reporter.id)
+        # a login claims a row only while no GitHub identity has signed in to it; a row bound to another
+        # github_id is someone else's, however the login was recycled
+        q = (
+            select(Reporter)
+            .where(Reporter.github_login == login, Reporter.github_id.is_(None))
+            .order_by(Reporter.id)
+        )
         return (await db.execute(q)).scalars().first()
     return None
 
@@ -159,6 +165,8 @@ async def from_github(
         return r
     if existing is not None and existing.id != r.id:
         await merge(ctx, db, into=r, other=existing)
+    if r.github_id is not None and r.github_id != gid:
+        raise HTTPException(409, "this account already has a different GitHub identity")
     r.github_id, r.github_login = gid, login or r.github_login
     if not r.display_name:
         r.display_name = gh_user.get("name") or login
@@ -178,7 +186,8 @@ async def from_email(ctx: Context, db: AsyncSession, email: str, *, link_to: Rep
         await ctx.events.append(db, "reporter.created", f"reporter:{r.id}", {"how": "email"}, public=False)
         return r
     if existing is not None and existing.id != r.id:
-        await merge(ctx, db, into=r, other=existing)
+        # the clicker proved the mailbox, not the other account: mail never merges
+        raise HTTPException(409, "that address is already on another account; sign in there to use it")
     r.email = email
     return r
 
@@ -241,7 +250,7 @@ async def bind_payout(ctx: Context, db: AsyncSession, r: Reporter, v: Verified) 
         db,
         "reporter.payout_bound",
         f"reporter:{r.id}",
-        {"address": address, "tickets": n, "signature": v.signature},
+        {"address": address, "tickets": n},  # the proof itself lives on the row, not in the log
         public=False,
     )
     return {"address": address, "tickets_updated": n}
@@ -411,11 +420,18 @@ async def my_tickets(db: AsyncSession, r: Reporter) -> list[Ticket]:
 
 
 async def payout_rows(db: AsyncSession) -> list[list]:
-    """Approved awards, oldest first, with the reporter's bound address (blank when none is bound yet)."""
+    """Awards still to pay: bounty tickets at `awarded` with an approved amount, oldest approval first,
+    with the reporter's bound address (blank when none is bound yet). Closed and paid tickets are not
+    payable and never appear, whatever approval they once carried."""
     q = (
         select(Ticket, Reporter)
         .outerjoin(Reporter, Reporter.id == Ticket.reporter_id)
-        .where(Ticket.award_approved_at.is_not(None), Ticket.award_xe.is_not(None))
+        .where(
+            Ticket.kind == "bounty",
+            Ticket.status == "awarded",
+            Ticket.award_approved_at.is_not(None),
+            Ticket.award_xe.is_not(None),
+        )
         .order_by(Ticket.award_approved_at)
     )
     out: list[list] = []
@@ -424,6 +440,7 @@ async def payout_rows(db: AsyncSession) -> list[list]:
             [
                 t.id,
                 t.title,
+                t.status,
                 t.assessed_tier or "",
                 (t.award_xe or 0) // 1_000_000,
                 t.award_approved_at.isoformat() if t.award_approved_at else "",

@@ -55,6 +55,8 @@ async def set_roles(ctx: Context, db: AsyncSession, actor: str, u: User, roles: 
     old = list(u.roles)
     u.roles = sorted(set(roles))
     await ctx.events.append(db, "user.roles", actor, {"user": u.id, "from": old, "to": u.roles})
+    if not u.roles:
+        await revoke_all(ctx, db, actor, u, why="roles removed")
 
 
 async def set_name(ctx: Context, db: AsyncSession, actor: str, u: User, name: str) -> None:
@@ -86,6 +88,19 @@ async def set_email(ctx: Context, db: AsyncSession, actor: str, u: User, email: 
 async def set_active(ctx: Context, db: AsyncSession, actor: str, u: User, active: bool) -> None:
     u.active = active
     await ctx.events.append(db, "user.active", actor, {"user": u.id, "active": active})
+    if not active:
+        await revoke_all(ctx, db, actor, u, why="owner deactivated")
+
+
+async def revoke_all(ctx: Context, db: AsyncSession, actor: str, u: User, *, why: str) -> int:
+    """Every live token of a person who is no longer on the team stops with them. Returns how many."""
+    q = select(AgentToken).where(AgentToken.owner_id == u.id, AgentToken.revoked_at.is_(None))
+    n = 0
+    for t in (await db.execute(q)).scalars().all():
+        t.revoked_at = utcnow()
+        await ctx.events.append(db, "token.revoked", actor, {"token": t.id, "owner": u.id, "why": why})
+        n += 1
+    return n
 
 
 async def passkeys_for(db: AsyncSession, u: User) -> list[Passkey]:

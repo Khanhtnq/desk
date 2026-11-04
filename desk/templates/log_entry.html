@@ -14,6 +14,6 @@
   <dt>Signature</dt><dd class="mono">{{ ev.signature or "—" }}</dd>
 </dl>
 <h3>Payload</h3>
-<pre>{{ ev.payload|tojson(indent=2) }}</pre>
-<p class="k">To verify: <code>sha256("xe-desk/event/v1\0" ‖ canonical_json({index, ts, kind, actor, payload, prev_hash}))</code> must equal the hash, and the signature must verify over the hash bytes under the signer's Ed25519 key. <a href="/v1/log/{{ ev.index }}">JSON</a> · <a href="/log/{{ ev.index + 1 }}">next</a></p>
+<pre>{{ d.payload|tojson(indent=2) }}</pre>
+<p class="k">To verify: {% if ev.v >= 2 %}<code>sha256("xe-desk/event/v2\0" ‖ canonical_json({index, ts, kind, actor, payload, prev_hash, public, ref}))</code>{% else %}<code>sha256("xe-desk/event/v1\0" ‖ canonical_json({index, ts, kind, actor, payload, prev_hash}))</code> (an entry from before the envelope carried public and ref){% endif %} must equal the hash, and the signature must verify over the hash bytes under the desk's published log key. <a href="/v1/log/{{ ev.index }}">JSON</a> · <a href="/log/{{ ev.index + 1 }}">next</a></p>
 {% endblock %}
