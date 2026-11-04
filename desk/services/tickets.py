@@ -352,6 +352,35 @@ async def awards_due(db: AsyncSession, cfg: Config, p: Principal) -> list[Ticket
     return list((await db.execute(q)).scalars().all())
 
 
+async def awards_approved_unawarded(db: AsyncSession, cfg: Config, p: Principal) -> list[Ticket]:
+    """Bounty tickets whose award is approved but whose status has not caught up: approval is the
+    treasurer's decision, `awarded` is the ticket saying so in public (and the leaderboard). A private
+    ticket has to be disclosed first, which is why this list exists."""
+    q = select(Ticket).where(
+        Ticket.kind == "bounty",
+        Ticket.award_approved_at.isnot(None),
+        Ticket.status.notin_(("awarded", "paid")),
+    )
+    if not can(p, "read:private"):
+        q = q.where(Ticket.visibility == "public")
+    q = q.order_by(Ticket.award_approved_at.asc())
+    return list((await db.execute(q)).scalars().all())
+
+
+def award_next_step(t: Ticket) -> tuple[str, str | None]:
+    """What has to happen for an approved award to become `awarded`: (text, status to set now or None)."""
+    if t.status in ("awarded", "paid"):
+        return "done", None
+    if t.status == "disclosed" or (t.status == "patched" and t.visibility == "public"):
+        step = "set the status to awarded; this publishes it and lists the reporter on the leaderboard"
+        return step, "awarded"
+    if t.status == "patched":
+        return "disclose the report first (it is private), then set awarded", None
+    if t.status == "closed":
+        return "closed with an approved award: reopen it, or take the approval back", None
+    return "the fix has not landed; awarded follows patched (or disclosed)", None
+
+
 async def outbox(db: AsyncSession, cfg: Config, p: Principal, kind: str = "bounty") -> list[Ticket]:
     """Tickets whose status moved past triage but whose thread has not been told since. A reply sets
     told_at; set_status sets status_changed_at. For the bounty that is fixed-but-silent; for support it is

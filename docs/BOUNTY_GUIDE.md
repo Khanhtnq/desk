@@ -52,7 +52,7 @@ new → triaging → accepted → fixing → patched → awarded → paid
 - `accepted`: it's real and will be fixed; there is (or should be) an internal ticket.
 - `fixing`: a PR is open. `patched`: the fix is merged. Both are set by GitHub when the PR says `fixes #n` (§2); by hand otherwise. The reporter must be told; this is where the outbox comes in.
 - `disclosed`: a private report, now public because the fix shipped. Needs a linked patch ref; the desk opens the public GitHub issue itself with the reporter credited.
-- `awarded`: a treasurer has approved an amount. The amount can be set from `accepted` on (agents propose it, a treasurer adopts); approval is allowed only once the ticket is `patched` or `disclosed`, and can be taken back until it is `awarded`. `paid`: it went out at mainnet launch, with a `paid_ref`.
+- `awarded`: a treasurer has approved an amount *and* the ticket has been moved to say so. The amount can be set from `accepted` on (agents propose it, a treasurer adopts); approval is allowed only once the ticket is `patched` or `disclosed`, and can be taken back until it is `awarded`. Approval alone does not change the status: `awarded` is the public step (it puts the reporter on the leaderboard), and a private report has to be disclosed first. `/team/awards` lists approved awards whose ticket has not caught up, with a one-click move where nothing else is needed. `paid`: it went out at mainnet launch, with a `paid_ref`.
 
 **Thread.** Three kinds of writing, kept apart:
 

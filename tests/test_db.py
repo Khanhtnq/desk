@@ -463,6 +463,24 @@ async def test_a_fixing_pull_moves_the_ticket_and_a_mention_only_links(ctx, db):
     assert t.status == "awarded"
 
 
+async def test_approved_awards_whose_ticket_has_not_caught_up_are_listed(ctx, db):
+    team = await _team(ctx, db)
+    t = await tsvc.create(ctx, db, team.actor, tsvc.NewTicket(kind="bounty", title="x", source="web"))
+    for st in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, team, t, st)
+    assert await tsvc.awards_approved_unawarded(db, ctx.config, team) == []
+    await tsvc.set_award(ctx, db, team, t, 2_000_000, approve=True)
+    rows = await tsvc.awards_approved_unawarded(db, ctx.config, team)
+    assert [x.id for x in rows] == [t.id]
+    assert tsvc.award_next_step(t)[1] == "awarded"  # public and patched: one click
+    t.visibility = "private"
+    assert tsvc.award_next_step(t)[1] is None and "disclose" in tsvc.award_next_step(t)[0]
+    t.visibility = "public"
+    await tsvc.set_status(ctx, db, team, t, "awarded")
+    assert await tsvc.awards_approved_unawarded(db, ctx.config, team) == []
+    assert tsvc.award_next_step(t) == ("done", None)
+
+
 # ---- triage import ----------------------------------------------------------------------------------
 
 

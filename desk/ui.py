@@ -525,14 +525,14 @@ async def awards(request: Request):
         if not p.is_team:
             return RedirectResponse("/team/login?next=/team/awards", status_code=302)
         rows = await tsvc.awards_due(db, c.config, p)
+        approved = await tsvc.awards_approved_unawarded(db, c.config, p)
         pending = await psvc.pending_field_for(db, [t.id for t in rows], "award_xe")
         owners = await users.token_owners(db) if pending else {}
+        rids = [t.reporter_id for t in rows + approved if t.reporter_id]
         reporters = {
             r.id: r
-            for r in (
-                await db.execute(select(Reporter).where(Reporter.id.in_([t.reporter_id for t in rows if t.reporter_id])))
-            ).scalars().all()
-        } if rows else {}
+            for r in (await db.execute(select(Reporter).where(Reporter.id.in_(rids)))).scalars().all()
+        } if rids else {}
     total_proposed = sum(int(prs[0].value.get("value") or 0) for prs in pending.values())
     total_set = sum((t.award_xe or 0) for t in rows) // 1_000_000
     return render(
@@ -550,6 +550,8 @@ async def awards(request: Request):
             "total_set": total_set,
             "unset": sum(1 for t in rows if t.award_xe is None),
             "unapproved": sum(1 for t in rows if t.award_xe is not None and not t.award_approved_at),
+            "approved": [(t, *tsvc.award_next_step(t)) for t in approved],
+            "can_status": can(p, "status"),
         },
     )
 
@@ -640,5 +642,6 @@ async def ticket_page(request: Request, tid: str):
             "internal_url": c.settings.internal_url(t.internal_ref),
             "tier_fields": ("assessed_tier",),
             "award_block": tsvc.award_approvable(t) if t.kind == "bounty" else None,
+            "award_step": tsvc.award_next_step(t)[0] if t.kind == "bounty" else "",
         },
     )

@@ -385,6 +385,12 @@
       try { await api("POST", `/v1/team/tickets/${tid}/award`, { award_xe: Math.round(xe * 1e6) }); reload(); }
       catch (e) { say(amsg, `${tid}: ${e.message}`, false); }
     }));
+    $$("[data-mark-status]").forEach(b => b.addEventListener("click", async () => {
+      const tid = b.dataset.ticketId, status = b.dataset.markStatus;
+      if (!await ask({ title: `Mark ${tid} as ${status}?`, body: "The award becomes public on the ticket and the leaderboard.", ok: "Mark awarded" })) return;
+      try { await api("POST", `/v1/team/tickets/${tid}/status`, { status }); reload(); }
+      catch (e) { say(amsg, `${tid}: ${e.message}`, false); }
+    }));
     if ($("#adopt-all-awards")) $("#adopt-all-awards").addEventListener("click", async () => {
       const ids = $$("[data-adopt-award]:not([disabled])").map(b => parseInt(b.dataset.adoptAward, 10));
       if (!ids.length || !await ask({ title: `Set ${ids.length} awards from the proposed amounts?`, body: "Each amount is recorded against you in the log as set, not approved. Approve them one by one on the tickets when you have read the reasons.", ok: "Set all" })) return;

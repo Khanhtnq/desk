@@ -11,6 +11,7 @@
   <div><b>{{ unapproved }}</b>set, not approved</div>
   <div><b>{{ "{:,}".format(total_proposed) }} XE</b>proposed, pending</div>
   <div><b>{{ "{:,}".format(total_set) }} XE</b>set so far</div>
+  <div><b>{{ approved|length }}</b>approved, not yet awarded</div>
 </div>
 {% if not can_award %}<p class="msg err" style="display:block">You can read this page but setting an award needs the treasurer role.</p>{% endif %}
 {% if can_award and pending %}
@@ -43,6 +44,26 @@
 </tr>
 {% else %}
 <tr><td colspan="7" class="k">Nothing waiting. Every valid report has an approved award.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+
+<h2 style="margin-top:40px">Approved, not yet awarded</h2>
+<p class="sub">The amount is approved but the ticket has not said so. <code>awarded</code> is what publishes an award and puts the reporter on the leaderboard; a private report is disclosed first. Oldest approval first.</p>
+<table class="tickets">
+<thead><tr><th>#</th><th>Finding</th><th>Status</th><th>Reporter</th><th>Award</th><th>Next</th></tr></thead>
+<tbody>
+{% for t, step, to in approved %}
+<tr data-ticket="{{ t.id }}">
+  <td class="n">{{ m.tlink(t) }}{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}</td>
+  <td class="title"><a href="/{{ t.id }}">{{ t.title }}</a></td>
+  <td>{{ m.status(t) }}</td>
+  <td class="k">{% set r = reporters.get(t.reporter_id) %}{% if r %}{{ r.display_name or r.github_login or r.email or ("reporter " ~ r.id) }}{% else %}<span class="pill private">none</span>{% endif %}</td>
+  <td class="mono"><b>{{ t.award_xe|xe }} XE</b> <span class="k">approved {{ t.award_approved_at|day }}</span></td>
+  <td class="k">{% if to and can_status %}<button type="button" class="mini" data-mark-status="{{ to }}" data-ticket-id="{{ t.id }}">Mark awarded</button> {% endif %}{{ step }}</td>
+</tr>
+{% else %}
+<tr><td colspan="6" class="k">None. Every approved award is on a ticket at awarded or paid.</td></tr>
 {% endfor %}
 </tbody>
 </table>

@@ -46,7 +46,8 @@
     {% endif %}
     {% if t.kind == "bounty" and (t.award_xe is not none or can_award) %}
     <dt>Award</dt><dd><span class="show">{% if t.award_xe is not none %}{{ t.award_xe|xe }} XE {% if t.award_approved_at %}<span class="pill paid">approved</span>{% else %}<span class="pill pending">proposed</span>{% endif %}{% else %}—{% endif %}
-      {% if t.assessed_tier %}<span class="k">· ceiling {{ cfg.ceiling_micro(t.assessed_tier)|xe }}</span>{% endif %}</span></dd>
+      {% if t.assessed_tier %}<span class="k">· ceiling {{ cfg.ceiling_micro(t.assessed_tier)|xe }}</span>{% endif %}
+      {% if team and t.award_approved_at and t.status not in ("awarded", "paid") %}<br><span class="k">Not yet awarded: {{ award_step }}.</span>{% endif %}</span></dd>
     {% endif %}
     {% if t.status == "paid" %}<dt>Paid</dt><dd class="mono">{{ t.paid_ref }}</dd>{% endif %}
     {% if team and t.payout_address %}<dt>Payout</dt><dd class="mono">{{ t.payout_address }}</dd>{% endif %}
