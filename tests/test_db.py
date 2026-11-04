@@ -685,12 +685,17 @@ async def test_payout_binding_needs_matching_key(ctx, db):
     out = await rsvc.bind_payout(ctx, db, r, v)
     assert out == {"address": kp.address, "tickets_updated": 1}
     assert r.xe_address == kp.address and t.payout_address == kp.address
-    # the payout export lists approved awards with the bound address
-    await tsvc.set_status(ctx, db, await _team(ctx, db), t, "triaging")
+    # the payout export lists tickets at awarded with the bound address, and nothing before that
+    team = await _team(ctx, db)
+    await tsvc.set_status(ctx, db, team, t, "triaging")
     t.award_xe, t.award_approved_at = 5_000_000, utcnow()
     await db.flush()
+    assert await rsvc.payout_rows(db) == []  # approved while triaging is not payable (XE-0300)
+    for st in ("accepted", "patched", "awarded"):
+        await tsvc.set_status(ctx, db, team, t, st)
     rows = await rsvc.payout_rows(db)
-    assert rows and rows[0][0] == t.id and rows[0][3] == 5 and rows[0][-1] == kp.address
+    assert rows and rows[0][0] == t.id and rows[0][2] == "awarded" and rows[0][4] == 5
+    assert rows[0][-1] == kp.address
 
 
 async def test_xe_login_and_identity_merge(ctx, db):
