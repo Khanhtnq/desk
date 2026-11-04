@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from desk import authz
 from desk.auth import SignedRequest, signing_target, totp_code, totp_verify
-from desk.canonical import DOMAIN_EVENT, DOMAIN_LOGIN, DOMAIN_PAYOUT, canonical_json, digest
+from desk.canonical import DOMAIN_EVENT, DOMAIN_EVENT_V2, DOMAIN_LOGIN, DOMAIN_PAYOUT, canonical_json, digest
 from desk.log import event_hash
 from desk.models import (
     AGENT_SCOPES,
@@ -58,17 +58,15 @@ def test_signed_request_shape_matches_harness():
 
 
 def test_event_hash_is_domain_separated_and_deterministic():
-    h1 = event_hash(0, 1, "k", "desk", {"x": 1}, "0" * 64)
-    h2 = event_hash(0, 1, "k", "desk", {"x": 1}, "0" * 64)
-    assert (
-        h1
-        == h2
-        == digest(
-            DOMAIN_EVENT,
-            {"index": 0, "ts": 1, "kind": "k", "actor": "desk", "payload": {"x": 1}, "prev_hash": "0" * 64},
-        ).hex()
-    )
-    assert event_hash(1, 1, "k", "desk", {"x": 1}, "0" * 64) != h1
+    base = {"index": 0, "ts": 1, "kind": "k", "actor": "desk", "payload": {"x": 1}, "prev_hash": "0" * 64}
+    # v2 (what is written now) covers the private flag and the ref
+    h1 = event_hash(0, 1, "k", "desk", {"x": 1}, "0" * 64, public=False, ref="XE-0001")
+    h2 = event_hash(0, 1, "k", "desk", {"x": 1}, "0" * 64, public=False, ref="XE-0001")
+    assert h1 == h2 == digest(DOMAIN_EVENT_V2, {**base, "public": False, "ref": "XE-0001"}).hex()
+    assert event_hash(0, 1, "k", "desk", {"x": 1}, "0" * 64, public=True, ref="XE-0001") != h1
+    assert event_hash(1, 1, "k", "desk", {"x": 1}, "0" * 64, public=False, ref="XE-0001") != h1
+    # v1 rows (before 4 Nov 2026) still hash as they were written
+    assert event_hash(0, 1, "k", "desk", {"x": 1}, "0" * 64, v=1) == digest(DOMAIN_EVENT, base).hex()
 
 
 # ---- authz ------------------------------------------------------------------------------------------
