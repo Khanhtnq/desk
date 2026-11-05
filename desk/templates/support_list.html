@@ -78,5 +78,5 @@
 <p class="k">{{ tickets|length }} shown. Append <code>.md</code> to this page for markdown.</p>
 {% endif %}
 
-{% if split %}<p class="sub k" style="margin-top:36px">{{ site_copy.crosslink.replace("{bounty_url}", bounty_url) }}</p>{% endif %}
+{% if split %}{% set link = '<a href="' ~ bounty_url ~ '" target="_blank" rel="noopener">' ~ bounty_url.replace("https://", "") ~ '</a>' %}<p class="sub k" style="margin-top:36px">{{ site_copy.crosslink|e|replace("{bounty_url}", link)|safe }}</p>{% endif %}
 {% endblock %}

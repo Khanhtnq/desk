@@ -18,7 +18,7 @@
   <a class="button" href="/report">{{ copy.labels.report }}</a>
   <span class="k">{{ copy.report.after }}</span>
 </div>
-{% if split %}<p class="sub k">{{ copy.bounty_crosslink.replace("{support_url}", support_url) }}</p>{% endif %}
+{% if split %}{% set link = '<a href="' ~ support_url ~ '" target="_blank" rel="noopener">' ~ support_url.replace("https://", "") ~ '</a>' %}<p class="sub k">{{ copy.bounty_crosslink|e|replace("{support_url}", link)|safe }}</p>{% endif %}
 
 <div class="counts">
   <div class="group"><h4>Currently</h4><div class="nums">

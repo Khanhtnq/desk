@@ -35,7 +35,7 @@ cards:
     line: The desk's public log as it happens.
 # Pointer shown on the bounty site, for people who arrived with a question rather than a bug.
 bounty_crosslink: >-
-  Not a bug? Questions about XE, the launch, wallets, keys or getting started go to {support_url}.
+  Not a bug? Questions about XE, the launch, wallets, keys or getting started go to: {support_url}
 
 # The support site. Its own front door, its own copy: for people who hold XE or want to, who are getting
 # started, who have a wallet question or have seen something that looks like a scam. Not for engineers
