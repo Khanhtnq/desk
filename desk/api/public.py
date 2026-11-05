@@ -16,7 +16,7 @@ from sse_starlette.sse import EventSourceResponse
 from .. import __version__
 from ..authz import can
 from ..db import session
-from ..log import REPORTER_KINDS, EventLog, event_to_dict
+from ..log import REPORTER_KINDS, EventLog, event_to_dict, is_admin_kind
 from ..models import HealthCheck, SeenDelivery
 from ..services import github as gh
 from ..services import proposals as psvc
@@ -247,7 +247,8 @@ async def log_verify(ctx: Ctx, db: Db):
 @router.get("/log/{index}")
 async def log_entry(db: Db, who: Who, index: int):
     ev = await EventLog.get(db, index)
-    if ev is None or (not ev.public and not can(who.principal, "read:private")):
+    hidden = not ev.public or is_admin_kind(ev.kind) if ev else True
+    if ev is None or (hidden and not can(who.principal, "read:private")):
         raise HTTPException(404, "no such entry")
     return _ev(ev, who)
 

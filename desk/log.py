@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from xe.keys import verify_hex_signature
@@ -150,7 +150,7 @@ class EventLog:
     ) -> list[Event]:
         q = select(Event)
         if public_only:
-            q = q.where(Event.public.is_(True))
+            q = _public_rows(q)
         if kind:
             q = q.where(Event.kind == kind)
         if kinds is not None:
@@ -168,7 +168,7 @@ class EventLog:
     async def since(db: AsyncSession, after: int, limit: int = 200, public_only: bool = True) -> list[Event]:
         q = select(Event).where(Event.index > after)
         if public_only:
-            q = q.where(Event.public.is_(True))
+            q = _public_rows(q)
         return list((await db.execute(q.order_by(Event.index.asc()).limit(min(limit, 1000)))).scalars().all())
 
     @staticmethod
@@ -262,7 +262,13 @@ class EventLog:
 
 # Payload keys only a team member sees. Agent tokens and reporters get the event without them; the hash
 # still covers the stored payload, so a reader with the full view can verify, and nobody else needs to.
-TEAM_ONLY_KEYS = frozenset({"ip", "address"})
+TEAM_ONLY_KEYS = frozenset({"ip", "address", "email"})
+# The team's own administration (accounts, roles, names, tokens) is the desk's business, not the
+# programme's record. These kinds are never served outside the team whatever the stored `public` flag
+# says: rows written before this rule carried public=True, and the chain is not rewritten, so the rule
+# lives in the read path. Outside the full view their payloads shrink to ids.
+ADMIN_KINDS = ("user.", "team.", "token.")
+ADMIN_ID_KEYS = frozenset({"user", "token", "owner"})
 # The team's working layer inside an otherwise public event: the assessment as it changes (`changes` on
 # ticket.facts for these fields), the free text a reviewer wrote with a change, and what an agent proposed.
 # The ticket page publishes the assessment once the fix has shipped; the log does not pre-announce it.
@@ -291,10 +297,21 @@ REPORTER_KINDS = (
 )
 
 
+def is_admin_kind(kind: str) -> bool:
+    return kind.startswith(ADMIN_KINDS)
+
+
+def _public_rows(q):
+    hidden = or_(*[Event.kind.like(f"{prefix}%") for prefix in ADMIN_KINDS])
+    return q.where(Event.public.is_(True), ~hidden)
+
+
 def public_payload(kind: str, payload: Any) -> Any:
     """The payload as a reader outside the team sees it."""
     if not isinstance(payload, dict):
         return payload
+    if is_admin_kind(kind):
+        return {k: v for k, v in payload.items() if k in ADMIN_ID_KEYS}
     drop = TEAM_ONLY_KEYS | HELD_PAYLOAD_KEYS.get(kind, frozenset())
     out = {k: v for k, v in payload.items() if k not in drop}
     if kind == "ticket.facts" and isinstance(out.get("changes"), dict):

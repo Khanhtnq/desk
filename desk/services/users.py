@@ -44,7 +44,9 @@ async def create_user(
     u = User(email=email, name=name.strip()[:128], roles=sorted(set(roles)))
     db.add(u)
     await db.flush()
-    await ctx.events.append(db, "user.created", actor, {"user": u.id, "email": email, "roles": u.roles})
+    await ctx.events.append(
+        db, "user.created", actor, {"user": u.id, "email": email, "roles": u.roles}, public=False
+    )
     return u
 
 
@@ -54,7 +56,7 @@ async def set_roles(ctx: Context, db: AsyncSession, actor: str, u: User, roles: 
         raise HTTPException(400, f"unknown roles {bad}")
     old = list(u.roles)
     u.roles = sorted(set(roles))
-    await ctx.events.append(db, "user.roles", actor, {"user": u.id, "from": old, "to": u.roles})
+    await ctx.events.append(db, "user.roles", actor, {"user": u.id, "from": old, "to": u.roles}, public=False)
     if not u.roles:
         await revoke_all(ctx, db, actor, u, why="roles removed")
 
@@ -67,7 +69,7 @@ async def set_name(ctx: Context, db: AsyncSession, actor: str, u: User, name: st
         raise HTTPException(400, "a name is 1 to 128 characters")
     old = u.name
     u.name = name
-    await ctx.events.append(db, "user.renamed", actor, {"user": u.id, "from": old, "to": name})
+    await ctx.events.append(db, "user.renamed", actor, {"user": u.id, "from": old, "to": name}, public=False)
 
 
 async def set_email(ctx: Context, db: AsyncSession, actor: str, u: User, email: str) -> None:
@@ -82,12 +84,12 @@ async def set_email(ctx: Context, db: AsyncSession, actor: str, u: User, email: 
     if old == email:
         return
     u.email = email
-    await ctx.events.append(db, "user.email", actor, {"user": u.id, "from": old, "to": email})
+    await ctx.events.append(db, "user.email", actor, {"user": u.id, "from": old, "to": email}, public=False)
 
 
 async def set_active(ctx: Context, db: AsyncSession, actor: str, u: User, active: bool) -> None:
     u.active = active
-    await ctx.events.append(db, "user.active", actor, {"user": u.id, "active": active})
+    await ctx.events.append(db, "user.active", actor, {"user": u.id, "active": active}, public=False)
     if not active:
         await revoke_all(ctx, db, actor, u, why="owner deactivated")
 
@@ -98,7 +100,9 @@ async def revoke_all(ctx: Context, db: AsyncSession, actor: str, u: User, *, why
     n = 0
     for t in (await db.execute(q)).scalars().all():
         t.revoked_at = utcnow()
-        await ctx.events.append(db, "token.revoked", actor, {"token": t.id, "owner": u.id, "why": why})
+        await ctx.events.append(
+            db, "token.revoked", actor, {"token": t.id, "owner": u.id, "why": why}, public=False
+        )
         n += 1
     return n
 
@@ -160,6 +164,7 @@ async def issue(
             "scopes": t.scopes,
             "expires_at": t.expires_at.isoformat(),
         },
+        public=False,
     )
     return t, raw
 
@@ -169,7 +174,9 @@ async def revoke(ctx: Context, db: AsyncSession, p: Principal, t: AgentToken) ->
         raise HTTPException(403, "only the owner or an admin revokes a token")
     if t.revoked_at is None:
         t.revoked_at = utcnow()
-        await ctx.events.append(db, "token.revoked", p.actor, {"token": t.id, "owner": t.owner_id})
+        await ctx.events.append(
+            db, "token.revoked", p.actor, {"token": t.id, "owner": t.owner_id}, public=False
+        )
 
 
 async def set_instructions(ctx: Context, db: AsyncSession, p: Principal, t: AgentToken, text: str) -> None:

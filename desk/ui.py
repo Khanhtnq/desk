@@ -22,7 +22,7 @@ from .brief import build_agent_brief
 from .context import get_context
 from .db import session
 from .api.public import log_scope
-from .log import EventLog, event_to_dict
+from .log import EventLog, event_to_dict, is_admin_kind
 from .mirror import build_llms_txt, md_path
 from .models import Reporter
 from .services import proposals as psvc
@@ -344,7 +344,8 @@ async def log_entry(request: Request, index: int):
     async with session() as db:
         p, csrf = await principal(db, request)
         ev = await EventLog.get(db, index)
-        if ev is None or (not ev.public and not can(p, "read:private")):
+        hidden = not ev.public or is_admin_kind(ev.kind) if ev else True
+        if ev is None or (hidden and not can(p, "read:private")):
             raise HTTPException(404, "no such entry")
     return render(
         request, "log_entry.html", {"p": p, "csrf": csrf, "ev": ev, "d": event_to_dict(ev, full=p.is_team)}

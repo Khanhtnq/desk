@@ -31,7 +31,7 @@ from desk.config import load_config
 from desk.context import Context, NodeIdentity
 from desk.db import Base
 from desk.log import EventLog
-from desk.models import AgentToken, Note, Proposal, Reply, Ticket, User
+from desk.models import AgentToken, Event, Note, Proposal, Reply, Ticket, User
 from desk.services import proposals as psvc
 from desk.services import channels
 from desk.services import reporters as rsvc
@@ -167,6 +167,13 @@ def test_event_views_hide_operational_fields_from_non_team():
     )
     assert "value" not in event_to_dict(prop, full=False)["payload"]
     assert event_to_dict(prop, full=False)["payload"]["field"] == "assessed_tier"
+    # the team's administration shrinks to ids outside the team: no addresses, roles, labels or scopes
+    admin = Event(
+        index=4, ts=4, kind="token.issued", actor="user:1", prev_hash="3" * 64, hash="4" * 64, signer="",
+        signature="", public=True, ref="", v=2,
+        payload={"token": 4, "owner": 2, "model": "claude", "label": "daily", "scopes": ["read:private"]},
+    )
+    assert event_to_dict(admin, full=False)["payload"] == {"token": 4, "owner": 2}
 
 
 # ---- tickets ----------------------------------------------------------------------------------------
@@ -237,6 +244,24 @@ async def test_ticket_lifecycle(ctx, db):
         and kinds["reply.sent"] == 1
         and kinds["ticket.award"] == 1
     )
+
+
+async def test_team_administration_never_reaches_the_public_log(ctx, db):
+    p = await _team(ctx, db)
+    tok = await _agent(ctx, db, p.user)
+    await users.set_roles(ctx, db, p.actor, p.user, [])  # no roles: the token dies with them
+    mine = {e.kind for e in await EventLog.page(db, 0, 200, public_only=False)}
+    assert {"user.created", "token.issued", "user.roles", "token.revoked"} <= mine
+    theirs = await EventLog.page(db, 0, 200, public_only=True)
+    assert not any(e.kind.startswith(("user.", "token.", "team.")) for e in theirs)
+    latest = await EventLog.since(db, 0, public_only=True)
+    assert not any(e.kind.startswith(("user.", "token.")) for e in latest)
+    # rows written public before the rule are still held back: the rule is in the read path
+    row = (await db.execute(select(Event).where(Event.kind == "user.created"))).scalars().first()
+    row.public = True
+    await db.flush()
+    assert not any(e.kind == "user.created" for e in await EventLog.page(db, 0, 200, public_only=True))
+    assert tok.token is not None
 
 
 async def test_private_ticket_is_sealed_and_hidden(ctx, db):
