@@ -146,6 +146,12 @@
 {% if team or p.is_agent %}
 <section class="desk" id="desk">
   <div class="desk-head"><h3>Desk</h3><span class="k">Internal: proposals and notes never leave the desk.</span></div>
+  <section class="similar">
+    <h3>Read across <span class="k">what else on the desk looks like this; the floor of the duplicate check, not the ceiling</span></h3>
+    {% if not similar %}<p class="k">Nothing on the desk shares its words, its paths or its reporter.</p>{% else %}
+    <ul class="patches">{% for s in similar %}{% set o = s.ticket %}<li>{{ m.tlink(o) }} <span class="pill {{ o.status }}">{{ o.status }}{% if o.closed_reason %} · {{ o.closed_reason }}{% endif %}</span> {{ o.title }}{% if o.duplicate_of %} <span class="k">dup of {{ o.duplicate_of }}</span>{% endif %}{% if o.internal_ref %} <span class="mono">{{ o.internal_ref }}</span>{% endif %} <span class="k">· {{ s.why|join(", ") }}</span></li>{% endfor %}</ul>
+    {% endif %}
+  </section>
   <section class="proposals">
     <h3>Proposals <span class="k">{{ proposals|selectattr("state", "equalto", "pending")|list|length }} pending</span></h3>
     {% if not proposals %}<p class="k">None. Agents propose; you adopt or reject.</p>{% endif %}
@@ -178,7 +184,7 @@
     </div>
     {% if not notes %}<p class="k">None yet.</p>{% endif %}
     {% for n in notes|reverse %}
-    <div class="note"><div class="by"><b>{{ n.author_name or n.author }}</b>{% if n.author.startswith("token:") and owners.get(n.author[6:]|int) %}<span class="for">for {{ owners[n.author[6:]|int] }}</span>{% endif %}<span>{{ n.created_at|dt }}</span></div><div class="body md">{{ n.body|md_note }}</div></div>
+    <div class="note"><div class="by"><b>{{ n.author_name or n.author }}</b>{% if n.author.startswith("token:") and owners.get(n.author[6:]|int) %}<span class="for">for {{ owners[n.author[6:]|int] }}</span>{% endif %}<span>{{ n.created_at|dt }}</span></div><div class="body md">{{ n.body|md_note }}</div>{% if n.checked %}<div class="checked">Checked:{% if n.checked.desk is defined %} {{ n.checked.desk }} desk tickets{% endif %}{% if n.checked.similar %} · opened {{ n.checked.similar|join(", ") }}{% endif %}{% if n.checked.tracker %} · tracker{% endif %}{% if n.checked.tree %} · tree {{ n.checked.tree }}{% endif %}</div>{% elif n.author.startswith("token:") %}<div class="checked none">No check recorded.</div>{% endif %}</div>
     {% endfor %}
   </section>
 </section>

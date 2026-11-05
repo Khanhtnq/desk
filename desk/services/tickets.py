@@ -6,12 +6,13 @@ non-public. Nothing here sends anything anywhere; mirroring is the worker's job.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..authz import Principal, can, can_see
@@ -266,12 +267,14 @@ class Filters:
     has_internal: bool | None = None
     pending: bool | None = None  # has pending proposals
     q: str | None = None
+    reporter: int | None = None  # team and agents: everything one reporter has filed
     sort: str = "severity"  # severity | age | updated
     offset: int = 0
     limit: int = 100
 
 
-async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) -> list[Ticket]:
+def _filtered(cfg: Config, p: Principal, f: Filters):
+    """The rows a filter selects, before ordering and paging; shared by the list and its total."""
     q = select(Ticket)
     if not can(p, "read:private"):
         q = q.where(Ticket.visibility == "public")
@@ -311,10 +314,26 @@ async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) 
     if f.q:
         like = f"%{f.q.strip()}%"
         issue = Ticket.source_ref == f.q.strip().lstrip("#")
-        match = Ticket.title.ilike(like) | Ticket.id.ilike(like) | issue
+        # the body too: two reports of one bug rarely share a title. A private body is sealed and is
+        # not searchable; the title still is.
+        match = Ticket.title.ilike(like) | Ticket.id.ilike(like) | Ticket.body.ilike(like) | issue
         if full:
             match = match | (Ticket.internal_ref.ilike(like))
         q = q.where(match)
+    if f.reporter is not None and full:
+        q = q.where(Ticket.reporter_id == f.reporter)
+    return q
+
+
+async def count_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) -> int:
+    """How many rows the filter selects in all, so a reader paging through knows when it has them all."""
+    q = select(func.count()).select_from(_filtered(cfg, p, f).subquery())
+    return int((await db.execute(q)).scalar_one())
+
+
+async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) -> list[Ticket]:
+    q = _filtered(cfg, p, f)
+    full = sees_assessment(p)
     if f.sort == "age":
         q = q.order_by(func.coalesce(Ticket.source_created_at, Ticket.created_at).asc())
     elif f.sort == "updated":
@@ -327,6 +346,126 @@ async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) 
         )
     q = q.offset(max(f.offset, 0)).limit(min(max(f.limit, 1), 500))
     return list((await db.execute(q)).scalars().all())
+
+
+# ---- similar tickets ----------------------------------------------------------------------------
+#
+# A report is never read on its own. Before a verdict, the reader is shown what else on the desk looks
+# like it: tickets whose title and body share the same words (Postgres full-text, ranked), tickets that
+# cite the same source paths, the same reporter's other reports, and anything already linked as a
+# duplicate either way. This is the floor of the duplicate check, not the ceiling; the brief says so.
+
+_STOP = frozenset(
+    "a an and are as at be by for from has have if in into is it its no not of on or that the this to "
+    "via was when where which while with without xe bug issue report vulnerability attack attacker can "
+    "could allows allow any all also may might should would will does doesnt dont".split()
+)
+_EXT = "rs|go|py|ts|tsx|js|sol|c|cc|h|hpp|toml|yaml|yml|json|proto"
+_PATH = re.compile(r"(?<![\w/.])((?:[\w.-]+/)+[\w.-]+\.(?:" + _EXT + r"))\b")
+
+
+def _terms(*texts: str, limit: int = 24) -> list[str]:
+    seen: list[str] = []
+    for text_ in texts:
+        for w in re.findall(r"[a-z][a-z0-9_]{2,}", (text_ or "").lower()):
+            if w not in _STOP and w not in seen:
+                seen.append(w)
+            if len(seen) >= limit:
+                return seen
+    return seen
+
+
+def cited_paths(body: str, limit: int = 6) -> list[str]:
+    out: list[str] = []
+    for m in _PATH.finditer(body or ""):
+        path = m.group(1).strip("./")
+        if path and path not in out:
+            out.append(path)
+        if len(out) >= limit:
+            break
+    return out
+
+
+@dataclass
+class Similar:
+    ticket: Ticket
+    score: float
+    why: list[str]
+
+
+async def similar(
+    db: AsyncSession, cfg: Config, p: Principal, t: Ticket, body: str = "", limit: int = 10
+) -> list[Similar]:
+    """Tickets the reader should look at before ruling on `t`, best match first. `body` is the report's
+    body as the admitted reader may see it (sealed bodies are opened by the caller, or left empty)."""
+    base = select(Ticket).where(Ticket.id != t.id, Ticket.kind == t.kind)
+    if not can(p, "read:private"):
+        base = base.where(Ticket.visibility == "public")
+    found: dict[str, Similar] = {}
+
+    def hit(row: Ticket, score: float, why: str) -> None:
+        s = found.setdefault(row.id, Similar(row, 0.0, []))
+        s.score += score
+        if why not in s.why:
+            s.why.append(why)
+
+    # words: the title weighs most, the first part of the body fills in the nouns the title left out
+    terms = _terms(t.title, " ".join((body or "")[:2000].split()))
+    if terms:
+        tsq = func.to_tsquery("english", " | ".join(terms))
+        doc = func.to_tsvector("english", Ticket.title + literal(" ") + Ticket.body)
+        rank = func.ts_rank_cd(doc, tsq)
+        rows = (
+            await db.execute(base.add_columns(rank).where(doc.op("@@")(tsq)).order_by(rank.desc()).limit(30))
+        ).all()
+        if rows:
+            top = max(float(r[1]) for r in rows) or 1.0
+            for row, r in rows:
+                hit(row, 0.6 * float(r) / top, "same words")
+    # paths: a report that names the same file is about the same code, whatever it calls the bug
+    paths = cited_paths(body)
+    if paths:
+        pq = base.where(or_(*[Ticket.body.ilike(f"%{path}%") for path in paths])).limit(30)
+        for row in (await db.execute(pq)).scalars().all():
+            shared = [path for path in paths if path in (row.body or "")]
+            hit(row, 0.25 + 0.1 * (len(shared) - 1), "cites " + ", ".join(shared[:3]))
+    # the reporter's other reports: a run of thin ones, or the earlier filing of this one
+    if t.reporter_id:
+        rq = base.where(Ticket.reporter_id == t.reporter_id).order_by(Ticket.created_at.asc()).limit(30)
+        for row in (await db.execute(rq)).scalars().all():
+            hit(row, 0.1, "same reporter")
+    # already linked, either way round
+    links = base.where(or_(Ticket.id == (t.duplicate_of or ""), Ticket.duplicate_of == t.id))
+    for row in (await db.execute(links)).scalars().all():
+        hit(row, 1.0, "linked as duplicate")
+    for s in found.values():
+        if s.ticket.area and s.ticket.area == t.area and len(s.why) > 0 and s.why != ["same reporter"]:
+            s.score += 0.05
+            s.why.append("same area")
+    out = sorted(found.values(), key=lambda s: (-s.score, s.ticket.created_at))
+    return out[:limit]
+
+
+def similar_dict(ctx: Context, s: Similar, p: Principal, t: Ticket) -> dict:
+    """A row of the similar list: enough to decide whether to open it, under the usual holding rules."""
+    o = s.ticket
+    d = {
+        "id": o.id,
+        "title": o.title,
+        "status": o.status,
+        "closed_reason": o.closed_reason,
+        "area": o.area,
+        "claimed_tier": o.claimed_tier,
+        "duplicate_of": o.duplicate_of,
+        "created_at": _iso(o.created_at),
+        "same_reporter": bool(t.reporter_id and o.reporter_id == t.reporter_id),
+        "score": round(s.score, 3),
+        "why": s.why,
+        "url": ticket_url(ctx, o),
+    }
+    if sees_assessment(p) or not assessment_held(o):
+        d.update(assessed_tier=o.assessed_tier, verdict=o.verdict, internal_ref=o.internal_ref)
+    return d
 
 
 async def counts(db: AsyncSession, p: Principal, kind: str = "bounty") -> dict[str, int]:

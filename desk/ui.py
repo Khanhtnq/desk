@@ -613,6 +613,8 @@ async def ticket_page(request: Request, tid: str):
         me = getattr(request.state, "reporter", None)
         mine = rsvc.owns(me, t)
         attachments = await rsvc.attachments_for(db, t) if (p.is_team or mine) else []
+        # read across before ruling: what else on the desk looks like this one
+        similar = await tsvc.similar(db, c.config, p, t, body=body or "") if can(p, "read:notes", t) else []
     og = {}
     if t.visibility == "public":
         labels = c.config.copy_public.get("labels") or {}
@@ -636,6 +638,7 @@ async def ticket_page(request: Request, tid: str):
             "messages": messages,
             "patches": patches,
             "notes": notes,
+            "similar": similar,
             "proposals": proposals,
             "replies": replies,
             "dup": dup,

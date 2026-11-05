@@ -268,6 +268,80 @@ async def test_counts_split_into_now_and_all_time(ctx, db):
     assert await ids("closed") == {d.id}
 
 
+async def test_a_report_is_read_across_the_desk(ctx, db):
+    """Before a verdict the reader is shown what else looks like the report: shared words, shared paths,
+    the same reporter, duplicate links; the search reaches bodies; a page says how many there are in all;
+    and the export means every ticket."""
+    from desk.models import Reporter
+
+    p = await _team(ctx, db)
+    r1, r2 = Reporter(github_login="ada"), Reporter(github_login="mallory")
+    db.add_all([r1, r2])
+    await db.flush()
+
+    async def mk(title, body="", reporter=None, area=None, visibility="public"):
+        spec = tsvc.NewTicket(
+            kind="bounty", title=title, body=body, source="web", reporter_id=reporter and reporter.id,
+            area=area, visibility=visibility,
+        )
+        return await tsvc.create(ctx, db, p.actor, spec)
+
+    a = await mk(
+        "Quorum bypass via hex vote forgery", "A forged vote in src/consensus/vote.rs:120 counts twice.",
+        r1, "consensus",
+    )
+    b = await mk("Vote malleability lets one validator vote twice",
+                 "The check in src/consensus/vote.rs accepts both encodings.", r2, "consensus")
+    c = await mk("Sync stalls on a bad peer", "crates/p2p/sync.go never times out.", r1, "p2p-sync")
+    d = await mk("Unrelated typo on the docs page", "The scope page says 'teh'.", None, "sdk-docs-web")
+    e = await mk("Private: quorum vote forgery, again", "", r2, "consensus", visibility="private")
+    await db.commit()
+
+    rows = await tsvc.similar(db, ctx.config, p, a, body=a.body)
+    by = {s.ticket.id: s for s in rows}
+    assert b.id in by and "same words" in by[b.id].why and "same area" in by[b.id].why
+    assert "cites src/consensus/vote.rs" in by[b.id].why
+    assert c.id in by and by[c.id].why == ["same reporter"]
+    assert d.id not in by
+    assert rows[0].ticket.id == b.id  # the strongest match leads
+    # a reader without read:private is not shown the private one; the team is, by its title alone
+    assert e.id in by
+    assert e.id not in {s.ticket.id for s in await tsvc.similar(db, ctx.config, authz.ANON, a, body=a.body)}
+    # a duplicate link counts either way round
+    await tsvc.set_facts(ctx, db, p, b, {"duplicate_of": a.id})
+    again = {s.ticket.id: s for s in await tsvc.similar(db, ctx.config, p, a)}
+    assert "linked as duplicate" in again[b.id].why
+    row = tsvc.similar_dict(ctx, by[b.id], authz.ANON, a)
+    assert row["same_reporter"] is False and "internal_ref" not in row  # held while the bug is open
+    # the search reaches public bodies
+    hits = {t.id for t in await tsvc.list_tickets(db, ctx.config, authz.ANON, tsvc.Filters(q="encodings"))}
+    assert hits == {b.id}
+    # one reporter's filings, for the team only
+    hers = tsvc.Filters(status="all", reporter=r1.id)
+    assert {t.id for t in await tsvc.list_tickets(db, ctx.config, p, hers)} == {a.id, c.id}
+    assert len(await tsvc.list_tickets(db, ctx.config, authz.ANON, hers)) == 4
+    # a page knows the size of the whole selection
+    f = tsvc.Filters(status="all", limit=2)
+    assert len(await tsvc.list_tickets(db, ctx.config, p, f)) == 2
+    assert await tsvc.count_tickets(db, ctx.config, p, f) == 5
+    # the export reads every page, not the first
+    assert len(await triage.all_tickets(db, ctx.config, p, page=2)) == 5
+    assert "5 tickets." in await triage.export_markdown(ctx, db, p)
+
+
+async def test_a_note_says_what_it_checked(ctx, db):
+    p = await _team(ctx, db)
+    agent = await _agent(ctx, db, p.user)
+    t = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="x", source="web"))
+    seen = {"desk": 692, "similar": ["xe-0130", "XE-0131"], "tracker": False, "tree": "xe@abc1234"}
+    n = await thread.add_note(ctx, db, agent, t, "Read.", seen)
+    assert n.checked == {**seen, "similar": ["XE-0130", "XE-0131"]}
+    assert (await thread.add_note(ctx, db, agent, t, "Remark.")).checked == {}
+    for bad in ({"desk": "many"}, {"tracker": 1}, {"tree": 7}, {"github": True}, ["desk"]):
+        with pytest.raises(HTTPException):
+            await thread.add_note(ctx, db, agent, t, "x", bad)
+
+
 async def test_team_administration_never_reaches_the_public_log(ctx, db):
     p = await _team(ctx, db)
     tok = await _agent(ctx, db, p.user)

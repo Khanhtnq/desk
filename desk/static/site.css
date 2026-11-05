@@ -277,6 +277,10 @@ table.tickets td .mono { font-size:12px; }
 .note:last-of-type { border-bottom:1px solid var(--line); }
 .note .by { display:flex; gap:10px; align-items:center; font-family:var(--mono); font-size:12px; color:var(--mute); margin-bottom:8px; }
 .note .by b { color:var(--fg); font-weight:500; }
+.note .checked { margin-top:8px; font:500 11px/14px var(--mono); letter-spacing:.04em; text-transform:uppercase; color:var(--text-low); }
+.note .checked.none { color:var(--caution); }
+.similar { margin-bottom:22px; }
+.similar .pill { margin-right:4px; }
 .note .by .for, .proposal .by .for { color:var(--text-medium); }
 .note .body { font-size:15px; line-height:1.55; color:var(--fg-2); }
 .note .body.md p:last-child, .note .body.md ul:last-child { margin-bottom:0; }

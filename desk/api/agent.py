@@ -23,6 +23,9 @@ router = APIRouter(prefix="/v1", tags=["agent"])
 
 class NoteIn(BaseModel):
     body: str = Field(min_length=1, max_length=20_000)
+    # what was looked at before writing:
+    # {"desk": 692, "similar": ["XE-0130"], "tracker": true, "tree": "xe@abc1234"}
+    checked: dict[str, Any] | None = None
 
 
 class ProposalIn(BaseModel):
@@ -52,6 +55,7 @@ async def list_notes(db: Db, who: Who, tid: str):
                 "author": n.author,
                 "author_name": n.author_name,
                 "body": n.body,
+                "checked": n.checked,
                 "created_at": thread.iso(n.created_at),
             }
             for n in await thread.notes_for(db, t)
@@ -63,7 +67,7 @@ async def list_notes(db: Db, who: Who, tid: str):
 async def add_note(ctx: Ctx, db: Db, who: Who, tid: str, body: NoteIn):
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:notes", t)
-    n = await thread.add_note(ctx, db, who.principal, t, body.body)
+    n = await thread.add_note(ctx, db, who.principal, t, body.body, body.checked)
     await db.commit()
     return {"id": n.id, "ticket": t.id, "created_at": thread.iso(n.created_at)}
 

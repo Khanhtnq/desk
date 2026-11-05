@@ -488,11 +488,24 @@ EFFORT_LABEL = {
 }
 
 
+async def all_tickets(db: AsyncSession, cfg, p: Principal, page: int = 500) -> list:
+    """Every ticket the reader may see, paged under the list's cap, so "every" means every."""
+    out: list = []
+    offset = 0
+    while True:
+        f = Filters(kind="all", status="all", offset=offset, limit=page)
+        rows = await tsvc.list_tickets(db, cfg, p, f)
+        out.extend(rows)
+        if len(rows) < page:
+            return out
+        offset += page
+
+
 async def export_markdown(ctx: Context, db: AsyncSession, p: Principal) -> str:
     """The triage doc as the database has it now. Private tickets appear only for readers who may see
     them; everyone else gets the public rows."""
     cfg = ctx.config
-    rows = await tsvc.list_tickets(db, cfg, p, Filters(kind="all", status="all", limit=500))
+    rows = await all_tickets(db, cfg, p)
     now = datetime.now(timezone.utc)
     out = [
         f"# XE triage export, {now:%d %B %Y %H:%M} UTC",

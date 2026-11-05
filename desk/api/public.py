@@ -103,6 +103,7 @@ async def list_tickets(
     has_internal: bool | None = None,
     pending: bool | None = None,
     q: str | None = None,
+    reporter: int | None = None,
     sort: str = "severity",
     offset: int = 0,
     limit: int = Query(100, le=500),
@@ -119,11 +120,13 @@ async def list_tickets(
         has_internal=has_internal,
         pending=pending,
         q=q,
+        reporter=reporter,
         sort=sort,
         offset=offset,
         limit=limit,
     )
     rows = await tsvc.list_tickets(db, ctx.config, who.principal, f)
+    total = await tsvc.count_tickets(db, ctx.config, who.principal, f)
     ids = [t.id for t in rows]
     prs = await tsvc.patch_counts(db, ids)
     pend = await tsvc.pending_counts(db, ids) if who.principal.is_team or who.principal.is_agent else {}
@@ -134,7 +137,8 @@ async def list_tickets(
         if pend:
             d["pending_proposals"] = pend.get(t.id, 0)
         out.append(d)
-    return {"tickets": out, "count": len(out), "offset": offset}
+    # `total` is the whole selection; a reader that stops when offset + count < total has not read it all
+    return {"tickets": out, "count": len(out), "offset": offset, "total": total}
 
 
 @router.get("/tickets/counts")
@@ -158,6 +162,17 @@ async def get_ticket(ctx: Ctx, db: Db, who: Who, tid: str):
     if p.is_team:
         d["replies"] = [_reply(r) for r in await thread.replies_for(db, t)]
     return d
+
+
+@router.get("/tickets/{tid}/similar")
+async def get_similar(ctx: Ctx, db: Db, who: Who, tid: str, limit: int = Query(10, le=30)):
+    """What else on the desk looks like this ticket: shared words, shared source paths, the same reporter,
+    duplicate links. The floor of the duplicate check; each row carries why it is there."""
+    p = who.principal
+    t = await tsvc.get_for(db, p, tid)
+    body = tsvc.body_for(ctx, t) if t.visibility == "public" or can(p, "read:private", t) else ""
+    rows = await tsvc.similar(db, ctx.config, p, t, body=body, limit=limit)
+    return {"ticket": t.id, "similar": [tsvc.similar_dict(ctx, s, p, t) for s in rows]}
 
 
 @router.get("/tickets/{tid}/thread")
@@ -396,6 +411,7 @@ def _note(n) -> dict:
         "author": n.author,
         "author_name": n.author_name,
         "body": n.body,
+        "checked": n.checked,
         "created_at": thread.iso(n.created_at),
     }
 

@@ -414,6 +414,10 @@ class Note(Base):
     author: Mapped[str] = mapped_column(String(128), nullable=False)  # user:<id> | token:<id>
     author_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    # What the writer checked before writing, as data rather than prose, so a reviewer can tell a
+    # reading from a shrug: {"desk": <tickets read across>, "similar": [ids opened], "tracker": bool,
+    # "tree": "repo@sha"}. Empty when the note is a remark rather than an assessment.
+    checked: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

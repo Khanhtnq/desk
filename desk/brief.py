@@ -78,45 +78,76 @@ def build_agent_brief(
     add("")
     add(
         _p(
-            f"1. `GET {b}/v1/tickets?kind=bounty&status=open&sort=severity` for the queue, most",
-            "severe first;",
-            "`status=new` for what nobody has read yet; `pending=true` for tickets that already have",
-            "proposals waiting. `kind=support` for the support door.",
+            f"1. Read across the desk before you read any one ticket. `GET {b}/v1/tickets?kind=bounty",
+            "&status=all&limit=500&offset=0`, then `offset=500`, and on until `offset + count` reaches",
+            "`total`. Every title, every status, every `duplicate_of` and `internal_ref`, the fixed and the",
+            "closed included: that is the set a new report is a duplicate of. `status=open` is new to",
+            "fixing only and is a work queue, not a duplicate check. `q=` searches titles and public bodies;",
+            "`reporter=<id>` lists one reporter's filings.",
         )
     )
     add(
         _p(
-            f"2. For each ticket: `GET {b}/v1/tickets/{{id}}` (facts), `/thread` (the public thread),",
-            "`/patch-refs`, `/notes` and `/proposals` (what agents and people have already said). Read these",
-            "before writing, and do not repeat a note that is already there.",
+            f"2. Then the queue: `GET {b}/v1/tickets?kind=bounty&status=open&sort=severity`, most severe",
+            "first; `status=new` for what nobody has read yet; `pending=true` for tickets with proposals",
+            "waiting. `kind=support` for the support door.",
         )
     )
     add(
         _p(
-            "3. Read the code the report points at. Reproduce if you can. Check the tracker for a ticket",
-            "that already covers it.",
+            f"3. For each ticket: `GET {b}/v1/tickets/{{id}}` (facts and body), `/similar` (what else on",
+            "the desk shares its words, its cited paths or its reporter, with why), `/thread`,",
+            "`/patch-refs`, `/notes` and `/proposals` (what agents and people have already said). Open",
+            "every row `/similar` returns before you rule; it is the floor of the duplicate check, not the",
+            "ceiling, and a match it misses is still yours to find. Do not repeat a note already there.",
         )
     )
     add(
         _p(
-            f"4. `POST {b}/v1/tickets/{{id}}/notes` with your reading (below). One note per pass; if a later",
-            "pass changes your mind, say what changed and why.",
+            "4. Read the code the report points at, in the tree (below), at the commit the report names and",
+            "at the head of the branch. Reproduce if you can. Check the tracker for a ticket that already",
+            "covers it.",
         )
     )
     add(
         _p(
-            f"5. `POST {b}/v1/tickets/{{id}}/proposals/bulk` with up to twelve `{{field, value, reason}}`",
+            f"5. `POST {b}/v1/tickets/{{id}}/notes` with your reading (below) and `checked`: what you",
+            "looked at, as data. `{\"desk\": <tickets read across>, \"similar\": [ids you opened],",
+            "\"tracker\": true|false, \"tree\": \"repo@sha\"}`. A note without it is shown to the team",
+            "as unchecked. One note per pass; if a later pass changes your mind, say what changed and why.",
+        )
+    )
+    add(
+        _p(
+            f"6. `POST {b}/v1/tickets/{{id}}/proposals/bulk` with up to twelve `{{field, value, reason}}`",
             "items. A new proposal on a field you already proposed supersedes your earlier one, so revise",
             "freely.",
         )
     )
     add(
         _p(
-            f"6. `POST {b}/v1/tickets/{{id}}/patch-refs` with `{{ref}}` (`#27`, `dao#1`, `owner/repo#5`)",
+            f"7. `POST {b}/v1/tickets/{{id}}/patch-refs` with `{{ref}}` (`#27`, `dao#1`, `owner/repo#5`)",
             "when a PR or commit addresses it and GitHub has not already linked it (see `/patch-refs`).",
         )
     )
-    add(f"7. `GET {b}/v1/me` tells you who you are, your scopes, and your owner's standing instructions.")
+    add(f"8. `GET {b}/v1/me` tells you who you are, your scopes, and your owner's standing instructions.")
+    add("")
+
+    add("## The tree")
+    add("")
+    repos = cfg.repos or []
+    add(
+        _p(
+            "The code is public. Clone it rather than trusting the report's quotation of it:",
+            ", ".join(f"`https://github.com/{r}`" for r in repos) + ".",
+            f"The first (`{repos[0] if repos else 'the reporting repo'}`) is the reporting repo and the",
+            "protocol; the others are what the programme also pays for. Read at the head of the default",
+            "branch and, when the report names a commit or a release, at that commit too; a bug fixed",
+            "between the two is `patched`, not `invalid`. Name what you read in `checked.tree` as",
+            "`repo@sha`. The tracker is the team's; if you cannot read it, say so in the note and set",
+            "`checked.tracker` false rather than guessing.",
+        )
+    )
     add("")
     add(
         _p(
@@ -238,7 +269,13 @@ def build_agent_brief(
         )
     )
     add("- **Impact.** Who can do what, under which conditions; what it is bounded by.")
-    add(f"- **Already known?** The duplicate on the desk, or the {tracker} ticket, if one exists.")
+    add(
+        _p(
+            f"- **Already known?** The duplicate on the desk, or the {tracker} ticket, if one exists; and",
+            "what you checked to say so (the desk in full, the `/similar` rows you opened, the tracker).",
+            "The same facts go in `checked`, as data.",
+        )
+    )
     add("- **Fix.** What it would take, in a sentence; a PR if there is one.")
     add("")
     add(

@@ -33,13 +33,39 @@ PR_TOKEN = re.compile(r"(?:(?P<owner>[\w.-]+)/)?(?P<repo>[\w.-]*)#(?P<num>\d+)")
 # ---- notes ------------------------------------------------------------------------------------------
 
 
-async def add_note(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str) -> Note:
+CHECKED_KEYS = {"desk": int, "similar": list, "tracker": bool, "tree": str}
+
+
+def clean_checked(raw: dict | None) -> dict:
+    """`checked` as stored: the four known keys with the right types, nothing else, ids upper-cased."""
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "checked is an object")
+    out: dict = {}
+    for k, v in raw.items():
+        want = CHECKED_KEYS.get(k)
+        if want is None:
+            raise HTTPException(400, f"checked: unknown key {k!r}; use {sorted(CHECKED_KEYS)}")
+        if isinstance(v, bool) and want is not bool or not isinstance(v, want):
+            raise HTTPException(400, f"checked.{k} is a {want.__name__}")
+        if k == "similar":
+            v = [str(x).upper() for x in v if str(x).strip()][:50]
+        if k == "tree":
+            v = v.strip()[:200]
+        out[k] = v
+    return out
+
+
+async def add_note(
+    ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str, checked: dict | None = None
+) -> Note:
     body = (body or "").strip()
     if not body:
         raise HTTPException(400, "empty note")
     if len(body) > 20_000:
         raise HTTPException(400, "note too long (20k)")
-    n = Note(ticket_id=t.id, author=p.actor, author_name=p.name, body=body)
+    n = Note(ticket_id=t.id, author=p.actor, author_name=p.name, body=body, checked=clean_checked(checked))
     db.add(n)
     await db.flush()
     await ctx.events.append(
