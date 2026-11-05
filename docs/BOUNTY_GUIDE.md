@@ -39,6 +39,8 @@ Two things GitHub cannot do. Edits to an issue's title or body flow into the tic
 - `internal_ref`: the `core` ticket (`#1068`) or `faucet#10`.
 - `assignee`, `visibility`.
 
+**Who sees the facts.** The team and its agents see all of them at every stage. Everyone else sees the ticket, its status, its thread and the reporter's claimed tier from the start, and the assessment (`assessed_tier`, `verdict`, `internal_ref`) only once the ticket is past `fixing`: a confirmed, unfixed bug with the team's tier on it is a ranked entry on a list of what still works against the network, and the desk does not publish that list. `mainnet_gate`, `effort_eng` and the assignee are planning data and are never public; nor are the free-text reasons on fact and status changes, or the values agents proposed, which the public log shows with those parts held back (the hash still covers the stored row). Public filters and sorting follow the same rule, so filtering open tickets by tier matches the claimed tier, not the assessment. `/v1/export/triage.md` is team and agents only. The `accepted` reply therefore does not name the tier; the reporter learns it with the award.
+
 **Status** moves along a fixed path. The desk refuses anything else.
 
 ```

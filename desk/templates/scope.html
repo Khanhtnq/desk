@@ -25,8 +25,8 @@
 <ul>{% for k, v in cfg.areas.items() %}<li><a href="/?area={{ k }}">{{ v }}</a></li>{% endfor %}</ul>
 
 <h2>How a report moves</h2>
-<p><code>new → triaging → (needs-info ⇄) → accepted → fixing → patched → disclosed → awarded → paid</code>, or <code>closed</code> as duplicate, invalid, out of scope or withdrawn. Every move is in the <a href="/log">log</a>; every ticket says which internal ticket tracks its fix and which PR closed it.</p>
-<p><b>Before, decide, later.</b> The gate on a bounty ticket says whether its fix lands before mainnet, is a product decision still to be made, or can follow launch. The <a href="/?gate=before">before</a> list is the release view.</p>
+<p><code>new → triaging → (needs-info ⇄) → accepted → fixing → patched → disclosed → awarded → paid</code>, or <code>closed</code> as duplicate, invalid, out of scope or withdrawn. Every move is in the <a href="/log">log</a>; every ticket says whether an internal ticket tracks its fix and which PR closed it.</p>
+<p><b>What is published when.</b> A report, its status and its thread are public from the start (unless it was filed private). The team's assessment of a confirmed, unfixed bug (its tier, verdict and internal ticket) is published when the fix ships: until then, a ranked list of what still works against the network is the one thing this desk should not be. Which fixes land before mainnet is the team's planning and is not published at all.</p>
 <p class="notice"><b>Private reports.</b> {{ copy.notices.private_ticket }}</p>
 <p class="notice"><b>Channels.</b> {{ copy.notices.no_poc_in_channels }}</p>
 <p class="notice"><b>This desk.</b> {{ copy.notices.in_scope }}</p>

@@ -2,13 +2,14 @@
 {% import "_macros.html" as m with context %}
 {% block title %}{{ t.id }} · {{ t.title }}{% endblock %}
 {% block content %}
+{% set shown = team or not held(t) %}
 <div class="ticket {{ 'team' if team }}" data-ticket="{{ t.id }}" data-kind="{{ t.kind }}">
 <div class="head">
   <div class="tag"><span>{{ t.id }} · {{ copy.labels[t.kind] }}{% if t.visibility == "private" %} · private{% endif %}</span></div>
   <h1>{{ t.title }}</h1>
   <div class="row">
     {{ m.status(t) }}
-    {% if t.kind == "bounty" %}{{ m.tier(t.assessed_tier) }}{% if t.claimed_tier and t.claimed_tier != t.assessed_tier %}<span class="k">claimed {{ cfg.tier_label(t.claimed_tier) }}</span>{% endif %}{{ m.gate(t.mainnet_gate) }}{% endif %}
+    {% if t.kind == "bounty" %}{% if shown %}{{ m.tier(t.assessed_tier) }}{% if t.claimed_tier and t.claimed_tier != t.assessed_tier %}<span class="k">claimed {{ cfg.tier_label(t.claimed_tier) }}</span>{% endif %}{% elif t.claimed_tier %}<span class="k">claimed</span> {{ m.tier(t.claimed_tier) }}{% endif %}{% if team %}{{ m.gate(t.mainnet_gate) }}{% endif %}{% endif %}
     {{ m.source(t) }}
     <span class="k">{{ "asked" if t.kind == "support" else "filed" }} {{ (t.source_created_at or t.created_at)|dt }}</span>
     {% if reporter %}<span class="k">by {{ reporter.display_name or reporter.github_login or "a reporter" }}</span>{% endif %}
@@ -19,25 +20,29 @@
 <aside class="facts" id="facts">
   <dl class="facts">
     {% if t.kind == "bounty" %}
-    <dt>Verdict</dt><dd><span class="show">{{ cfg.verdicts.get(t.verdict, t.verdict) if t.verdict else "—" }}</span>
+    <dt>Verdict</dt><dd><span class="show">{% if shown %}{{ cfg.verdicts.get(t.verdict, t.verdict) if t.verdict else "—" }}{% else %}<span class="k">{{ copy.notices.assessment_held }}</span>{% endif %}</span>
       {% if team %}<select class="edit" name="verdict"><option value="">—</option>{% for k, v in cfg.verdicts.items() %}<option value="{{ k }}" {{ "selected" if t.verdict == k }}>{{ v }}</option>{% endfor %}</select>{% endif %}</dd>
-    <dt>Tier</dt><dd><span class="show">{{ m.tier(t.assessed_tier) }}</span>
+    <dt>Tier</dt><dd><span class="show">{% if shown %}{{ m.tier(t.assessed_tier) }}{% else %}<span class="k">{{ copy.notices.assessment_held }}</span>{% endif %}</span>
       {% if can_tier %}<select class="edit" name="assessed_tier"><option value="">—</option>{% for k in cfg.tier_order %}<option value="{{ k }}" {{ "selected" if t.assessed_tier == k }}>{{ cfg.tier_label(k) }}</option>{% endfor %}</select>{% elif team %}<span class="edit k">tier role sets this</span>{% endif %}</dd>
     <dt>Claimed</dt><dd><span class="show">{{ m.tier(t.claimed_tier) }}</span>
       {% if team %}<select class="edit" name="claimed_tier"><option value="">—</option>{% for k in cfg.tier_order %}<option value="{{ k }}" {{ "selected" if t.claimed_tier == k }}>{{ cfg.tier_label(k) }}</option>{% endfor %}</select>{% endif %}</dd>
+    {% if team %}
     <dt>Gate</dt><dd><span class="show">{{ m.gate(t.mainnet_gate) }}</span>
       {% if team %}<select class="edit" name="mainnet_gate"><option value="">—</option>{% for k, v in cfg.gates.items() %}<option value="{{ k }}" {{ "selected" if t.mainnet_gate == k }}>{{ v }}</option>{% endfor %}</select>{% endif %}</dd>
     <dt>Effort</dt><dd><span class="show">{{ cfg.effort_label(t.effort_eng) if t.effort_eng else "—" }}{% if t.effort_eng %} <span class="k">· agent {{ cfg.effort_agent(t.effort_eng) }}</span>{% endif %}</span>
       {% if team %}<select class="edit" name="effort_eng"><option value="">—</option>{% for k, v in cfg.effort_bands.items() %}<option value="{{ k }}" {{ "selected" if t.effort_eng == k }}>{{ v.engineer }} · {{ v.agent }}</option>{% endfor %}</select>{% endif %}</dd>
+    {% endif %}
     {% endif %}
     {% set vocab = cfg.area_vocab(t.kind) %}
     <dt>{{ "Topic" if t.kind == "support" else "Area" }}</dt><dd><span class="show">{{ vocab.get(t.area, t.area) if t.area else "—" }}</span>
       {% if team %}<select class="edit" name="area"><option value="">—</option>{% for k, v in vocab.items() %}<option value="{{ k }}" {{ "selected" if t.area == k }}>{{ v }}</option>{% endfor %}</select>{% endif %}</dd>
     <dt>Duplicate of</dt><dd><span class="show">{% if dup %}{{ m.tlink(dup) }} <span class="k">{{ dup.status }}</span>{% else %}—{% endif %}</span>
       {% if team %}<input class="edit" type="text" name="duplicate_of" value="{{ t.duplicate_of or '' }}" placeholder="XE-0000">{% endif %}</dd>
-    {% if team or t.kind == "bounty" %}
+    {% if team %}
     <dt>Internal</dt><dd><span class="show">{% if t.internal_ref %}{% if internal_url %}<a href="{{ internal_url }}" rel="noopener" class="mono">{{ t.internal_ref }}</a>{% else %}<span class="mono">{{ t.internal_ref }}</span>{% endif %}{% else %}—{% endif %}</span>
-      {% if team %}<input class="edit" type="text" name="internal_ref" value="{{ t.internal_ref }}" placeholder="#1047 or faucet#10">{% endif %}</dd>
+      <input class="edit" type="text" name="internal_ref" value="{{ t.internal_ref }}" placeholder="#1047 or faucet#10"></dd>
+    {% elif t.kind == "bounty" %}
+    <dt>Tracked</dt><dd>{% if t.internal_ref %}<span class="pill accepted">internally</span>{% else %}—{% endif %}</dd>
     {% endif %}
     {% if team %}
     <dt>Reporter</dt><dd>{% if reporter %}{{ reporter.display_name or reporter.github_login or reporter.email or ("reporter " ~ reporter.id) }}{% if reporter.email %} <span class="k">{{ reporter.email }}</span>{% elif reporter.github_login %} <span class="k">@{{ reporter.github_login }}</span>{% endif %}{% else %}<span class="k">none: awards and payouts need one</span>{% endif %}</dd>
@@ -46,7 +51,7 @@
     {% endif %}
     {% if t.kind == "bounty" and (t.award_xe is not none or can_award) %}
     <dt>Award</dt><dd><span class="show">{% if t.award_xe is not none %}{{ t.award_xe|xe }} XE {% if t.award_approved_at %}<span class="pill paid">approved</span>{% else %}<span class="pill pending">proposed</span>{% endif %}{% else %}—{% endif %}
-      {% if t.assessed_tier %}<span class="k">· ceiling {{ cfg.ceiling_micro(t.assessed_tier)|xe }}</span>{% endif %}
+      {% if t.assessed_tier and shown %}<span class="k">· ceiling {{ cfg.ceiling_micro(t.assessed_tier)|xe }}</span>{% endif %}
       {% if team and t.award_approved_at and t.status not in ("awarded", "paid") %}<br><span class="k">Not yet awarded: {{ award_step }}.</span>{% endif %}</span></dd>
     {% endif %}
     {% if t.status == "paid" %}<dt>Paid</dt><dd class="mono">{{ t.paid_ref }}</dd>{% endif %}

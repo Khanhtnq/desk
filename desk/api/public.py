@@ -206,6 +206,8 @@ async def leaderboard(db: Db):
 
 @router.get("/export/triage.md", response_class=PlainTextResponse)
 async def export_triage(ctx: Ctx, db: Db, who: Who):
+    if not tsvc.sees_assessment(who.principal):
+        raise HTTPException(403, "the triage export is the assessment of every open ticket; team and agents")
     text = await triage.export_markdown(ctx, db, who.principal)
     return PlainTextResponse(text, media_type="text/markdown; charset=utf-8")
 

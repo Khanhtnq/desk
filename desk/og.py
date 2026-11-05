@@ -286,7 +286,7 @@ def page_spec(c, site: str, slug: str) -> dict:
 def ticket_spec(c, t) -> dict:
     labels = c.config.copy_public.get("labels") or {}
     chips: list[tuple[str, dict]] = []
-    if t.kind == "bounty" and t.assessed_tier:
+    if t.kind == "bounty" and t.assessed_tier and not tsvc.assessment_held(t):
         chips.append((c.config.tier_label(t.assessed_tier), _tier_style(t.assessed_tier)))
     status = labels.get(t.status, t.status)
     chips.append((status, {"outline": brand.STROKE_STRONG, "colour": brand.TEXT_MEDIUM}))

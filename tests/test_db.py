@@ -146,6 +146,27 @@ def test_event_views_hide_operational_fields_from_non_team():
     )
     assert event_to_dict(ev)["payload"]["ip"] == "10.0.0.9"
     assert "ip" not in event_to_dict(ev, full=False)["payload"]
+    # a public fact change names which assessment fields moved, not what they became or why
+    facts = Event(
+        index=2, ts=2, kind="ticket.facts", actor="user:1", prev_hash="1" * 64, hash="2" * 64, signer="",
+        signature="", public=True, ref="XE-0001", v=2,
+        payload={
+            "ticket": "XE-0001", "reason": "confirmed at ledger.go:2117", "via": "",
+            "changes": {"assessed_tier": {"from": None, "to": "high"}, "area": {"from": None, "to": "core"}},
+        },
+    )
+    full = event_to_dict(facts)["payload"]
+    assert full["changes"]["assessed_tier"]["to"] == "high" and full["reason"]
+    pub = event_to_dict(facts, full=False)["payload"]
+    assert pub["changes"] == {"area": {"from": None, "to": "core"}} and pub["held"] == ["assessed_tier"]
+    assert "reason" not in pub and pub["ticket"] == "XE-0001"
+    prop = Event(
+        index=3, ts=3, kind="proposal.created", actor="token:1", prev_hash="2" * 64, hash="3" * 64, signer="",
+        signature="", public=True, ref="XE-0001", v=2,
+        payload={"ticket": "XE-0001", "proposal": 1, "field": "assessed_tier", "value": "critical"},
+    )
+    assert "value" not in event_to_dict(prop, full=False)["payload"]
+    assert event_to_dict(prop, full=False)["payload"]["field"] == "assessed_tier"
 
 
 # ---- tickets ----------------------------------------------------------------------------------------
@@ -172,8 +193,20 @@ async def test_ticket_lifecycle(ctx, db):
         await tsvc.set_status(ctx, db, p, t, "paid")
     await tsvc.set_status(ctx, db, p, t, "triaging")
     await tsvc.set_status(ctx, db, p, t, "accepted")
+    await tsvc.set_facts(ctx, db, p, t, {"internal_ref": "#1068", "effort_eng": "1-4h"})
+    # accepted and unfixed: the team sees the assessment, the public sees the ticket and no ranking
+    mine, theirs = tsvc.to_dict(ctx, t, p), tsvc.to_dict(ctx, t, authz.ANON)
+    assert mine["assessed_tier"] == "high" and mine["mainnet_gate"] == "before"
+    assert mine["internal_ref"] == "#1068"
+    assert theirs["assessed_tier"] is None and theirs["verdict"] is None and theirs["internal_ref"] == ""
+    assert theirs["tracked"] is True and "mainnet_gate" not in theirs and "effort_eng" not in theirs
+    assert "assignee_id" not in theirs
     await tsvc.set_status(ctx, db, p, t, "patched")
     assert t.status_changed_at is not None
+    theirs = tsvc.to_dict(ctx, t, authz.ANON)
+    assert theirs["assessed_tier"] == "high" and theirs["verdict"] == "valid"
+    assert theirs["internal_ref"] == "#1068"
+    assert "mainnet_gate" not in theirs  # planning data, never public
     # outbox: patched and never told
     assert [x.id for x in await tsvc.outbox(db, ctx.config, p)] == ["XE-0001"]
     r = await thread.add_reply(ctx, db, p, t, "Fixed in #27, thank you.")
@@ -246,6 +279,23 @@ async def test_severity_sort(ctx, db):
     await tsvc.set_facts(ctx, db, p, b, {"assessed_tier": "severe"})
     rows = await tsvc.list_tickets(db, ctx.config, p, tsvc.Filters())
     assert [r.id for r in rows] == [b.id, a.id, c.id]
+    # the public is shown the claim while the assessment is held, and sorts and filters on that
+    anon = authz.ANON
+    rows = await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters())
+    assert [r.id for r in rows] == [c.id, a.id, b.id]
+    assert [r.id for r in await tsvc.list_tickets(db, ctx.config, p, tsvc.Filters(tier="severe"))] == [b.id]
+    assert await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(tier="severe")) == []
+    assert [r.id for r in await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(tier="high"))] == [c.id]
+    await tsvc.set_facts(ctx, db, p, b, {"verdict": "valid", "mainnet_gate": "later", "internal_ref": "#9"})
+    assert await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(verdict="valid")) == []
+    assert await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(status="all", gate="later")) != []
+    assert await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(q="#9")) == []
+    assert [r.id for r in await tsvc.list_tickets(db, ctx.config, p, tsvc.Filters(q="#9"))] == [b.id]
+    for st in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, p, b, st)
+    rows = await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(tier="severe"))
+    assert [r.id for r in rows] == [b.id]
+    assert [r.id for r in await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters())] == [b.id, c.id, a.id]
 
 
 # ---- proposals --------------------------------------------------------------------------------------

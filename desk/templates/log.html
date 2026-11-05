@@ -17,7 +17,7 @@
   <td class="mono">{% if ev.ref %}<a href="/log?ref={{ ev.ref }}">{{ ev.ref }}</a>{% endif %}</td>
   <td class="k">
     {%- if ev.kind == "ticket.status" %}{{ ev.payload.get("from") }} → {{ ev.payload.get("to") }}{% if ev.payload.get("closed_reason") %} ({{ ev.payload.closed_reason }}){% endif %}
-    {%- elif ev.kind == "ticket.facts" %}{% for k, v in ev.payload.get("changes", {}).items() %}{{ k }}: {{ v.get("from") or "—" }} → {{ v.get("to") or "—" }}{{ "; " if not loop.last }}{% endfor %}
+    {%- elif ev.kind == "ticket.facts" %}{% for k, v in ev.payload.get("changes", {}).items() %}{{ k }}: {{ v.get("from") or "—" }} → {{ v.get("to") or "—" }}{{ "; " if not loop.last }}{% endfor %}{% if ev.payload.get("held") %}{{ "; " if ev.payload.get("changes") }}{{ ev.payload.held|join(", ") }} (published with the fix){% endif %}
     {%- elif ev.kind == "ticket.created" %}{{ ev.payload.get("title") or ev.payload.get("kind") }}
     {%- elif ev.kind.startswith("proposal.") %}{{ ev.payload.get("field") }}{% if ev.payload.get("value") is not none %} = {{ ev.payload.value }}{% endif %}
     {%- elif ev.kind == "reply.sent" %}reply {{ ev.payload.get("reply") }}, mirror {{ ev.payload.get("mirror") }}

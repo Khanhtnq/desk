@@ -263,6 +263,15 @@ class EventLog:
 # Payload keys only a team member sees. Agent tokens and reporters get the event without them; the hash
 # still covers the stored payload, so a reader with the full view can verify, and nobody else needs to.
 TEAM_ONLY_KEYS = frozenset({"ip", "address"})
+# The team's working layer inside an otherwise public event: the assessment as it changes (`changes` on
+# ticket.facts for these fields), the free text a reviewer wrote with a change, and what an agent proposed.
+# The ticket page publishes the assessment once the fix has shipped; the log does not pre-announce it.
+HELD_FACT_KEYS = frozenset({"assessed_tier", "verdict", "mainnet_gate", "effort_eng", "internal_ref"})
+HELD_PAYLOAD_KEYS = {
+    "ticket.facts": frozenset({"reason"}),
+    "ticket.status": frozenset({"reason"}),
+    "proposal.created": frozenset({"value"}),
+}
 
 # What a reporter is shown of their own private ticket's log: the record of what happened to it, not the
 # team's working layer (notes, proposals, fact reasons, who read it).
@@ -282,10 +291,23 @@ REPORTER_KINDS = (
 )
 
 
+def public_payload(kind: str, payload: Any) -> Any:
+    """The payload as a reader outside the team sees it."""
+    if not isinstance(payload, dict):
+        return payload
+    drop = TEAM_ONLY_KEYS | HELD_PAYLOAD_KEYS.get(kind, frozenset())
+    out = {k: v for k, v in payload.items() if k not in drop}
+    if kind == "ticket.facts" and isinstance(out.get("changes"), dict):
+        kept = {k: v for k, v in out["changes"].items() if k not in HELD_FACT_KEYS}
+        held = sorted(k for k in out["changes"] if k in HELD_FACT_KEYS)
+        out["changes"] = kept
+        if held:
+            out["held"] = held  # which facts changed, not what they became
+    return out
+
+
 def event_to_dict(ev: Event, *, full: bool = True) -> dict:
-    payload = ev.payload
-    if not full and isinstance(payload, dict) and TEAM_ONLY_KEYS & payload.keys():
-        payload = {k: v for k, v in payload.items() if k not in TEAM_ONLY_KEYS}
+    payload = ev.payload if full else public_payload(ev.kind, ev.payload)
     return {
         "index": ev.index,
         "ts": ev.ts,

@@ -32,8 +32,10 @@
   <span class="sep">·</span>
   {% for k, v in cfg.areas.items() %}{{ flt("area", k, v) }}{% endfor %}
   {% if kind == "bounty" %}
+  {% if team %}
   <span class="sep">·</span>
   {% for k, v in cfg.gates.items() %}{{ flt("gate", k, v) }}{% endfor %}
+  {% endif %}
   <span class="sep">·</span>
   {% for k in cfg.tier_order if k != "none" %}{{ flt("tier", k, cfg.tier_label(k)) }}{% endfor %}
   {% endif %}
@@ -43,7 +45,7 @@
 </div>
 
 <form method="get" action="/" class="row" style="margin:0 0 20px">
-  <input type="text" name="q" value="{{ f.q or '' }}" placeholder="search title, id, #issue, internal ref" style="max-width:420px">
+  <input type="text" name="q" value="{{ f.q or '' }}" placeholder="search title, id, #issue{{ ", internal ref" if team }}" style="max-width:420px">
   <button class="ghost mini" type="submit">Search</button>
 </form>
 
@@ -52,28 +54,29 @@
 {% else %}
 <table class="tickets">
 <thead><tr>
-  <th>#</th><th>{{ "Question" if kind == "support" else "Finding" }}</th><th>Status</th>{% if kind == "bounty" %}<th>Tier</th><th>Gate</th><th>Eng.</th>{% endif %}<th>Source</th>{% if team or kind == "bounty" %}<th>Internal</th>{% endif %}{% if kind == "bounty" %}<th>PR</th>{% endif %}<th class="right">Age</th>
+  <th>#</th><th>{{ "Question" if kind == "support" else "Finding" }}</th><th>Status</th>{% if kind == "bounty" %}<th>Tier</th>{% if team %}<th>Gate</th><th>Eng.</th>{% endif %}{% endif %}<th>Source</th>{% if team %}<th>Internal</th>{% elif kind == "bounty" %}<th>Tracked</th>{% endif %}{% if kind == "bounty" %}<th>PR</th>{% endif %}<th class="right">Age</th>
 </tr></thead>
 <tbody>
 {% for t in tickets %}
+{% set shown = team or not held(t) %}
 <tr>
   <td class="n">{{ m.tlink(t) }}{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}</td>
   <td class="title"><a href="/{{ 'bounty' if t.kind == 'bounty' else 'support' }}/{{ t.id }}">{{ t.title }}</a>
-    <span class="k">{% if t.verdict %}{{ cfg.verdicts.get(t.verdict, t.verdict) }}{% endif %}{% if t.duplicate_of %} · dup of {{ t.duplicate_of }}{% endif %}{% if team and pend.get(t.id) %} · <span class="pill pending">{{ pend[t.id] }} pending</span>{% endif %}</span></td>
+    <span class="k">{% if t.verdict and shown %}{{ cfg.verdicts.get(t.verdict, t.verdict) }}{% endif %}{% if t.duplicate_of %} · dup of {{ t.duplicate_of }}{% endif %}{% if team and pend.get(t.id) %} · <span class="pill pending">{{ pend[t.id] }} pending</span>{% endif %}</span></td>
   <td>{{ m.status(t) }}</td>
   {% if kind == "bounty" %}
-  <td>{% if t.assessed_tier %}{{ m.tier(t.assessed_tier) }}{% elif t.claimed_tier %}<span class="k">claimed</span> {{ m.tier(t.claimed_tier) }}{% else %}—{% endif %}</td>
-  <td>{{ m.gate(t.mainnet_gate) }}</td>
-  <td class="mono">{{ cfg.effort_label(t.effort_eng) if t.effort_eng else "—" }}</td>
+  <td>{% if t.assessed_tier and shown %}{{ m.tier(t.assessed_tier) }}{% elif t.claimed_tier %}<span class="k">claimed</span> {{ m.tier(t.claimed_tier) }}{% else %}—{% endif %}</td>
+  {% if team %}<td>{{ m.gate(t.mainnet_gate) }}</td>
+  <td class="mono">{{ cfg.effort_label(t.effort_eng) if t.effort_eng else "—" }}</td>{% endif %}
   {% endif %}
   <td>{{ m.source(t) }}</td>
-  {% if team or kind == "bounty" %}<td class="mono">{{ t.internal_ref or "—" }}</td>{% endif %}
+  {% if team %}<td class="mono">{{ t.internal_ref or "—" }}</td>{% elif kind == "bounty" %}<td>{% if t.internal_ref %}<span class="pill accepted">tracked</span>{% else %}—{% endif %}</td>{% endif %}
   {% if kind == "bounty" %}<td class="mono">{{ prs.get(t.id, "") }}</td>{% endif %}
   <td class="right num">{{ (t.source_created_at or t.created_at)|day }}</td>
 </tr>
 {% endfor %}
 </tbody>
 </table>
-<p class="k">{{ tickets|length }} shown. {% if kind == "bounty" %}Tiers are the team's assessment where one has been made, the reporter's claim otherwise. The gate says whether a fix lands before mainnet. {% endif %}Append <code>.md</code> to this page for markdown.</p>
+<p class="k">{{ tickets|length }} shown. {% if kind == "bounty" %}{% if team %}Tiers are the team's assessment where one has been made, the reporter's claim otherwise. The gate says whether a fix lands before mainnet. {% else %}Tiers are the reporter's claim until a fix has shipped; from then on they are the team's assessment. {% endif %}{% endif %}Append <code>.md</code> to this page for markdown.</p>
 {% endif %}
 {% endblock %}

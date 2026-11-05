@@ -221,6 +221,33 @@ def _rank(cfg: Config, column):
     return case({tier: i for i, tier in enumerate(order)}, value=column, else_=len(order))
 
 
+# While a bug is confirmed and unfixed, the team's assessment of it (tier, verdict, gate, effort, which
+# internal ticket carries it) is a ranked list of what works against XE and when it will stop working.
+# The ticket, its status and its thread stay public; the assessment is published from `patched` on. The
+# gate and the effort are planning data and stay with the team at every stage.
+ASSESSMENT_HELD = ("new", "triaging", "needs-info", "accepted", "fixing")
+
+
+def assessment_held(t: Ticket) -> bool:
+    return t.kind == "bounty" and t.status in ASSESSMENT_HELD
+
+
+def sees_assessment(p: Principal) -> bool:
+    """The team, its agents and the desk itself see the assessment at every stage."""
+    return p.is_team or p.is_agent or p.kind == "system"
+
+
+def shown_tier(t: Ticket, p: Principal) -> str | None:
+    """The tier a reader is shown: the assessment, or the reporter's claim while the assessment is held."""
+    if t.assessed_tier and (sees_assessment(p) or not assessment_held(t)):
+        return t.assessed_tier
+    return t.claimed_tier
+
+
+def _shown_tier_col():
+    return case((Ticket.status.in_(ASSESSMENT_HELD), Ticket.claimed_tier), else_=Ticket.assessed_tier)
+
+
 @dataclass
 class Filters:
     kind: str | None = "bounty"
@@ -253,37 +280,41 @@ async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) 
         q = q.where(Ticket.status == f.status)
     if f.area:
         q = q.where(Ticket.area == f.area)
+    # A filter is a question about the facts, so the public gets the facts it is shown and no more: a
+    # held ticket matches on the reporter's claim, never on the assessment, and the team-only axes
+    # (gate, internal ref, pending proposals) are not questions it can ask.
+    full = sees_assessment(p)
+    unheld = Ticket.status.notin_(ASSESSMENT_HELD)
     if f.verdict:
-        q = q.where(Ticket.verdict == f.verdict)
-    if f.gate:
+        q = q.where(Ticket.verdict == f.verdict if full else (Ticket.verdict == f.verdict) & unheld)
+    if f.gate and full:
         q = q.where(Ticket.mainnet_gate == f.gate)
     if f.source:
         q = q.where(Ticket.source == f.source)
     if f.tier:
-        q = q.where(Ticket.assessed_tier == f.tier)
+        q = q.where(Ticket.assessed_tier == f.tier if full else _shown_tier_col() == f.tier)
     if f.has_pr is not None:
         sub = select(PatchRef.ticket_id).where(PatchRef.ticket_id == Ticket.id).exists()
         q = q.where(sub if f.has_pr else ~sub)
-    if f.has_internal is not None:
+    if f.has_internal is not None and full:
         q = q.where(Ticket.internal_ref != "" if f.has_internal else Ticket.internal_ref == "")
-    if f.pending is not None:
+    if f.pending is not None and full:
         sub = select(Proposal.id).where(Proposal.ticket_id == Ticket.id, Proposal.state == "pending").exists()
         q = q.where(sub if f.pending else ~sub)
     if f.q:
         like = f"%{f.q.strip()}%"
-        q = q.where(
-            (Ticket.title.ilike(like))
-            | (Ticket.id.ilike(like))
-            | (Ticket.internal_ref.ilike(like))
-            | (Ticket.source_ref == f.q.strip().lstrip("#"))
-        )
+        issue = Ticket.source_ref == f.q.strip().lstrip("#")
+        match = Ticket.title.ilike(like) | Ticket.id.ilike(like) | issue
+        if full:
+            match = match | (Ticket.internal_ref.ilike(like))
+        q = q.where(match)
     if f.sort == "age":
         q = q.order_by(func.coalesce(Ticket.source_created_at, Ticket.created_at).asc())
     elif f.sort == "updated":
         q = q.order_by(Ticket.updated_at.desc())
     else:
         q = q.order_by(
-            _rank(cfg, Ticket.assessed_tier),
+            _rank(cfg, Ticket.assessed_tier if full else _shown_tier_col()),
             _rank(cfg, Ticket.claimed_tier),
             func.coalesce(Ticket.source_created_at, Ticket.created_at).asc(),
         )
@@ -719,6 +750,8 @@ def ticket_url(ctx: Context, t: Ticket) -> str:
 
 def to_dict(ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False) -> dict:
     cfg = ctx.config
+    full = sees_assessment(p)
+    shown = full or not assessment_held(t)
     d: dict[str, Any] = {
         "id": t.id,
         "kind": t.kind,
@@ -731,17 +764,14 @@ def to_dict(ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False) -
         "title": t.title,
         "area": t.area,
         "claimed_tier": t.claimed_tier,
-        "assessed_tier": t.assessed_tier,
-        "verdict": t.verdict,
+        "assessed_tier": t.assessed_tier if shown else None,
+        "verdict": t.verdict if shown else None,
         "duplicate_of": t.duplicate_of,
-        "mainnet_gate": t.mainnet_gate,
-        "effort_eng": t.effort_eng,
-        "effort_agent": cfg.effort_agent(t.effort_eng) if t.effort_eng else None,
-        "internal_ref": t.internal_ref,
-        "internal_url": ctx.settings.internal_url(t.internal_ref),
+        "tracked": bool(t.internal_ref),
+        "internal_ref": t.internal_ref if shown else "",
+        "internal_url": ctx.settings.internal_url(t.internal_ref) if shown else None,
         "status": t.status,
         "closed_reason": t.closed_reason,
-        "assignee_id": t.assignee_id,
         "github_state": t.github_state,
         "disclosed_at": _iso(t.disclosed_at),
         "award_xe": t.award_xe,
@@ -754,6 +784,11 @@ def to_dict(ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False) -
         "status_changed_at": _iso(t.status_changed_at),
         "url": ticket_url(ctx, t),
     }
+    if full:
+        d["mainnet_gate"] = t.mainnet_gate
+        d["effort_eng"] = t.effort_eng
+        d["effort_agent"] = cfg.effort_agent(t.effort_eng) if t.effort_eng else None
+        d["assignee_id"] = t.assignee_id
     if can(p, "read:payout_address"):
         d["payout_address"] = t.payout_address
     if with_body:

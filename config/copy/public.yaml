@@ -162,6 +162,8 @@ notices:
   in_scope: >-
     This desk is in scope for the bounty from the day it went public. If you find something in it,
     file it like anything else.
+  assessment_held: >-
+    published when the fix ships
   no_poc_in_channels: >-
     Never post a proof of concept into Discord or Telegram. Use the private filing form; the thread
     is for the conversation, not the exploit.
@@ -176,8 +178,8 @@ reply_templates:
     first verifiable submission, so this one closes as a duplicate. If you believe it is a different
     bug, reply with what differs and we will look again.
   accepted: |-
-    Read and accepted at {tier}. It is tracked internally and the fix will land in a public PR; this
-    issue is updated when it does. The desk entry is {ticket_url}.
+    Read and accepted. It is tracked internally and the fix will land in a public PR; this issue is
+    updated when it does, and the tier and award follow the fix. The desk entry is {ticket_url}.
   needs_info: |-
     Read, but not yet reproducible from what is here. Could you add {what}? The desk entry is {ticket_url}.
   invalid: |-

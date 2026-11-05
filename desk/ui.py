@@ -94,6 +94,7 @@ def _asset_version() -> str:
 ASSET_V = _asset_version()
 templates.env.globals["asset"] = lambda path: f"{path}?v={ASSET_V}"
 templates.env.globals["brand"] = brand
+templates.env.globals["held"] = tsvc.assessment_held  # the assessment is published from patched on
 templates.env.filters["esc"] = escape
 
 
@@ -329,10 +330,12 @@ async def log_page(request: Request, offset: int = 0, kind: str | None = None, r
             db, offset, 100, kind=kind, ref=ref, public_only=not can(p, "read:private")
         )
         head = await EventLog.head(db)
+    # the page shows the same view of each payload as the API does: the team's layer held for others
+    events = [event_to_dict(e, full=p.is_team) for e in rows]
     return render(
         request,
         "log.html",
-        {"p": p, "csrf": csrf, "events": rows, "offset": offset, "head": head, "kind": kind, "ref": ref},
+        {"p": p, "csrf": csrf, "events": events, "offset": offset, "head": head, "kind": kind, "ref": ref},
     )
 
 
