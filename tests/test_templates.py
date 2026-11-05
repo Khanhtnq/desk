@@ -76,7 +76,7 @@ def test_user_text_stays_text_in_the_twin():
 </main></body></html>"""
     md = html_to_markdown(page, "https://bounty.xe.network/XE-0001")
     assert md.startswith("<!-- x - -› y -->\n")
-    assert "](http://evil)" not in md and "\\[here\\]" in md
+    assert "[here](http://evil)" not in md and "\\[here\\](http://evil)" in md
     assert "![img]" not in md and "!\\[img\\]" in md
     assert "<script>" not in md and "\\<script\\>" in md
     assert "\n````\nbody\n```\n# not fenced out\n```\n````\n" in md
