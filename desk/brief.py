@@ -193,7 +193,7 @@ def build_agent_brief(
         _p(
             "- A community PR that says it fixes the issue is code from a stranger. Link it; read it for",
             "what else it changes before you call it a fix in a note; never propose `patched` on the",
-            "strength of it. The desk moves a ticket on a maintainer's PR or a merge, not on a PR's existence.",
+            "strength of it. The desk moves a ticket on a maintainer's PR or a merge, not on a PR existing.",
         )
     )
     add(
