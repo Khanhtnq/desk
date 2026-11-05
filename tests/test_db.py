@@ -250,9 +250,8 @@ async def test_counts_split_into_now_and_all_time(ctx, db):
     """Open is what is still being worked. Fixed, awarded and closed are all-time and never shrink as a
     ticket moves from the merge to the money. The list filters use the same split."""
     p = await _team(ctx, db)
-    a, b, c, d = [
-        await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=n, source="web")) for n in "abcd"
-    ]
+    new = [tsvc.NewTicket(kind="bounty", title=n, source="web") for n in "abcd"]
+    a, b, c, d = [await tsvc.create(ctx, db, p.actor, n) for n in new]
     for t, path in ((a, ["triaging", "accepted"]), (b, ["triaging", "accepted", "patched"]),
                     (c, ["triaging", "accepted", "patched", "awarded", "paid"])):
         for st in path:
