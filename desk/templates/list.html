@@ -22,7 +22,7 @@
 
 <div class="counts">
   <div><b>{{ counts.open }}</b>{{ copy.labels.open }}</div>
-  {% for s in ("new", "triaging", "needs-info", "accepted", "fixing", "patched") if kind == "bounty" and counts[s] %}<div><b>{{ counts[s] }}</b>{{ copy.labels.get(s, s) }}</div>{% endfor %}
+  {% for s in ("new", "triaging", "needs-info", "accepted", "fixing", "patched", "disclosed", "awarded") if kind == "bounty" and counts[s] %}<div><b>{{ counts[s] }}</b>{{ copy.labels.get(s, s) }}</div>{% endfor %}
   <div><b>{{ counts.closed + counts.paid }}</b>{{ copy.labels.closed }}</div>
   {% if team and pend %}<div><b>{{ pend.values()|sum }}</b>pending proposals</div>{% endif %}
 </div>

@@ -367,6 +367,9 @@ class Ticket(Base):
     last_public_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )  # last reply we sent
+    # The reply the team is composing: an adopted agent draft waits here until a reply is sent, so a
+    # refresh or a second reviewer finds it in the editor. Team-only; never shown outside the full view.
+    draft: Mapped[str] = mapped_column(Text, nullable=False, default="")
     told_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )  # status told publicly

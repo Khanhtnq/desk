@@ -390,10 +390,11 @@ def build_agent_brief(
     add("")
     add(
         _p(
-            "A string: the words a person might send to the reporter. Adopting it only puts the text in",
-            "their editor; they edit and send. Write in the programme's voice: plain, specific, no promise",
-            "of an award, no tier named unless it has been set, nothing about other reports. On a private",
-            "ticket say the fact, not the detail.",
+            "A string: the words a person might send to the reporter. Adopting it puts the text in their",
+            "editor, where it waits until they edit and send. `{ticket_url}` and `{tier}` are filled in",
+            "on adoption. Write in the programme's voice: plain, specific, no promise of an award, no tier",
+            "named unless it has been set, nothing about other reports. On a private ticket say the fact,",
+            "not the detail.",
         )
     )
     add("")

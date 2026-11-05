@@ -131,6 +131,7 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
     db.add(r)
     t.last_public_at = utcnow()
     t.told_at = utcnow()
+    t.draft = ""
     await db.flush()
     # a reply is part of the public thread. When it is mirrored, the worker adds the GitHub comment
     # itself (with the comment id, so the webhook echo is not a second copy); otherwise it goes in now.
@@ -160,7 +161,13 @@ async def replies_for(db: AsyncSession, t: Ticket) -> list[Reply]:
 def render_template(ctx: Context, name: str, t: Ticket, **extra: str) -> str:
     """A reply template from the public register, with the ticket's facts filled in. The result is a draft
     in the editor, never a sent reply."""
-    tpl = ctx.config.reply_templates.get(name, "")
+    return fill(ctx, ctx.config.reply_templates.get(name, ""), t, **extra)
+
+
+def fill(ctx: Context, tpl: str, t: Ticket, **extra: str) -> str:
+    """`{ticket_url}`, `{tier}`, `{duplicate_url}` and the rest filled in from the ticket. Used for the
+    public templates and for an agent's reply draft alike, so a draft can name the ticket without knowing
+    its front door. Text that is not a template (a stray brace) comes back as it was."""
     from .tickets import ticket_url
 
     values = {

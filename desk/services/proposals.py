@@ -108,7 +108,10 @@ async def decide(
     value = pr.value.get("value")
     if adopt:
         if pr.field == "reply_draft":
-            out["reply_draft"] = value
+            # filled and kept on the ticket until a reply is sent; the browser's editor is not the only copy
+            from . import thread
+
+            t.draft = out["reply_draft"] = thread.fill(ctx, str(value), t)
         elif pr.field == "status":
             status = value if isinstance(value, str) else value.get("status")
             reason_c = None if isinstance(value, str) else value.get("closed_reason")

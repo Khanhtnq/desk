@@ -334,15 +334,21 @@ async def test_agent_proposes_human_adopts(ctx, db):
         await psvc.propose(ctx, db, p, t, "verdict", "valid", "people set facts directly")
     pr1 = await psvc.propose(ctx, db, agent, t, "verdict", "valid", "reproduced")
     pr2 = await psvc.propose(ctx, db, agent, t, "assessed_tier", "high", "targeted DoS")
-    pr3 = await psvc.propose(ctx, db, agent, t, "reply_draft", "Thanks, reproduced.", "")
+    pr3 = await psvc.propose(ctx, db, agent, t, "reply_draft", "Thanks, reproduced. See {ticket_url}.", "")
     out = await psvc.decide(ctx, db, p, pr1, True)
     assert out["diff"]["verdict"]["to"] == "valid" and t.verdict == "valid"
     with pytest.raises(HTTPException) as e:
         await psvc.decide(ctx, db, p, pr2, True)  # reviewer lacks the tier role
     assert e.value.status_code == 403 and pr2.state == "pending"
     out = await psvc.decide(ctx, db, p, pr3, True)
-    assert out["reply_draft"] == "Thanks, reproduced." and t.status == "new"
+    url = tsvc.ticket_url(ctx, t)
+    assert out["reply_draft"] == f"Thanks, reproduced. See {url}." and t.status == "new"
+    # the draft is kept on the ticket, for the team only, until a reply goes out
+    assert t.draft == out["reply_draft"] and tsvc.to_dict(ctx, t, p)["draft"] == t.draft
+    assert "draft" not in tsvc.to_dict(ctx, t, authz.ANON)
     assert (await db.execute(select(Reply))).scalars().all() == []
+    await thread.add_reply(ctx, db, p, t, "Thanks, reproduced.")
+    assert t.draft == ""
     with pytest.raises(HTTPException):
         await psvc.decide(ctx, db, agent, pr2, False)
     # a repeat proposal supersedes the pending one

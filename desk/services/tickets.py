@@ -785,6 +785,7 @@ def to_dict(ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False) -
         "url": ticket_url(ctx, t),
     }
     if full:
+        d["draft"] = t.draft
         d["mainnet_gate"] = t.mainnet_gate
         d["effort_eng"] = t.effort_eng
         d["effort_agent"] = cfg.effort_agent(t.effort_eng) if t.effort_eng else None
