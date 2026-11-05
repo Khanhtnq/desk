@@ -255,7 +255,7 @@ async def test_counts_split_into_now_and_all_time(ctx, db):
     for t, path in ((a, ["triaging", "accepted"]), (b, ["triaging", "accepted", "patched"]),
                     (c, ["triaging", "accepted", "patched", "awarded", "paid"])):
         for st in path:
-            await tsvc.set_status(ctx, db, p, t, st)
+            await tsvc.set_status(ctx, db, p, t, st, force=True)  # awarded/paid without the treasurer's click
     await tsvc.set_status(ctx, db, p, d, "closed", closed_reason="invalid")
     n = await tsvc.counts(db, p)
     assert (n["open"], n["fixed"], n["awarded_all"], n["closed"]) == (1, 2, 1, 1)
@@ -414,9 +414,12 @@ async def test_severity_sort(ctx, db):
     assert [r.id for r in await tsvc.list_tickets(db, ctx.config, p, tsvc.Filters(q="#9"))] == [b.id]
     for st in ("triaging", "accepted", "patched"):
         await tsvc.set_status(ctx, db, p, b, st)
-    rows = await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(tier="severe"))
+    # patched is no longer "open"; across the whole desk the assessment now shows and sorts
+    rows = await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(status="all", tier="severe"))
     assert [r.id for r in rows] == [b.id]
-    assert [r.id for r in await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters())] == [b.id, c.id, a.id]
+    everything = await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(status="all"))
+    assert [r.id for r in everything] == [b.id, c.id, a.id]
+    assert [r.id for r in await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters())] == [c.id, a.id]
 
 
 # ---- proposals --------------------------------------------------------------------------------------
