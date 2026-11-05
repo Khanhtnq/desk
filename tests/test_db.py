@@ -233,7 +233,7 @@ async def test_ticket_lifecycle(ctx, db):
     kinds = Counter(e.kind for e in await EventLog.page(db, 0, 100, ref=t.id))
     assert (
         kinds["ticket.status"] == 4
-        and kinds["ticket.facts"] == 1
+        and kinds["ticket.facts"] == 2  # the first assessment, then the internal ref and effort
         and kinds["reply.sent"] == 1
         and kinds["ticket.award"] == 1
     )
