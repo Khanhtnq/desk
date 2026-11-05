@@ -199,11 +199,17 @@ footer .meta a { color:var(--text-medium); } footer .meta a:hover { color:var(--
 footer .meta span { color:var(--text-low); } footer .meta span + span:not(:first-child) { opacity:.6; }
 
 /* ---- desk -------------------------------------------------------------------------------- */
-.filters { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 18px; }
-.filters a, .filters span { display:inline-flex; align-items:center; height:30px; padding:0 12px; font:500 12px/1 var(--mono); letter-spacing:.04em; text-transform:uppercase; border:1px solid var(--outline); color:var(--text-low); }
+.filters { display:flex; flex-direction:column; gap:8px; margin:0 0 24px; padding:14px 0 0; border-top:1px solid var(--stroke); }
+.filters .frow { display:flex; align-items:center; gap:14px; margin:0; }
+.filters .flabel { flex:0 0 52px; font:500 11px/14px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--text-low); }
+.filters .fset { display:flex; align-items:center; gap:6px; flex-wrap:wrap; flex:1 1 auto; }
+.filters .gap { flex:0 0 14px; }
+.filters a { display:inline-flex; align-items:center; height:30px; padding:0 12px; font:500 12px/1 var(--mono); letter-spacing:.04em; text-transform:uppercase; border:1px solid var(--outline); color:var(--text-low); }
 .filters a:hover { border-color:var(--stroke-strong); color:var(--text-high); }
 .filters a.on { background:var(--text-high); border-color:var(--text-high); color:var(--bg); }
-.filters .sep { border:0; padding:0 4px; color:var(--stroke-strong); }
+.filters input[type=text] { width:auto; flex:0 1 360px; min-height:30px; height:30px; padding:0 10px; font-size:13px; }
+.filters .ghost.mini { height:30px; min-height:30px; }
+@media (max-width:640px) { .filters .frow { align-items:flex-start; flex-direction:column; gap:6px; } .filters .flabel { flex-basis:auto; } }
 .counts { display:flex; gap:0; flex-wrap:wrap; margin:0 0 28px; }
 .counts .group { padding:0 28px 0 0; margin:0 28px 12px 0; border-right:1px solid var(--outline); }
 .counts .group:last-child { border-right:0; margin-right:0; padding-right:0; }

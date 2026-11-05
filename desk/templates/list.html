@@ -36,26 +36,31 @@
 </div>
 
 <div class="filters">
-  {{ flt("status", "open", "Open") }}{{ flt("status", "fixed", "Fixed") }}{{ flt("status", "closed", "Closed") }}{{ flt("status", "all", "All") }}
-  <span class="sep">·</span>
-  {% for k, v in cfg.areas.items() %}{{ flt("area", k, v) }}{% endfor %}
+  <div class="frow"><span class="flabel">Show</span><div class="fset">
+    {{ flt("status", "open", "Open") }}{{ flt("status", "fixed", "Fixed") }}{{ flt("status", "closed", "Closed") }}{{ flt("status", "all", "All") }}
+  </div></div>
+  <div class="frow"><span class="flabel">Area</span><div class="fset">
+    {% for k, v in cfg.areas.items() %}{{ flt("area", k, v) }}{% endfor %}
+  </div></div>
   {% if kind == "bounty" %}
+  <div class="frow"><span class="flabel">Tier</span><div class="fset">
+    {% for k in cfg.tier_order if k != "none" %}{{ flt("tier", k, cfg.tier_label(k)) }}{% endfor %}
+  </div></div>
   {% if team %}
-  <span class="sep">·</span>
-  {% for k, v in cfg.gates.items() %}{{ flt("gate", k, v) }}{% endfor %}
+  <div class="frow"><span class="flabel">Gate</span><div class="fset">
+    {% for k, v in cfg.gates.items() %}{{ flt("gate", k, v) }}{% endfor %}
+    <span class="gap"></span><a href="/?status=open&pending=true" class="{{ 'on' if f.pending }}">Pending proposals</a>
+  </div></div>
   {% endif %}
-  <span class="sep">·</span>
-  {% for k in cfg.tier_order if k != "none" %}{{ flt("tier", k, cfg.tier_label(k)) }}{% endfor %}
   {% endif %}
-  <span class="sep">·</span>
-  {{ flt("sort", "severity", "By severity") }}{{ flt("sort", "age", "By age") }}{{ flt("sort", "updated", "By update") }}
-  {% if team %}<span class="sep">·</span><a href="/?status=open&pending=true" class="{{ 'on' if f.pending }}">Pending proposals</a>{% endif %}
+  <div class="frow"><span class="flabel">Sort</span><div class="fset">
+    {{ flt("sort", "severity", "Severity") }}{{ flt("sort", "age", "Age") }}{{ flt("sort", "updated", "Last update") }}
+  </div></div>
+  <form method="get" action="/" class="frow"><span class="flabel">Find</span><div class="fset">
+    <input type="text" name="q" value="{{ f.q or '' }}" placeholder="title, id, #issue{{ ", internal ref" if team }}">
+    <button class="ghost mini" type="submit">Search</button>
+  </div></form>
 </div>
-
-<form method="get" action="/" class="row" style="margin:0 0 20px">
-  <input type="text" name="q" value="{{ f.q or '' }}" placeholder="search title, id, #issue{{ ", internal ref" if team }}" style="max-width:420px">
-  <button class="ghost mini" type="submit">Search</button>
-</form>
 
 {% if not tickets %}
 <p class="mute">Nothing here under these filters.</p>

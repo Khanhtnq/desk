@@ -38,18 +38,21 @@
 </div>
 
 <div class="filters">
-  {{ flt("status", "all", "All") }}{{ flt("status", "open", "Open") }}{{ flt("status", "closed", copy.labels.answered) }}
-  <span class="sep">·</span>
-  {% for k, v in cfg.topics.items() %}{{ flt("area", k, v) }}{% endfor %}
-  <span class="sep">·</span>
-  {{ flt("sort", "updated", "Recently answered") }}{{ flt("sort", "age", "Newest") }}
-  {% if team %}<span class="sep">·</span><a href="/?status=open&pending=true" class="{{ 'on' if f.pending }}">Pending proposals</a>{% endif %}
+  <div class="frow"><span class="flabel">Show</span><div class="fset">
+    {{ flt("status", "all", "All") }}{{ flt("status", "open", "Open") }}{{ flt("status", "closed", copy.labels.answered) }}
+    {% if team %}<span class="gap"></span><a href="/?status=open&pending=true" class="{{ 'on' if f.pending }}">Pending proposals</a>{% endif %}
+  </div></div>
+  <div class="frow"><span class="flabel">Topic</span><div class="fset">
+    {% for k, v in cfg.topics.items() %}{{ flt("area", k, v) }}{% endfor %}
+  </div></div>
+  <div class="frow"><span class="flabel">Sort</span><div class="fset">
+    {{ flt("sort", "updated", "Recently answered") }}{{ flt("sort", "age", "Newest") }}
+  </div></div>
+  <form method="get" action="/" class="frow"><span class="flabel">Find</span><div class="fset">
+    <input type="text" name="q" value="{{ f.q or '' }}" placeholder="questions">
+    <button class="ghost mini" type="submit">Search</button>
+  </div></form>
 </div>
-
-<form method="get" action="/" class="row" style="margin:0 0 20px">
-  <input type="text" name="q" value="{{ f.q or '' }}" placeholder="search questions" style="max-width:420px">
-  <button class="ghost mini" type="submit">Search</button>
-</form>
 
 {% if not tickets %}
 <p class="mute">{% if f.q or f.area %}Nothing matches. {% endif %}{{ site_copy.empty }} <a href="/ask">{{ copy.labels.ask }}</a>.</p>
