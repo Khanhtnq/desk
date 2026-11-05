@@ -304,6 +304,15 @@ def test_public_tags_in_internal_tickets():
     assert gh.public_tags("", ALIASES) == []
 
 
+def test_desk_ids_in_internal_tickets():
+    # a report filed on the desk has no GitHub number; the tracker names it by desk id
+    assert gh.desk_tags("security: genesis_hash netcheck XE-0232") == ["XE-0232"]
+    assert gh.desk_tags("covers xe-232, XE-0232 and XS-0007; see #1029") == ["XE-0232", "XS-0007"]
+    # a desk id inside a longer word, or the repo short name, is not a tag
+    assert gh.desk_tags("PRE-XE-0001 and xe#8 and XE-") == []
+    assert gh.desk_tags("") == []
+
+
 def test_claimed_tier_from_text():
     assert gh.claimed_tier("[High] crash", "") == "high"
     assert gh.claimed_tier("crash", "Severity: Severe\n...") == "severe"

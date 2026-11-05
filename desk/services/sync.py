@@ -323,10 +323,7 @@ async def link_internal_issue(ctx: Context, db: AsyncSession, issue: dict) -> di
     via = f"internal:{repo}{ref}"
     text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}"
     stats = {"issue": number, "tagged": 0, "linked": 0, "moved": 0, "noted": 0}
-    for pub_repo, pub_num in gh.public_tags(text, ctx.config.internal_aliases):
-        t = await tsvc.find_by_source(db, "github", pub_repo, str(pub_num))
-        if t is None:
-            continue
+    for t in await _tagged_tickets(ctx, db, text):
         stats["tagged"] += 1
         if not t.internal_ref:
             await tsvc.set_facts(ctx, db, SYSTEM, t, {"internal_ref": ref}, via=via)
@@ -343,6 +340,21 @@ async def link_internal_issue(ctx: Context, db: AsyncSession, issue: dict) -> di
             log.warning("internal %s cannot move %s: %s", ref, t.id, e.detail)
             stats["noted"] += int(await _note_once(ctx, db, t, f"Internal ticket {ref} changed; {e.detail}."))
     return stats
+
+
+async def _tagged_tickets(ctx: Context, db: AsyncSession, text: str) -> list[Ticket]:
+    """The desk tickets an internal issue names: GitHub-sourced ones by `xe#8`, any ticket by its desk id
+    `XE-0232`. One ticket named both ways is one ticket."""
+    out: list[Ticket] = []
+    for pub_repo, pub_num in gh.public_tags(text, ctx.config.internal_aliases):
+        t = await tsvc.find_by_source(db, "github", pub_repo, str(pub_num))
+        if t is not None and t not in out:
+            out.append(t)
+    for tid in gh.desk_tags(text):
+        t = await tsvc.get(db, tid)
+        if t is not None and t not in out:
+            out.append(t)
+    return out
 
 
 async def _follow_internal_state(ctx: Context, db: AsyncSession, t: Ticket, issue: dict, via: str) -> bool:

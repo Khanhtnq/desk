@@ -671,6 +671,30 @@ async def test_internal_tracker_moves_a_new_ticket_through_triaging(ctx, db):
     assert other[0].id == t.id and other[1] is False
 
 
+async def test_internal_tracker_names_desk_filed_reports_by_id(ctx, db):
+    team = await _team(ctx, db)
+    new = lambda title: tsvc.NewTicket(kind="bounty", title=title, source="web")  # noqa: E731
+    web = await tsvc.create(ctx, db, team.actor, new("filed here"))
+    dup = await tsvc.create(ctx, db, team.actor, new("again"))
+    gh_t, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(65, "filed on github"))
+    # one internal ticket covers a GitHub report by number and two desk reports by id, one in lower case
+    body = f"Covers xe#65, {web.id} and {dup.id.lower()}. Root cause in net/check."
+    stats = await sync.link_internal_issue(ctx, db, _issue(1070, "security: netcheck bundle", body=body))
+    assert stats["tagged"] == 3 and stats["linked"] == 3 and stats["moved"] == 3
+    for t in (web, dup, gh_t):
+        assert t.status == "accepted" and t.internal_ref == "#1070"
+    # naming the same ticket both ways is one ticket, not two
+    gh_t.source_ref = "66"
+    await db.commit()
+    stats = await sync.link_internal_issue(ctx, db, _issue(1071, f"bundle xe#66 {gh_t.id}"))
+    assert stats["tagged"] == 1 and stats["noted"] == 1  # already #1070; said once, not overwritten
+    assert gh_t.internal_ref == "#1070"
+    # the fix ships: closing the internal ticket patches every report it names
+    done = _issue(1070, "security: netcheck bundle", body=body, state="closed", state_reason="completed")
+    stats = await sync.link_internal_issue(ctx, db, done)
+    assert stats["moved"] == 3 and {t.status for t in (web, dup, gh_t)} == {"patched"}
+
+
 def _pull(number, title, body="", state="open", merged=False, login="grace", association="MEMBER"):
     return {
         "number": number, "title": title, "body": body, "state": state,

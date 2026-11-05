@@ -242,6 +242,21 @@ def public_tags(text: str, aliases: dict[str, str]) -> list[tuple[str, int]]:
     return out
 
 
+DESK_TAG = re.compile(r"(?<![\w-])(?P<prefix>XE|XS)-(?P<num>\d{1,6})\b", re.I)
+
+
+def desk_tags(text: str) -> list[str]:
+    """Desk tickets an internal ticket names by id: `XE-0232`, in any case and with or without the zero
+    padding. Reports filed on the desk have no GitHub number, so this is the only way to name them.
+    Deduplicated, in order of appearance, normalised to the desk's form."""
+    out: list[str] = []
+    for m in DESK_TAG.finditer(text or ""):
+        tid = f"{m.group('prefix').upper()}-{int(m.group('num')):04d}"
+        if tid not in out:
+            out.append(tid)
+    return out
+
+
 def claimed_tier(title: str, body: str) -> str | None:
     """The tier the reporter suggested, if the text says so in a way we recognise."""
     for text in (title or "", (body or "")[:4000]):
