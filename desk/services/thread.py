@@ -206,6 +206,7 @@ async def add_patch_ref(
     url: str = "",
     note: str = "",
     state: str = "",
+    author: str = "",
 ) -> PatchRef | None:
     repo, ref = repo.strip(), str(ref).strip()
     if not repo or not ref or kind not in ("pr", "commit"):
@@ -221,7 +222,7 @@ async def add_patch_ref(
     ).scalar_one_or_none()
     if exists:
         changed = False
-        for k, v in (("title", title), ("url", url), ("note", note), ("state", state)):
+        for k, v in (("title", title), ("url", url), ("note", note), ("state", state), ("author", author)):
             if v and getattr(exists, k) != v:
                 setattr(exists, k, v)
                 changed = True
@@ -238,6 +239,7 @@ async def add_patch_ref(
         note=note[:128],
         state=state[:16],
         added_by=p.actor,
+        author=author[:128],
     )
     db.add(pr)
     await db.flush()
@@ -250,6 +252,11 @@ async def add_patch_ref(
         public=t.visibility == "public",
     )
     return pr
+
+
+async def patch_ref(db: AsyncSession, t: Ticket, repo: str, ref: str) -> PatchRef:
+    q = select(PatchRef).where(PatchRef.ticket_id == t.id, PatchRef.repo == repo, PatchRef.ref == ref)
+    return (await db.execute(q)).scalar_one()
 
 
 async def patches_for(db: AsyncSession, t: Ticket) -> list[PatchRef]:

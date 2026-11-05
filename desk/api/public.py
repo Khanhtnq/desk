@@ -369,6 +369,7 @@ def _patch(pr) -> dict:
         "url": pr.url,
         "note": pr.note,
         "state": pr.state,
+        "author": pr.author,
         "added_by": pr.added_by,
         "created_at": thread.iso(pr.created_at),
     }

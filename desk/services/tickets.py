@@ -384,10 +384,12 @@ def award_next_step(t: Ticket) -> tuple[str, str | None]:
 async def outbox(db: AsyncSession, cfg: Config, p: Principal, kind: str = "bounty") -> list[Ticket]:
     """Tickets whose status moved past triage but whose thread has not been told since. A reply sets
     told_at; set_status sets status_changed_at. For the bounty that is fixed-but-silent; for support it is
-    a question moved to needs-info or closed without anyone having written to the asker."""
+    a question moved to needs-info or closed without anyone having written to the asker. A withdrawal is
+    the reporter's own word, so nothing is owed back and it is left out."""
     q = select(Ticket).where(
         Ticket.kind == kind, Ticket.status.notin_(("new", "triaging")), Ticket.status_changed_at.isnot(None)
     )
+    q = q.where((Ticket.closed_reason.is_(None)) | (Ticket.closed_reason != "withdrawn"))
     if not can(p, "read:private"):
         q = q.where(Ticket.visibility == "public")
     q = q.where((Ticket.told_at.is_(None)) | (Ticket.told_at < Ticket.status_changed_at))

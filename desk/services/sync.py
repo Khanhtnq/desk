@@ -161,17 +161,34 @@ async def upsert_comment(ctx: Context, db: AsyncSession, t: Ticket, comment: dic
     return m is not None
 
 
+# Anyone can open a PR against a public repo, so a PR's *existence* proves nothing; only a maintainer's
+# word (or a merge, which needs write access) may move a ticket. GitHub's author_association names the
+# relationship; the desk's own bot account counts too.
+MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
+def pull_is_maintainers(ctx: Context, pull: dict) -> bool:
+    login = (pull.get("user") or {}).get("login") or ""
+    bot = ctx.settings.github_bot_login
+    if (pull.get("author_association") or "").upper() in MAINTAINER_ASSOCIATIONS:
+        return True
+    return bool(bot) and login == bot
+
+
 async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> int:
     """Attach a PR to every ticket whose issue it references, and let a PR that says it fixes the issue
-    move the ticket: `fixing` while open, `patched` once merged, back to `accepted` if it is closed
-    unmerged and nothing else is open against the ticket. A bare `#n` mention links only. Returns how
-    many links were new."""
+    move the ticket: `fixing` while a maintainer's PR is open, `patched` once any PR is merged, and back
+    to where it was if the PR that moved it is closed unmerged with nothing else open against the ticket.
+    A stranger's fork PR links but moves nothing until it is merged. A bare `#n` mention links only.
+    Returns how many links were new."""
     text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
     refs = gh.issue_refs(text)
     if not refs:
         return 0
     fixes = gh.closing_refs(text)
     state = "merged" if pull.get("merged_at") else (pull.get("state") or "open")
+    author = (pull.get("user") or {}).get("login") or ""
+    trusted = pull_is_maintainers(ctx, pull)
     n = 0
     for issue_no in refs:
         t = await tsvc.find_by_source(db, "github", repo, str(issue_no))
@@ -188,11 +205,13 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
             title=pull.get("title") or "",
             url=pull.get("html_url") or "",
             state=state,
+            author=author,
         )
         if pr is not None:
             n += 1
         if issue_no in fixes:
-            await _follow_pull_state(ctx, db, t, repo, int(pull["number"]), state)
+            row = pr or await thread.patch_ref(db, t, repo, str(pull["number"]))
+            await _follow_pull_state(ctx, db, t, row, state, trusted=trusted)
     return n
 
 
@@ -203,25 +222,32 @@ PRE_PATCH = ("new", "triaging", "needs-info", "accepted", "fixing")
 
 
 async def _follow_pull_state(
-    ctx: Context, db: AsyncSession, t: Ticket, repo: str, number: int, state: str
+    ctx: Context, db: AsyncSession, t: Ticket, pr: PatchRef, state: str, *, trusted: bool
 ) -> bool:
     if t.kind != "bounty" or t.status not in PRE_PATCH:
         return False
-    via = f"github:{repo}#{number}"
-    ref = f"{repo.split('/')[-1]}#{number}"
+    via = f"github:{pr.repo}#{pr.ref}"
+    ref = f"{pr.repo.split('/')[-1]}#{pr.ref}"
     if state == "merged":
-        target, reason = "patched", f"{ref} merged"
+        target, reason = "patched", f"{ref} merged"  # a merge is a maintainer's act whoever wrote the PR
     elif state == "open":
-        if t.status == "fixing":
+        if not trusted or t.status == "fixing":
             return False
         target, reason = "fixing", f"{ref} opened"
-    else:  # closed without merging
-        if t.status != "fixing" or await _other_live_patches(db, t, repo, str(number)):
+    else:  # closed without merging: only the PR that moved the ticket (or a maintainer's) moves it back
+        if t.status != "fixing" or not (trusted or pr.moved_from):
             return False
-        target, reason = "accepted", f"{ref} closed unmerged"
+        if await _other_live_patches(db, t, pr.repo, pr.ref):
+            return False
+        target, reason = pr.moved_from or "accepted", f"{ref} closed unmerged"
+        if target == "new":
+            target = "triaging"  # nothing goes back to new; the PR was read, so someone has looked
     if tsvc.status_path(t.kind, t.status, target) is None:
         return False
+    before = t.status
     await tsvc.set_status_via_path(ctx, db, SYSTEM, t, target, reason=reason, via=via)
+    if target == "fixing" and not pr.moved_from:
+        pr.moved_from = before
     return True
 
 

@@ -179,6 +179,11 @@ async def test_ticket_lifecycle(ctx, db):
     r = await thread.add_reply(ctx, db, p, t, "Fixed in #27, thank you.")
     assert r.mirror == "none" and t.told_at is not None
     assert await tsvc.outbox(db, ctx.config, p) == []
+    # a withdrawal is the reporter's own word: closed, never told, and still not owed a reply
+    t3 = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="Test", source="web"))
+    await tsvc.set_status(ctx, db, p, t3, "triaging")
+    await tsvc.set_status(ctx, db, p, t3, "closed", closed_reason="withdrawn")
+    assert await tsvc.outbox(db, ctx.config, p) == []
     # award needs the treasurer and approval before awarded
     with pytest.raises(HTTPException):
         await tsvc.set_status(ctx, db, p, t, "awarded")
@@ -442,11 +447,12 @@ async def test_internal_tracker_moves_a_new_ticket_through_triaging(ctx, db):
     assert other[0].id == t.id and other[1] is False
 
 
-def _pull(number, title, body="", state="open", merged=False):
+def _pull(number, title, body="", state="open", merged=False, login="grace", association="MEMBER"):
     return {
         "number": number, "title": title, "body": body, "state": state,
         "merged_at": "2026-10-21T10:00:00Z" if merged else None,
         "html_url": f"https://github.com/xeprotocol/xe/pull/{number}",
+        "user": {"login": login, "id": 9}, "author_association": association,
     }
 
 
@@ -486,6 +492,42 @@ async def test_a_fixing_pull_moves_the_ticket_and_a_mention_only_links(ctx, db):
     await tsvc.set_status(ctx, db, team, t, "awarded")
     await sync.link_pull(ctx, db, repo, _pull(84, "Follow-up", "Fixes #70", state="closed", merged=True))
     assert t.status == "awarded"
+
+
+async def test_a_strangers_fork_pull_links_but_moves_nothing_until_merged(ctx, db):
+    repo = "xeprotocol/xe"
+    t, _ = await sync.upsert_issue(ctx, db, repo, _issue(90, "Panic on short key"))
+    # anyone can open a fork PR saying "fixes #90": it is linked, with its author on show, and that is all
+    fork = _pull(100, "fix: short key", "Fixes #90", login="mallory", association="NONE")
+    assert await sync.link_pull(ctx, db, repo, fork) == 1
+    assert t.status == "new"
+    refs = await thread.patches_for(db, t)
+    assert [(r.ref, r.author, r.state) for r in refs] == [("100", "mallory", "open")]
+    # closing it unmerged changes nothing either; it never moved the ticket
+    closed = _pull(100, "fix: short key", "Fixes #90", state="closed", login="mallory", association="NONE")
+    await sync.link_pull(ctx, db, repo, closed)
+    assert t.status == "new"
+    # a maintainer's PR does move it, and remembers where from
+    assert await sync.link_pull(ctx, db, repo, _pull(101, "fix(core): guard pk[:12]", "Fixes #90")) == 1
+    assert t.status == "fixing"
+    assert (await thread.patch_ref(db, t, repo, "101")).moved_from == "new"
+    # the stranger's PR closed again while the maintainer's is open: still fixing
+    await sync.link_pull(ctx, db, repo, closed)
+    assert t.status == "fixing"
+    # the maintainer abandons theirs: back to triaging (nothing returns to new), not parked at accepted
+    await sync.link_pull(ctx, db, repo, _pull(101, "fix(core): guard pk[:12]", "Fixes #90", state="closed"))
+    assert t.status == "triaging"
+    # a merge is a maintainer's act whoever wrote the PR, so the stranger's PR merged does mean patched
+    merged = _pull(100, "fix: short key", "Fixes #90", state="closed", merged=True, login="mallory",
+                   association="NONE")
+    await sync.link_pull(ctx, db, repo, merged)
+    assert t.status == "patched"
+    # the bot's own PRs count as the team's without an association
+    ctx.settings.github_bot_login = "xe-desk-bot"
+    t2, _ = await sync.upsert_issue(ctx, db, repo, _issue(91, "Another"))
+    bot = _pull(102, "fix", "Fixes #91", login="xe-desk-bot", association="NONE")
+    await sync.link_pull(ctx, db, repo, bot)
+    assert t2.status == "fixing"
 
 
 async def test_approved_awards_whose_ticket_has_not_caught_up_are_listed(ctx, db):

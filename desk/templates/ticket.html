@@ -99,7 +99,7 @@
   {% if t.kind == "bounty" %}
   <h3 style="margin-top:28px">Patches</h3>
   {% if patches %}
-  <ul class="patches">{% for pr in patches %}<li><a href="{{ pr.url }}" rel="noopener" class="mono">{{ pr.repo.split('/')[-1] }}{{ '#' if pr.kind == 'pr' else '@' }}{{ pr.ref[:10] if pr.kind == 'commit' else pr.ref }}</a>{% if pr.state %} <span class="pill {{ pr.state }}">{{ pr.state }}</span>{% endif %}{% if pr.note %} <span class="k">{{ pr.note }}</span>{% endif %}{% if pr.title %}<br><span class="k">{{ pr.title }}</span>{% endif %}</li>{% endfor %}</ul>
+  <ul class="patches">{% for pr in patches %}<li><a href="{{ pr.url }}" rel="noopener" class="mono">{{ pr.repo.split('/')[-1] }}{{ '#' if pr.kind == 'pr' else '@' }}{{ pr.ref[:10] if pr.kind == 'commit' else pr.ref }}</a>{% if pr.state %} <span class="pill {{ pr.state }}">{{ pr.state }}</span>{% endif %}{% if pr.author %} <span class="k">by {{ pr.author }}</span>{% endif %}{% if pr.note %} <span class="k">{{ pr.note }}</span>{% endif %}{% if pr.title %}<br><span class="k">{{ pr.title }}</span>{% endif %}</li>{% endfor %}</ul>
   {% else %}<p class="k">None linked.</p>{% endif %}
   {% if team %}
   <div class="row"><input type="text" id="patch-ref" placeholder="#27, dao#1, owner/repo#5" style="max-width:220px"><button class="ghost mini" id="add-patch" type="button">Link</button></div>

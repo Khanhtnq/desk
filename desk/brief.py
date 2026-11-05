@@ -278,8 +278,9 @@ def build_agent_brief(
         _p(
             "GitHub moves some statuses by itself, so do not propose what it will do anyway. A PR in a",
             "watched repo whose title or body says `fixes #n`, `closes #n` or `resolves #n` links itself to",
-            "the ticket for issue `n` and moves it to `fixing` when it opens and `patched` when it merges",
-            "(closed unmerged with nothing else open: back to `accepted`). A bare `#n` mention links only.",
+            "the ticket for issue `n` and moves it to `fixing` when a maintainer opens it and `patched`",
+            "when it merges (closed unmerged with nothing else open: back to where it was). A stranger's",
+            "fork PR links but moves nothing until merged. A bare `#n` mention links only.",
             f"An internal {tracker} ticket naming the report moves it to `accepted` while open and",
             "`patched` when closed as completed. Nothing on GitHub moves a ticket past `patched`:",
             "disclosure, award and payment are people's decisions. Your job on status is the rest:",

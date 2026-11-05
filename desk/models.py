@@ -461,6 +461,9 @@ class PatchRef(Base):
     note: Mapped[str] = mapped_column(String(128), nullable=False, default="")  # "partial", "wrong repo", ...
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="")  # open | merged | closed
     added_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    author: Mapped[str] = mapped_column(String(128), nullable=False, default="")  # GitHub login, PRs only
+    # the status the ticket held before this PR moved it, so closing the PR unmerged can put it back
+    moved_from: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
