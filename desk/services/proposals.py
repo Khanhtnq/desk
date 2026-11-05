@@ -151,6 +151,78 @@ async def decide(
     return out
 
 
+async def pending_duplicates_of(db: AsyncSession, tid: str) -> list[tuple[Ticket, Proposal]]:
+    """Open tickets carrying a pending `duplicate_of` proposal that names `tid`: the family an agent has
+    read as re-filings of this one, waiting for a ruling."""
+    q = (
+        select(Ticket, Proposal)
+        .join(Proposal, Proposal.ticket_id == Ticket.id)
+        .where(
+            Proposal.field == "duplicate_of",
+            Proposal.state == "pending",
+            Proposal.value["value"].astext == tid,
+            Ticket.status != "closed",
+            Ticket.id != tid,
+        )
+        .order_by(Ticket.id)
+    )
+    return [(t, pr) for t, pr in (await db.execute(q)).all()]
+
+
+async def close_duplicates(
+    ctx: Context, db: AsyncSession, p: Principal, canon: Ticket, only: list[str] | None = None
+) -> dict:
+    """Rule a whole family at once. For every open ticket with a pending `duplicate_of` proposal naming
+    `canon`: adopt it, set the verdict, close as duplicate (walking the status path), and send the
+    programme's own duplicate reply under the person ruling. Each ticket is its own savepoint, so one the
+    desk refuses (a transition, a permission) is reported and left as it was while the rest go through.
+    The decision stays a person's: this is one click for a family instead of four per ticket."""
+    from . import thread
+
+    if p.user is None or not can(p, "adopt"):
+        raise HTTPException(403, "adopting is a reviewer's action")
+    require_field(p, "duplicate_of")
+    require_field(p, "status")
+    closed: list[dict] = []
+    skipped: list[dict] = []
+    for t, pr in await pending_duplicates_of(db, canon.id):
+        if only and t.id not in only:
+            continue
+        try:
+            async with db.begin_nested():
+                require(p, "reply", t)
+                why = f"duplicate of {canon.id}"
+                via = f"family:{canon.id}"
+                await decide(ctx, db, p, pr, True, reason=why)
+                others = {o.field: o for o in await pending_for(db, t) if o.state == "pending"}
+                v = others.get("verdict")
+                if v is not None and v.value.get("value") == "duplicate":
+                    await decide(ctx, db, p, v, True, reason=why)
+                elif t.verdict != "duplicate":
+                    await tsvc.set_facts(ctx, db, p, t, {"verdict": "duplicate"}, reason=why, via=via)
+                s = others.get("status")
+                sv = s.value.get("value") if s is not None else None
+                is_dup_close = isinstance(sv, dict) and (sv.get("status"), sv.get("closed_reason")) == (
+                    "closed",
+                    "duplicate",
+                )
+                if is_dup_close:
+                    await decide(ctx, db, p, s, True, reason=why)
+                else:
+                    await tsvc.set_status_via_path(
+                        ctx, db, p, t, "closed", closed_reason="duplicate", reason=why, via=via
+                    )
+                d = others.get("reply_draft")
+                if d is not None:
+                    await decide(ctx, db, p, d, True)  # recorded as adopted; the reply below clears the draft
+                text = thread.render_template(ctx, "duplicate", t)
+                r = await thread.add_reply(ctx, db, p, t, text)
+                closed.append({"ticket": t.id, "status": t.status, "reply": r.id, "text": text})
+        except HTTPException as e:
+            skipped.append({"ticket": t.id, "why": str(e.detail)})
+    return {"canonical": canon.id, "closed": closed, "skipped": skipped}
+
+
 def to_dict(pr: Proposal, token: AgentToken | None = None) -> dict:
     return {
         "id": pr.id,

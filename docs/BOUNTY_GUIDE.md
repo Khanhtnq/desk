@@ -61,7 +61,7 @@ new → triaging → accepted → fixing → patched → awarded → paid
 **Thread.** Three kinds of writing, kept apart:
 
 - **Notes** are internal: team and agents, never shown to reporters, never mirrored.
-- **Proposals** are an agent's suggestions for a fact, a status or a reply draft, waiting for a person.
+- **Proposals** are an agent's suggestions for a fact, a status or a reply draft, waiting for a person. Duplicates are ruled by family: a ticket that other tickets have been proposed as duplicates of shows them under "Filed as duplicates of this one", and one click (`POST /v1/team/tickets/{id}/duplicates/close`) marks, closes and tells every one of them under your name, using the programme's duplicate template; anything the desk refuses is listed and left alone. It is still a person's ruling, taken once per bug instead of four times per re-filing.
 - **Replies** are public: to the GitHub issue, the Discord thread, or the ticket page and the reporter's email. Only a person sends one.
 
 ## 4. Priority: what the list shows you
@@ -104,7 +104,9 @@ Read them on the desk only; the body and attachments come out of the vault for y
 
 **Awards (treasurers)**
 
-On a `patched` or `disclosed` ticket with an assessed tier, set the amount in XE and approve. The desk refuses more than twice the tier's ceiling without a note explaining it. Status `awarded`. Awards are paid at mainnet launch to the address the reporter bound on `/account` by signing with its key; the desk never takes an address from a GitHub comment. `/v1/team/payouts.csv` is the payment list: only approved awards with bound addresses appear, so chase reporters without one (the ticket page shows it). After payment, status `paid` with the transaction as `paid_ref`.
+On a `patched` or `disclosed` ticket with an assessed tier, set the amount in XE and approve. The desk refuses more than twice the tier's ceiling without a note explaining it. Status `awarded`.
+
+**How much.** The ceiling is the most a report in its tier can earn, not the going rate. An award is one of the steps in `config/desk.yaml` (`award_steps`: top 50%, standard 35%, reduced 20%, minimal 10% of the ceiling, rounded down to the tier's grain; desk findings in area `other` take a quarter of the step). Top is measured on the live network with the shipped fix being the one the report gave; standard is a confirmed first filing the team still had to fix; reduced is an over-claimed tier, a root cause or consequence the team found, a symptom already written down, or a fix shared with another award; minimal is known internally before filing, latent code, a design gap or a symptom-only report. Agents propose on the same steps and their reason names the step; adopt the step, not a number, and put the step and its one-sentence reason in the award note so the reporter reads a rule. Duplicates pay nothing; the first verifiable report is paid. Changing the shares is a pull request against `config/desk.yaml`, like any other policy change. Awards are paid at mainnet launch to the address the reporter bound on `/account` by signing with its key; the desk never takes an address from a GitHub comment. `/v1/team/payouts.csv` is the payment list: only approved awards with bound addresses appear, so chase reporters without one (the ticket page shows it). After payment, status `paid` with the transaction as `paid_ref`.
 
 ## 6. Agents
 

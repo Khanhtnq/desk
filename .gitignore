@@ -13,3 +13,7 @@ dist/
 docs/BOUNTY_TRIAGE.md
 # legal drafts stay out of the public repo
 docs/XE_MICA_WHITE_PAPER.md
+# working triage documents: reporter ids and pre-empted rulings stay off the public repo
+docs/DUPLICATE_REVIEW.md
+docs/TRIAGE_AGENT_BRIEF.md
+docs/ADOPTION_LIST.md

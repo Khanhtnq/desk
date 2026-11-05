@@ -460,6 +460,50 @@ async def test_agent_proposes_human_adopts(ctx, db):
     assert not any("Thanks, reproduced" in str(e.payload) for e in pub), "drafts never land in the public log"
 
 
+async def test_a_family_of_duplicates_closes_in_one_ruling(ctx, db):
+    p = await _team(ctx, db, roles=("reviewer",))
+    agent = await _agent(ctx, db, p.user)
+    canon = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="first", source="web"))
+    dups = [
+        await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=f"again {i}", source="web"))
+        for i in range(3)
+    ]
+    # the agent proposes the usual four on two of them, only duplicate_of on the third
+    for t in dups[:2]:
+        await psvc.propose(ctx, db, agent, t, "duplicate_of", canon.id, "same defect, filed later")
+        await psvc.propose(ctx, db, agent, t, "verdict", "duplicate", "same defect")
+        closing = {"status": "closed", "closed_reason": "duplicate"}
+        await psvc.propose(ctx, db, agent, t, "status", closing, "dup")
+        await psvc.propose(ctx, db, agent, t, "reply_draft", "Same as {duplicate_url}.", "")
+    await psvc.propose(ctx, db, agent, dups[2], "duplicate_of", canon.id, "same defect, filed later")
+    # an unrelated proposal and a proposal naming another canonical are not part of the family
+    other = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="other", source="web"))
+    await psvc.propose(ctx, db, agent, other, "duplicate_of", dups[0].id, "a different family")
+    fam = await psvc.pending_duplicates_of(db, canon.id)
+    assert [t.id for t, _ in fam] == sorted(t.id for t in dups)
+
+    with pytest.raises(HTTPException):
+        await psvc.close_duplicates(ctx, db, agent, canon)  # a person rules, never a token
+    out = await psvc.close_duplicates(ctx, db, p, canon)
+    assert [d["ticket"] for d in out["closed"]] == sorted(t.id for t in dups) and out["skipped"] == []
+    for t in dups:
+        await db.refresh(t)
+        assert (t.status, t.closed_reason, t.duplicate_of) == ("closed", "duplicate", canon.id)
+        assert t.verdict == "duplicate"
+        assert t.draft == ""  # the adopted draft was replaced by the sent reply
+    ids = [t.id for t in dups]
+    replies = (await db.execute(select(Reply).where(Reply.ticket_id.in_(ids)))).scalars().all()
+    assert len(replies) == 3 and all(canon.id in r.body and r.author_id == p.user.id for r in replies)
+    # every proposal in the family is decided; the one naming another canonical still waits
+    states = Counter(pr.state for pr in (await db.execute(select(Proposal))).scalars().all())
+    assert states == {"adopted": 9, "pending": 1}
+    assert await psvc.pending_duplicates_of(db, canon.id) == []
+    # the log shows the ruling as the person's, hop by hop, with the family named
+    evs = await EventLog.page(db, 0, 200, ref=dups[2].id)
+    assert any(e.kind == "ticket.status" and e.payload.get("via") == f"family:{canon.id}" for e in evs)
+    assert all(e.actor == p.actor for e in evs if e.kind.startswith("ticket."))
+
+
 def test_status_path_walks_forward_edges_only():
     assert tsvc.status_path("bounty", "new", "accepted") == ["triaging", "accepted"]
     assert tsvc.status_path("bounty", "new", "patched") == ["triaging", "accepted", "patched"]

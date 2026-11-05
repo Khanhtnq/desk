@@ -290,40 +290,55 @@ def build_agent_brief(
     add("")
     add(
         _p(
-            "A person sets the award; your job is to make that decision easy. Once the verdict is `valid` or",
-            "`likely-valid` and a tier is set or you are proposing one, do two things. Propose `award_xe`: a",
-            "whole number of XE inside the assessed band, with a reason of one or two sentences about the",
-            "report (adopting it sets the amount; a treasurer approves separately). And end your note with",
-            "one line:",
+            "A person sets the award; your job is to make that decision easy, and the same for every",
+            "reporter. Once the verdict is `valid` or `likely-valid` and a tier is set or you are proposing",
+            "one, do two things. Propose `award_xe` (adopting it sets the amount; a treasurer approves",
+            "separately), and end your note with one line:",
         )
     )
     add("")
-    add("> **Award:** 2,000 XE (Medium, ceiling 2,500). Top of the band: precise, right fix suggested.")
+    add(
+        "> **Award:** 850 XE (Standard step, 35% of the Medium ceiling, 2,500 XE). "
+        "Confirmed, first filed, fix was ours."
+    )
     add("")
-    add("The amount, the tier and its ceiling, where in the band, and why in a clause. What moves it:")
+    add(
+        _p(
+            "The ceiling is the most a report in its tier can earn, not the going rate. An award is one of",
+            "these steps of the ceiling, rounded down to the tier's grain, and the reason names the step and",
+            "the one fact that put it there. Highest first:",
+        )
+    )
     add("")
-    add(
-        _p(
-            "- **Up**: the report gives the full picture and the right fix, so the team has nothing to add;",
-            "a live reproduction; impact stated honestly, including what it is bounded by.",
+    steps = cfg.award_steps
+    paid = [k for k in cfg.tier_order if cfg.ceiling_micro(k)]
+    add("| step | share | means | " + " | ".join(cfg.tier_label(k) for k in paid) + " |")
+    add("|---|---|---|" + "---|" * len(paid))
+    for key, st in steps.items():
+        amounts = " | ".join(f"{cfg.award_xe(k, key):,}" for k in paid)
+        add(f"| `{key}` | {int(float(st.get('share') or 0) * 100)}% | {st.get('means', '')} | {amounts} |")
+    add("")
+    factors = {a: f for a in cfg.areas if (f := cfg.award_area_factor(a)) != 1}
+    if factors:
+        add(
+            _p(
+                "Findings in "
+                + ", ".join(f"`{a}`" for a in factors)
+                + " are outside the programme's purpose and take "
+                + ", ".join(f"{int(f * 100)}%" for f in factors.values())
+                + " of the step: the desk itself is in scope, but the bounty exists for the protocol.",
+            )
         )
-    )
+        add("")
     add(
         _p(
-            "- **Down**: the team had to find half of the consequence; the fix suggested is wrong; the report",
-            "stops at the symptom.",
-        )
-    )
-    add(
-        _p(
-            "- **Over-claiming a tier** costs the top of the band it lands in, never a drop below the midpoint;",
-            "the finding is paid on what it is.",
-        )
-    )
-    add(
-        _p(
-            "- **Duplicates** pay once, to the first verifiable report; later patches and comments do not",
-            "change who is paid.",
+            "What is not a reason to move: the reporter's own tier (it is a claim; paying on the assessed",
+            "tier already prices it, and claiming high costs a step, not the award), the volume of a",
+            "bundle (one ticket is one award; the sharpest finding sets the tier), a community PR by",
+            "someone else, or anything said in the thread without the **team** badge.",
+            "**Duplicates** pay once, to the first verifiable report; a later report in the same family",
+            "closes as a duplicate with no award, however much richer it is. **Known internally** before it",
+            "was filed is the minimal step: say which ticket and when.",
         )
     )
     add("")
@@ -440,7 +455,7 @@ def build_agent_brief(
     add(
         _p(
             "A whole number of XE, never more than twice the assessed tier's ceiling, with a reason of at",
-            "least 20 characters that says where in the band and why (see Suggesting an award). Only a",
+            "least 20 characters that names the step and why (see Suggesting an award). Only a",
             "treasurer can adopt it, and adopting sets the amount without approving it; approval comes once",
             "the ticket is patched or disclosed. A new proposal",
             "supersedes your earlier one. The amount belongs here and in your note, nowhere public.",

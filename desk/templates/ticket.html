@@ -152,6 +152,13 @@
     <ul class="patches">{% for s in similar %}{% set o = s.ticket %}<li>{{ m.tlink(o) }} <span class="pill {{ o.status }}">{{ o.status }}{% if o.closed_reason %} · {{ o.closed_reason }}{% endif %}</span> {{ o.title }}{% if o.duplicate_of %} <span class="k">dup of {{ o.duplicate_of }}</span>{% endif %}{% if o.internal_ref %} <span class="mono">{{ o.internal_ref }}</span>{% endif %} <span class="k">· {{ s.why|join(", ") }}</span></li>{% endfor %}</ul>
     {% endif %}
   </section>
+  {% if family %}
+  <section class="family">
+    <h3>Filed as duplicates of this one <span class="k">{{ family|length }} waiting</span></h3>
+    <ul class="patches">{% for o, pr in family %}<li>{{ m.tlink(o) }} <span class="pill {{ o.status }}">{{ o.status }}</span> {{ o.title }} <span class="k">· token {{ pr.token_id }}{% if owners.get(pr.token_id) %} for {{ owners[pr.token_id] }}{% endif %}</span></li>{% endfor %}</ul>
+    {% if team %}<div class="row" style="margin-top:8px"><span class="k">One ruling for the family: sets the duplicate and the verdict, closes each, and sends the programme's duplicate reply under your name. Anything the desk refuses is left as it was and listed.</span><button class="ghost mini" id="close-family" type="button" data-count="{{ family|length }}">Close all {{ family|length }} as duplicates</button></div>{% endif %}
+  </section>
+  {% endif %}
   <section class="proposals">
     <h3>Proposals <span class="k">{{ proposals|selectattr("state", "equalto", "pending")|list|length }} pending</span></h3>
     {% if not proposals %}<p class="k">None. Agents propose; you adopt or reject.</p>{% endif %}

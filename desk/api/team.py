@@ -218,6 +218,42 @@ class BulkIn(BaseModel):
     reject: list[int] = []
 
 
+class FamilyIn(BaseModel):
+    tickets: list[str] | None = None  # a subset of the family; all of it when omitted
+
+
+@router.get("/tickets/{tid}/duplicates")
+async def pending_duplicates(ctx: Ctx, db: Db, who: Who, request: Request, tid: str):
+    """The family: open tickets an agent has proposed as duplicates of this one, still waiting."""
+    _team(who, request)
+    t = await tsvc.get_for(db, who.principal, tid)
+    rows = await psvc.pending_duplicates_of(db, t.id)
+    return {
+        "canonical": t.id,
+        "tickets": [
+            {**tsvc.to_dict(ctx, o, who.principal), "proposal": psvc.to_dict(pr)} for o, pr in rows
+        ],
+    }
+
+
+@router.post("/tickets/{tid}/duplicates/close")
+async def close_duplicates(
+    ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: FamilyIn | None = None
+):
+    """One ruling for the family: each pending duplicate of `tid` is marked, closed and told, under the
+    person clicking. Tickets the desk refuses are reported in `skipped`, untouched."""
+    _team(who, request)
+    canon = await tsvc.get_for(db, who.principal, tid)
+    out = await psvc.close_duplicates(ctx, db, who.principal, canon, only=body.tickets if body else None)
+    await db.commit()
+    for d in out["closed"]:
+        t = await tsvc.get(db, d["ticket"])
+        text = d.pop("text")
+        if t is not None:
+            d["mailed"] = await notify.reply_to_reporter(ctx, db, t, who.principal.name, text)
+    return out
+
+
 @router.post("/proposals/bulk")
 async def decide_bulk(ctx: Ctx, db: Db, who: Who, request: Request, body: BulkIn):
     _team(who, request)

@@ -63,6 +63,43 @@ effort_bands:
   "1-2w":   { band: F, engineer: "1–2w",  agent: "3–5 d",     engineer_hours: 60,   agent_hours: 32 }
   "design": { band: Design, engineer: "—", agent: "—",         engineer_hours: 0,    agent_hours: 0 }
 
+# Where an award lands under its ceiling. The ceiling is the most a report in the tier can earn; an
+# award is one of these steps of it, rounded down to the tier's grain, so the floor is the same rule
+# for every reporter and the reason on an award names the step. Ordered highest first.
+award_steps:
+  top:
+    label: Top
+    share: 0.50
+    means: >-
+      Measured on the live network, and the fix that shipped is the one the report gave; nothing for
+      the team to add.
+  standard:
+    label: Standard
+    share: 0.35
+    means: Confirmed, first filed, and the team still had to write the fix.
+  reduced:
+    label: Reduced
+    share: 0.20
+    means: >-
+      Claimed a tier above the assessment; or the team found the root cause or the consequence that
+      matters; or the symptom was already written down; or it shares a fix with another award.
+  minimal:
+    label: Minimal
+    share: 0.10
+    means: >-
+      Already ruled or known internally before it was filed; latent code with no callers; a design
+      gap; a symptom-only report.
+# The step amount is rounded down to this grain, in whole XE.
+award_grain:
+  critical: 1000
+  severe: 500
+  high: 500
+  medium: 50
+  minor: 50
+# Findings in these areas are outside the programme's purpose and take a fraction of the step.
+award_area_factor:
+  other: 0.25
+
 # Repositories the desk imports from and mirrors to. The first is the bounty's reporting repo.
 github:
   repos:

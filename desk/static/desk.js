@@ -362,6 +362,16 @@
     $$("[data-reject]").forEach(b => b.addEventListener("click", async () => {
       try { await api("POST", `/v1/team/proposals/${b.dataset.reject}/reject`, {}); reload(); } catch (e) { tell("Could not reject", e.message); }
     }));
+    if ($("#close-family")) $("#close-family").addEventListener("click", async () => {
+      const n = $("#close-family").dataset.count;
+      if (!await ask({ title: `Close ${n} tickets as duplicates of ${tid}?`, body: "Each is marked duplicate_of this ticket, closed, and sent the programme's duplicate reply under your name. The log records every step against you.", ok: `Close ${n}` })) return;
+      try {
+        const r = await api("POST", `/v1/team/tickets/${tid}/duplicates/close`, {});
+        const sk = (r.skipped || []).map(s => `${s.ticket}: ${s.why}`).join("\n");
+        await tell(`Closed ${(r.closed || []).length} of ${n}`, sk ? `Left as they were:\n${sk}` : "All of them.");
+        reload();
+      } catch (e) { tell("Could not close the family", e.message); }
+    });
     if ($("#adopt-all")) $("#adopt-all").addEventListener("click", async () => {
       const ids = $$("[data-adopt]:not([disabled])").filter(b => b.closest(".proposal").dataset.field !== "reply_draft").map(b => parseInt(b.dataset.adopt, 10));
       if (!ids.length || !await ask({ title: `Adopt ${ids.length} proposals?`, body: "Reply drafts are left for you to use one at a time.", ok: "Adopt all" })) return;

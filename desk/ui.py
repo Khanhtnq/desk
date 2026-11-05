@@ -599,11 +599,13 @@ async def ticket_page(request: Request, tid: str):
         patches = await thread.patches_for(db, t)
         notes = await thread.notes_for(db, t) if can(p, "read:notes", t) else []
         proposals = await psvc.pending_for(db, t) if can(p, "read:notes", t) else []
+        # the family: tickets an agent has read as re-filings of this one, waiting for one ruling
+        family = await psvc.pending_duplicates_of(db, t.id) if can(p, "read:notes", t) else []
         replies = await thread.replies_for(db, t) if p.is_team else []
         dup = await tsvc.get(db, t.duplicate_of) if t.duplicate_of else None
         events = await EventLog.page(db, 0, 50, ref=t.id, **log_scope(p, t))
         team_users = await users.list_users(db) if p.is_team else []
-        owners = await users.token_owners(db) if (notes or proposals) else {}
+        owners = await users.token_owners(db) if (notes or proposals or family) else {}
         reporters = await rsvc.list_for_picker(db) if p.is_team else []
         reporter = (
             (await db.execute(select(Reporter).where(Reporter.id == t.reporter_id))).scalar_one_or_none()
@@ -640,6 +642,7 @@ async def ticket_page(request: Request, tid: str):
             "notes": notes,
             "similar": similar,
             "proposals": proposals,
+            "family": family,
             "replies": replies,
             "dup": dup,
             "events": events,

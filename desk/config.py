@@ -103,6 +103,26 @@ class Config:
         b = self.effort_bands.get(effort_eng or "") or {}
         return float(b.get("engineer_hours") or 0), float(b.get("agent_hours") or 0)
 
+    # ---- awards ---------------------------------------------------------------------------
+
+    @property
+    def award_steps(self) -> dict[str, dict]:
+        """Where an award lands under the ceiling, highest step first, as the file lists them."""
+        return {k: dict(v) for k, v in (self.desk.get("award_steps") or {}).items() if isinstance(v, dict)}
+
+    def award_grain(self, tier: str | None) -> int:
+        return int((self.desk.get("award_grain") or {}).get(tier or "") or 1)
+
+    def award_area_factor(self, area: str | None) -> float:
+        return float((self.desk.get("award_area_factor") or {}).get(area or "") or 1)
+
+    def award_xe(self, tier: str | None, step: str, area: str | None = None) -> int:
+        """The whole-XE amount one step of a tier's ceiling comes to, rounded down to the tier's grain."""
+        share = float((self.award_steps.get(step) or {}).get("share") or 0)
+        raw = (self.ceiling_micro(tier) // 1_000_000) * share * self.award_area_factor(area)
+        grain = self.award_grain(tier)
+        return int(raw // grain) * grain
+
     # ---- github ---------------------------------------------------------------------------
 
     @property
