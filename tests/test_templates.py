@@ -64,6 +64,24 @@ def test_html_to_markdown_drops_chrome_and_keeps_table():
     assert "nav" not in md and "x()" not in md and "<input" not in md
 
 
+def test_user_text_stays_text_in_the_twin():
+    """XE-0507: what a page showed as characters cannot become markdown or HTML in the mirror."""
+    page = """<html><head><title>x --> y</title></head><body><main>
+<h1>A &lt;b&gt;title&lt;/b&gt; [here](http://evil)</h1>
+<p>reply: ![img](https://t.example/p.gif) &lt;script&gt;alert(1)&lt;/script&gt;</p>
+<pre>body
+```
+# not fenced out
+```</pre>
+</main></body></html>"""
+    md = html_to_markdown(page, "https://bounty.xe.network/XE-0001")
+    assert md.startswith("<!-- x - -› y -->\n")
+    assert "](http://evil)" not in md and "\\[here\\]" in md
+    assert "![img]" not in md and "!\\[img\\]" in md
+    assert "<script>" not in md and "\\<script\\>" in md
+    assert "\n````\nbody\n```\n# not fenced out\n```\n````\n" in md
+
+
 def test_llms_txt_shape(config):
     txt = build_llms_txt(config, "https://bounty.xe.network", "testnet-0005")
     assert txt.startswith("# XE Bounty") and "> " in txt
