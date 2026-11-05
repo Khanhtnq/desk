@@ -246,6 +246,29 @@ async def test_ticket_lifecycle(ctx, db):
     )
 
 
+async def test_counts_split_into_now_and_all_time(ctx, db):
+    """Open is what is still being worked. Fixed, awarded and closed are all-time and never shrink as a
+    ticket moves from the merge to the money. The list filters use the same split."""
+    p = await _team(ctx, db)
+    a, b, c, d = [
+        await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=n, source="web")) for n in "abcd"
+    ]
+    for t, path in ((a, ["triaging", "accepted"]), (b, ["triaging", "accepted", "patched"]),
+                    (c, ["triaging", "accepted", "patched", "awarded", "paid"])):
+        for st in path:
+            await tsvc.set_status(ctx, db, p, t, st)
+    await tsvc.set_status(ctx, db, p, d, "closed", closed_reason="invalid")
+    n = await tsvc.counts(db, p)
+    assert (n["open"], n["fixed"], n["awarded_all"], n["closed"]) == (1, 2, 1, 1)
+    assert n["open"] == n["new"] + n["triaging"] + n["needs-info"] + n["accepted"] + n["fixing"]
+    async def ids(status):
+        return {r.id for r in await tsvc.list_tickets(db, ctx.config, p, tsvc.Filters(status=status))}
+
+    assert await ids("open") == {a.id}
+    assert await ids("fixed") == {b.id, c.id}
+    assert await ids("closed") == {d.id}
+
+
 async def test_team_administration_never_reaches_the_public_log(ctx, db):
     p = await _team(ctx, db)
     tok = await _agent(ctx, db, p.user)

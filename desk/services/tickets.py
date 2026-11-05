@@ -40,6 +40,11 @@ from ..vault import VaultError
 
 ID_PREFIX = {"bounty": "XE", "support": "XS"}
 
+# Three answers to "where is it": still being worked (open), fixed and somewhere between the merge and the
+# money (fixed), or closed without a fix. The headline counts and the list filters use the same split.
+OPEN_STATUSES = ("new", "triaging", "needs-info", "accepted", "fixing")
+FIXED_STATUSES = ("patched", "disclosed", "awarded", "paid")
+
 TRANSITIONS: dict[str, dict[str, set[str]]] = {
     "bounty": {
         "new": {"triaging", "closed"},
@@ -273,9 +278,11 @@ async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) 
     if f.kind and f.kind != "all":
         q = q.where(Ticket.kind == f.kind)
     if f.status == "open":
-        q = q.where(Ticket.status.notin_(("closed", "paid")))
+        q = q.where(Ticket.status.in_(OPEN_STATUSES))
+    elif f.status == "fixed":
+        q = q.where(Ticket.status.in_(FIXED_STATUSES))
     elif f.status == "closed":
-        q = q.where(Ticket.status.in_(("closed", "paid")))
+        q = q.where(Ticket.status == "closed")
     elif f.status and f.status != "all":
         q = q.where(Ticket.status == f.status)
     if f.area:
@@ -330,7 +337,11 @@ async def counts(db: AsyncSession, p: Principal, kind: str = "bounty") -> dict[s
     out = {s: 0 for s in STATUSES}
     for s, n in rows:
         out[s] = int(n)
-    out["open"] = sum(v for k, v in out.items() if k not in ("closed", "paid"))
+    out["open"] = sum(out[s] for s in OPEN_STATUSES)
+    # all-time: a ticket that reached `patched` stays counted there as it moves on to the award and the
+    # payment, so the three numbers read "fixed", "awarded", "closed without a fix" and never shrink
+    out["fixed"] = sum(out[s] for s in FIXED_STATUSES)
+    out["awarded_all"] = out["awarded"] + out["paid"]
     out["total"] = sum(v for k, v in out.items() if k in STATUSES)
     return out
 

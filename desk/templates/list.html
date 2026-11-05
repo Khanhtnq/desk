@@ -21,14 +21,22 @@
 {% if split %}<p class="sub k">{{ copy.bounty_crosslink.replace("{support_url}", support_url) }}</p>{% endif %}
 
 <div class="counts">
-  <div><b>{{ counts.open }}</b>{{ copy.labels.open }}</div>
-  {% for s in ("new", "triaging", "needs-info", "accepted", "fixing", "patched", "disclosed", "awarded") if kind == "bounty" and counts[s] %}<div><b>{{ counts[s] }}</b>{{ copy.labels.get(s, s) }}</div>{% endfor %}
-  <div><b>{{ counts.closed + counts.paid }}</b>{{ copy.labels.closed }}</div>
-  {% if team and pend %}<div><b>{{ pend.values()|sum }}</b>pending proposals</div>{% endif %}
+  <div class="group"><h4>Currently</h4><div class="nums">
+    <div><b>{{ counts.open }}</b>{{ copy.labels.open }}</div>
+    {% for s in ("new", "triaging", "needs-info", "accepted", "fixing") if counts[s] %}<div><b>{{ counts[s] }}</b>{{ copy.labels.get(s, s) }}</div>{% endfor %}
+  </div></div>
+  <div class="group"><h4>All time</h4><div class="nums">
+    <div><b>{{ counts.fixed }}</b>{{ copy.labels.patched }}</div>
+    <div><b>{{ counts.awarded_all }}</b>{{ copy.labels.awarded }}</div>
+    <div><b>{{ counts.closed }}</b>{{ copy.labels.closed }}</div>
+  </div></div>
+  {% if team and pend %}<div class="group"><h4>For the team</h4><div class="nums">
+    <div><b>{{ pend.values()|sum }}</b>pending proposals</div>
+  </div></div>{% endif %}
 </div>
 
 <div class="filters">
-  {{ flt("status", "open", "Open") }}{{ flt("status", "closed", "Closed") }}{{ flt("status", "all", "All") }}
+  {{ flt("status", "open", "Open") }}{{ flt("status", "fixed", "Fixed") }}{{ flt("status", "closed", "Closed") }}{{ flt("status", "all", "All") }}
   <span class="sep">·</span>
   {% for k, v in cfg.areas.items() %}{{ flt("area", k, v) }}{% endfor %}
   {% if kind == "bounty" %}

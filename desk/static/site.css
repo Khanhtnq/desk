@@ -204,10 +204,13 @@ footer .meta span { color:var(--text-low); } footer .meta span + span:not(:first
 .filters a:hover { border-color:var(--stroke-strong); color:var(--text-high); }
 .filters a.on { background:var(--text-high); border-color:var(--text-high); color:var(--bg); }
 .filters .sep { border:0; padding:0 4px; color:var(--stroke-strong); }
-.counts { display:flex; gap:24px; flex-wrap:wrap; margin:0 0 28px; }
-.counts div { font-family:var(--mono); font-size:13px; color:var(--mute); }
+.counts { display:flex; gap:0; flex-wrap:wrap; margin:0 0 28px; }
+.counts .group { padding:0 28px 0 0; margin:0 28px 12px 0; border-right:1px solid var(--outline); }
+.counts .group:last-child { border-right:0; margin-right:0; padding-right:0; }
+.counts h4 { margin:0 0 10px; font:500 11px/14px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--text-low); }
+.counts .nums { display:flex; gap:24px; flex-wrap:wrap; }
+.counts .nums div { font:500 11px/14px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--mute); }
 .counts b { display:block; font:400 26px/28px var(--sans); letter-spacing:-.03em; color:var(--text-high); margin-bottom:4px; font-variant-numeric:tabular-nums; }
-.counts div { font:500 11px/14px var(--mono); letter-spacing:.06em; text-transform:uppercase; }
 
 .tier { display:inline-flex; align-items:center; height:22px; padding:0 8px; font:500 11px/1 var(--mono); letter-spacing:.04em; text-transform:uppercase; border:1px solid var(--outline); color:var(--text-low); white-space:nowrap; }
 .tier.critical { background:var(--negative); border-color:var(--negative); color:#fff; }

@@ -66,7 +66,7 @@ new → triaging → accepted → fixing → patched → awarded → paid
 
 ## 4. Priority: what the list shows you
 
-`/` on the bounty host, signed in, is the queue. The default order is **severity**: assessed tier first, then claimed tier for those not yet assessed, then oldest first. Filters narrow it: status (`open` is everything not closed or paid), area, tier, gate, source, has PR, has internal ref, **pending** (has proposals waiting), and a text search across title, id, `#issue` and internal ref.
+`/` on the bounty host, signed in, is the queue. The default order is **severity**: assessed tier first, then claimed tier for those not yet assessed, then oldest first. Filters narrow it: status (`open` is new to fixing; `fixed` is patched to paid; `closed` is closed without a fix), area, tier, gate, source, has PR, has internal ref, **pending** (has proposals waiting), and a text search across title, id, `#issue` and internal ref.
 
 Two other views matter:
 
