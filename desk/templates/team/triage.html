@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Triage{% endblock %}
+{% macro chip(pr) -%}
+{%- set v = pr.value.value -%}
+{%- set ok = adoptable(pr) -%}
+<span class="chip {{ pr.field }}{% if not ok %} locked{% endif %}" data-pid="{{ pr.id }}" title="#{{ pr.id }}{% if owners.get(pr.token_id) %} · {{ owners[pr.token_id] }}{% endif %}{% if pr.reason %} · {{ pr.reason|e }}{% endif %}">
+  {%- if pr.field == "verdict" %}<i>verdict</i> {{ v }}
+  {%- elif pr.field == "assessed_tier" %}<i>tier</i> {{ cfg.tier_label(v) }}{% if not ok %} <small>tier role</small>{% endif %}
+  {%- elif pr.field == "mainnet_gate" %}<i>gate</i> {{ cfg.gates.get(v, v) }}
+  {%- elif pr.field == "effort_eng" %}<i>effort</i> {{ v }}
+  {%- elif pr.field == "area" %}<i>area</i> {{ cfg.areas.get(v, v) }}
+  {%- elif pr.field == "internal_ref" %}<i>ref</i> {{ v }}
+  {%- elif pr.field == "duplicate_of" %}<i>dup of</i> <a href="/{{ v }}">{{ v }}</a>
+  {%- elif pr.field == "status" %}<i>status</i> {% if v is mapping %}{{ v.status }}{% if v.closed_reason %} · {{ v.closed_reason }}{% endif %}{% else %}{{ v }}{% endif %}
+  {%- elif pr.field == "award_xe" %}<i>award</i> {{ "{:,}".format(v|int) }} XE{% if not ok %} <small>treasurer</small>{% endif %}
+  {%- elif pr.field == "reply_draft" %}<i>reply</i> draft, {{ v|length }} chars
+  {%- else %}<i>{{ pr.field }}</i> {{ v }}{% endif %}
+  {%- if ok %}<button type="button" class="x" data-reject-one="{{ pr.id }}" title="Reject #{{ pr.id }}">×</button>{% endif -%}
+</span>
+{%- endmacro %}
+{% macro row(r) -%}
+{% set t = r.ticket %}
+{% set ids = r.proposals|map(attribute="id")|list %}
+{% set mine = r.mine %}
+<tr class="trow" data-ticket="{{ t.id }}" data-ids='{{ mine|tojson }}' data-all='{{ ids|tojson }}'>
+  <td class="n">{{ m.tlink(t) }}{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}<div class="k" style="margin-top:4px">{{ m.status(t) }}</div></td>
+  <td class="title">
+    <a href="/{{ t.id }}">{{ t.title }}</a>
+    <span class="k">{% if t.claimed_tier %}claimed {{ cfg.tier_label(t.claimed_tier) }} · {% endif %}{% set rep = reporters.get(t.reporter_id) %}{% if rep %}<a href="{{ flt('reporter', rep.id|string) }}">{{ rep.display_name or rep.github_login or rep.email or ("reporter " ~ rep.id) }}</a> · {% endif %}{{ (t.source_created_at or t.created_at)|day }}</span>
+    {% if r.note %}<div class="claim">{{ excerpt(r.note) }}{% if r.note.checked %} <span class="checked">· read {{ r.note.checked.desk }} desk{% if r.note.checked.tree %}, {{ r.note.checked.tree }}{% endif %}</span>{% else %} <span class="checked none">· no check recorded</span>{% endif %}</div>{% endif %}
+    <div class="chips">{% for pr in r.proposals %}{{ chip(pr) }}{% endfor %}</div>
+  </td>
+  <td class="acts">
+    {% if mine %}<button type="button" class="mini" data-adopt-row>Adopt {{ mine|length }}{% if mine|length < ids|length %}<small> of {{ ids|length }}</small>{% endif %}</button>{% endif %}
+    <button type="button" class="ghost mini" data-reject-row>Reject {{ ids|length }}</button>
+  </td>
+</tr>
+{%- endmacro %}
+{% block content %}
+<div class="release triage">
+<div class="tag"><span>Triage</span></div>
+<h1>What the agents have read, waiting for a ruling.</h1>
+<p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. Reply drafts adopted here wait on the ticket as drafts; a duplicate family closes and replies in one click.</p>
+<div class="counts">
+  <div><b>{{ counts.all }}</b>tickets waiting</div>
+  <div><b>{{ counts.proposals }}</b>proposals</div>
+  <div><b>{{ counts.duplicates }}</b>duplicates</div>
+  <div><b>{{ counts.closures }}</b>closures</div>
+  <div><b>{{ counts.assessments }}</b>assessments</div>
+  <div><b>{{ "{:,}".format(total_xe) }} XE</b>proposed{% if view != "all" or area or tier or reporter %} in view{% endif %}</div>
+</div>
+<div class="filters">
+  <div class="frow"><span class="flabel">View</span><div class="fset">
+    {% for v in views %}<a href="{{ flt('view', v) }}" class="{{ 'on' if view == v }}">{{ v }} <small>{{ counts[v] }}</small></a>{% endfor %}
+  </div></div>
+  <div class="frow"><span class="flabel">Area</span><div class="fset">
+    {% for k, v in cfg.areas.items() %}<a href="{{ flt('area', k) }}" class="{{ 'on' if area == k }}">{{ v }}</a>{% endfor %}
+  </div></div>
+  <div class="frow"><span class="flabel">Tier</span><div class="fset">
+    {% for k in cfg.tier_order if k != "none" %}<a href="{{ flt('tier', k) }}" class="{{ 'on' if tier == k }}">{{ cfg.tier_label(k) }}</a>{% endfor %}
+    {% if reporter %}<span class="gap"></span><a href="{{ flt('reporter', reporter|string) }}" class="on">reporter {{ reporter }} ×</a>{% endif %}
+  </div></div>
+</div>
+{% if not can_tier or not can_award %}<p class="msg err" style="display:block">{% if not can_tier %}Tier proposals need the tier role. {% endif %}{% if not can_award %}Award proposals need the treasurer role. {% endif %}Those chips are shown locked and left out of Adopt.</p>{% endif %}
+{% if rows %}
+<div class="row" style="margin:0 0 16px">
+  <button class="mini" id="adopt-shown" type="button">Adopt everything shown ({{ rows|length }} tickets)</button>
+  <span class="k">Writes every unlocked proposal on this page; reply drafts become ticket drafts, not sent replies. Skipped ones are listed afterwards.</span>
+</div>
+{% endif %}
+<div id="triage-msg" class="msg" style="display:none"></div>
+
+{% if view == "duplicates" %}
+  {% for canon_id, members in families.items() %}
+  {% set canon = members[0].canonical %}
+  <div class="family-head" data-canon="{{ canon_id }}">
+    <h3 style="margin:28px 0 8px"><span class="k">dup of</span> <a href="/{{ canon_id }}">{{ canon_id }}</a>{% if canon %} <span class="ftitle">{{ canon.title }}</span> {{ m.status(canon) }}{% if canon.visibility == "private" %} <span class="pill private">private</span>{% endif %}{% else %} <span class="pill private">not on the desk</span>{% endif %}</h3>
+    <div class="row" style="margin-bottom:8px"><button type="button" class="mini" data-close-family="{{ canon_id }}" data-count="{{ members|length }}" data-members='{{ members|map(attribute="ticket.id")|list|tojson }}'>Close all {{ members|length }} as duplicates</button><span class="k">Marks each duplicate_of {{ canon_id }}, closes it and sends the duplicate reply under your name.</span></div>
+  </div>
+  <table class="tickets triage-table"><tbody>{% for r in members %}{{ row(r) }}{% endfor %}</tbody></table>
+  {% endfor %}
+{% else %}
+<table class="tickets triage-table">
+<thead><tr><th>#</th><th>Finding · proposed</th><th></th></tr></thead>
+<tbody>
+{% for r in rows %}{{ row(r) }}{% endfor %}
+</tbody>
+</table>
+{% endif %}
+{% if not rows %}<p class="mute" style="margin-top:24px">Nothing waiting{% if view != "all" or area or tier or reporter %} in this view{% endif %}. Ask an agent to read across the desk, or <a href="/team/triage">clear the filters</a>.</p>{% endif %}
+</div>
+{% endblock %}

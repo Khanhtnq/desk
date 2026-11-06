@@ -54,6 +54,13 @@
     });
   }
   const tell = (title, body) => ask({ title, body, ok: "OK", cancel: null }).then(() => undefined);
+  // a bulk decision answers {decided, skipped}; the skipped ones are shown with the desk's reason
+  const reportSkipped = async (r, head) => {
+    const sk = (r && r.skipped) || [];
+    if (!sk.length) return;
+    const lines = sk.map(s => `${s.ticket || ""}${s.field ? " · " + s.field : ""}${s.proposal ? " #" + s.proposal : ""}: ${s.why}`).join("\n");
+    await tell(head || `${sk.length} left as they were`, lines);
+  };
   window.desk = Object.assign(window.desk || {}, { ask, tell });
 
   // a one-line note that survives a reload: flash("Award approved.") before reload(), shown on the next page
@@ -375,8 +382,64 @@
     if ($("#adopt-all")) $("#adopt-all").addEventListener("click", async () => {
       const ids = $$("[data-adopt]:not([disabled])").filter(b => b.closest(".proposal").dataset.field !== "reply_draft").map(b => parseInt(b.dataset.adopt, 10));
       if (!ids.length || !await ask({ title: `Adopt ${ids.length} proposals?`, body: "Reply drafts are left for you to use one at a time.", ok: "Adopt all" })) return;
-      try { await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); reload(); } catch (e) { tell("Could not adopt", e.message); }
+      try { const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); await reportSkipped(r); reload(); } catch (e) { tell("Could not adopt", e.message); }
     });
+  }
+
+  // ---- triage page ---------------------------------------------------------------------------
+  if ($(".triage")) {
+    const tmsg = $("#triage-msg");
+    const idsOf = (tr, attr) => JSON.parse(tr.dataset[attr] || "[]");
+    const settle = (tr, r) => {
+      // chips the desk decided fade; the row goes when nothing pending is left on it
+      const done = new Set((r.decided || []).map(d => d.proposal));
+      $$(".chip", tr).forEach(c => { if (done.has(parseInt(c.dataset.pid, 10))) c.classList.add("gone"); });
+      const left = $$(".chip:not(.gone)", tr).length;
+      if (!left) tr.classList.add("done");
+      return left;
+    };
+    const decideRow = async (tr, adopt) => {
+      const ids = adopt ? idsOf(tr, "ids") : idsOf(tr, "all");
+      if (!ids.length) return;
+      try {
+        const r = await api("POST", "/v1/team/proposals/bulk", adopt ? { adopt: ids } : { reject: ids });
+        settle(tr, r);
+        await reportSkipped(r);
+      } catch (e) { say(tmsg, `${tr.dataset.ticket}: ${e.message}`, false); }
+    };
+    $$("[data-adopt-row]").forEach(b => b.addEventListener("click", () => decideRow(b.closest("tr"), true)));
+    $$("[data-reject-row]").forEach(b => b.addEventListener("click", async () => {
+      const tr = b.closest("tr");
+      if (!await ask({ title: `Reject every proposal on ${tr.dataset.ticket}?`, body: "The agent's note stays; the proposals are marked rejected under your name.", ok: "Reject" })) return;
+      decideRow(tr, false);
+    }));
+    $$("[data-reject-one]").forEach(b => b.addEventListener("click", async () => {
+      const chip = b.closest(".chip"), tr = b.closest("tr");
+      try { await api("POST", `/v1/team/proposals/${b.dataset.rejectOne}/reject`, {}); chip.classList.add("gone"); b.remove(); settle(tr, {}); }
+      catch (e) { say(tmsg, e.message, false); }
+    }));
+    if ($("#adopt-shown")) $("#adopt-shown").addEventListener("click", async () => {
+      const rows = $$("tr.trow:not(.done)");
+      const ids = rows.flatMap(tr => idsOf(tr, "ids").filter(id => !$(`.chip[data-pid="${id}"].gone`, tr)));
+      if (!ids.length) return;
+      if (!await ask({ title: `Adopt ${ids.length} proposals on ${rows.length} tickets?`, body: "Each is written under your name through the same path as the ticket page: closures close, duplicates are marked, tiers and verdicts are set, awards are set but not approved, reply drafts wait on their tickets. Anything the desk refuses is listed afterwards.", ok: `Adopt ${ids.length}` })) return;
+      try {
+        const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids });
+        rows.forEach(tr => settle(tr, r));
+        await reportSkipped(r, `Adopted ${(r.decided || []).length} of ${ids.length}.`);
+      } catch (e) { say(tmsg, e.message, false); }
+    });
+    $$("[data-close-family]").forEach(b => b.addEventListener("click", async () => {
+      const canon = b.dataset.closeFamily, n = b.dataset.count, members = JSON.parse(b.dataset.members || "[]");
+      if (!await ask({ title: `Close ${n} tickets as duplicates of ${canon}?`, body: "Each is marked duplicate_of this ticket, closed, and sent the programme's duplicate reply under your name.", ok: `Close ${n}` })) return;
+      try {
+        const r = await api("POST", `/v1/team/tickets/${canon}/duplicates/close`, { tickets: members });
+        const closed = new Set((r.closed || []).map(c => c.ticket));
+        $$("tr.trow").forEach(tr => { if (closed.has(tr.dataset.ticket)) { $$(".chip", tr).forEach(c => c.classList.add("gone")); tr.classList.add("done"); } });
+        const sk = (r.skipped || []).map(s => `${s.ticket}: ${s.why}`).join("\n");
+        await tell(`Closed ${closed.size} of ${n}`, sk ? `Left as they were:\n${sk}` : "All of them.");
+      } catch (e) { say(tmsg, e.message, false); }
+    }));
   }
 
   // ---- awards page ---------------------------------------------------------------------------
@@ -405,7 +468,7 @@
     if ($("#adopt-all-awards")) $("#adopt-all-awards").addEventListener("click", async () => {
       const ids = $$("[data-adopt-award]:not([disabled])").map(b => parseInt(b.dataset.adoptAward, 10));
       if (!ids.length || !await ask({ title: `Set ${ids.length} awards from the proposed amounts?`, body: "Each amount is recorded against you in the log as set, not approved. Approve them one by one on the tickets when you have read the reasons.", ok: "Set all" })) return;
-      try { await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); reload(); } catch (e) { tell("Could not adopt", e.message); }
+      try { const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); await reportSkipped(r); reload(); } catch (e) { tell("Could not adopt", e.message); }
     });
   }
 })();

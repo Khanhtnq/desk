@@ -14,8 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..authz import Principal, can, require, require_field
+from ..config import Config
 from ..context import Context
-from ..models import PROPOSAL_FIELDS, AgentToken, Proposal, Ticket
+from ..models import PROPOSAL_FIELDS, AgentToken, Note, Proposal, Ticket
 from . import tickets as tsvc
 from .tickets import utcnow
 
@@ -188,6 +189,7 @@ async def close_duplicates(
     for t, pr in await pending_duplicates_of(db, canon.id):
         if only and t.id not in only:
             continue
+        tid = t.id  # read before the savepoint: a rollback expires the row and a lazy load here is a 500
         try:
             async with db.begin_nested():
                 require(p, "reply", t)
@@ -217,10 +219,188 @@ async def close_duplicates(
                     await decide(ctx, db, p, d, True)  # recorded as adopted; the reply below clears the draft
                 text = thread.render_template(ctx, "duplicate", t)
                 r = await thread.add_reply(ctx, db, p, t, text)
-                closed.append({"ticket": t.id, "status": t.status, "reply": r.id, "text": text})
+                closed.append({"ticket": tid, "status": t.status, "reply": r.id, "text": text})
         except HTTPException as e:
-            skipped.append({"ticket": t.id, "why": str(e.detail)})
+            skipped.append({"ticket": tid, "why": str(e.detail)})
     return {"canonical": canon.id, "closed": closed, "skipped": skipped}
+
+
+async def decide_many(
+    ctx: Context, db: AsyncSession, p: Principal, adopt: list[int], reject: list[int]
+) -> dict:
+    """Many decisions in one request, each its own savepoint: one the desk refuses (a transition the
+    state machine will not make, a field the role may not set) is reported in `skipped` and the rest go
+    through. A batch that stopped at the first refusal left a reviewer adopting one by one (XE-0872)."""
+    if p.user is None or not can(p, "adopt"):
+        raise HTTPException(403, "adopting is a reviewer's action")
+    decided: list[dict] = []
+    skipped: list[dict] = []
+    for pid, yes in [(i, True) for i in adopt] + [(i, False) for i in reject]:
+        pr = await get(db, pid)
+        if pr is None or pr.state != "pending":
+            skipped.append({"proposal": pid, "why": "not pending" if pr else "no such proposal"})
+            continue
+        tid, field = pr.ticket_id, pr.field  # read before the savepoint (see close_duplicates)
+        try:
+            async with db.begin_nested():
+                decided.append(await decide(ctx, db, p, pr, yes))
+        except HTTPException as e:
+            skipped.append({"proposal": pid, "ticket": tid, "field": field, "why": str(e.detail)})
+    return {"decided": decided, "skipped": skipped}
+
+
+# ---- the triage page ---------------------------------------------------------------------------------
+#
+# One row per ticket with something pending, the pending set rendered as chips, the agent's latest note
+# beside it. The views are the questions a reviewer asks in turn: what is a duplicate, what closes, what
+# is a real finding, what gets paid, what gets a reply.
+
+TRIAGE_VIEWS = ("all", "duplicates", "closures", "assessments", "awards", "replies")
+ASSESSMENT_FIELDS = ("verdict", "assessed_tier", "mainnet_gate", "effort_eng", "area", "internal_ref")
+
+
+def _is_close(pr: Proposal) -> bool:
+    v = pr.value.get("value")
+    status = v if isinstance(v, str) else (v or {}).get("status")
+    reason = None if isinstance(v, str) else (v or {}).get("closed_reason")
+    return pr.field == "status" and status == "closed" and reason != "duplicate"
+
+
+def triage_views(prs: list[Proposal]) -> set[str]:
+    """Which views a ticket's pending set belongs to. A duplicate is only a duplicate; a closure is only a
+    closure; anything else with an assessment field is an assessment. Awards and replies cut across."""
+    fields = {pr.field for pr in prs}
+    out: set[str] = set()
+    if "duplicate_of" in fields:
+        out.add("duplicates")
+    elif any(_is_close(pr) for pr in prs):
+        out.add("closures")
+    elif fields & set(ASSESSMENT_FIELDS):
+        out.add("assessments")
+    if "award_xe" in fields:
+        out.add("awards")
+    if "reply_draft" in fields:
+        out.add("replies")
+    return out
+
+
+def proposed_tier(t: Ticket, prs: list[Proposal]) -> str | None:
+    """The tier the row sorts and filters on: the pending proposal if there is one, else the ruling."""
+    for pr in prs:
+        if pr.field == "assessed_tier":
+            return str(pr.value.get("value"))
+    return t.assessed_tier
+
+
+class TriageRow:
+    __slots__ = ("ticket", "proposals", "views", "tier", "note", "canonical", "mine")
+
+    def __init__(self, t: Ticket, prs: list[Proposal]):
+        self.ticket = t
+        self.proposals = prs
+        self.views: set[str] = set()
+        self.tier: str | None = None
+        self.note: Note | None = None
+        self.canonical: Ticket | None = None
+        self.mine: list[int] = []  # the proposal ids the viewer's roles let them adopt; set by the page
+
+    @property
+    def duplicate_of(self) -> str | None:
+        for pr in self.proposals:
+            if pr.field == "duplicate_of":
+                return str(pr.value.get("value"))
+        return None
+
+
+async def triage_rows(
+    db: AsyncSession,
+    cfg: Config,
+    p: Principal,
+    *,
+    kind: str = "bounty",
+    view: str = "all",
+    area: str | None = None,
+    tier: str | None = None,
+    reporter: int | None = None,
+) -> list[TriageRow]:
+    """Every visible ticket with pending proposals, as rows. Filtering by view, area, proposed tier and
+    reporter; ordered most severe first, then newest proposal first. The counts per view come from the
+    unfiltered set, so the chips say what is waiting everywhere, not only on the page shown."""
+    q = (
+        select(Ticket, Proposal)
+        .join(Proposal, Proposal.ticket_id == Ticket.id)
+        .where(Proposal.state == "pending", Ticket.kind == kind)
+        .order_by(Proposal.created_at.desc())
+    )
+    if not can(p, "read:private"):
+        q = q.where(Ticket.visibility == "public")
+    if area:
+        q = q.where(Ticket.area == area)
+    if reporter is not None:
+        q = q.where(Ticket.reporter_id == reporter)
+    by_ticket: dict[str, TriageRow] = {}
+    for t, pr in (await db.execute(q)).all():
+        row = by_ticket.get(t.id)
+        if row is None:
+            row = by_ticket[t.id] = TriageRow(t, [])
+        row.proposals.append(pr)
+    rows = list(by_ticket.values())
+    for row in rows:
+        row.views = triage_views(row.proposals)
+        row.tier = proposed_tier(row.ticket, row.proposals)
+    if view != "all":
+        rows = [r for r in rows if view in r.views]
+    if tier:
+        rows = [r for r in rows if r.tier == tier]
+    # rows arrive newest proposal first; a stable sort by tier keeps that order within each tier
+    order = {t: i for i, t in enumerate(cfg.tier_order)}
+    rows.sort(key=lambda r: order.get(r.tier or "", len(order)))
+    ids = [r.ticket.id for r in rows]
+    if ids:
+        nq = (
+            select(Note)
+            .where(Note.ticket_id.in_(ids), Note.author.like("token:%"))
+            .order_by(Note.created_at.desc())
+        )
+        notes: dict[str, Note] = {}
+        for n in (await db.execute(nq)).scalars().all():
+            notes.setdefault(n.ticket_id, n)
+        canon_ids = {r.duplicate_of for r in rows if r.duplicate_of}
+        canons = {
+            c.id: c
+            for c in (await db.execute(select(Ticket).where(Ticket.id.in_(canon_ids)))).scalars().all()
+        } if canon_ids else {}
+        for r in rows:
+            r.note = notes.get(r.ticket.id)
+            r.canonical = canons.get(r.duplicate_of or "")
+    return rows
+
+
+async def triage_counts(db: AsyncSession, p: Principal, kind: str = "bounty") -> dict[str, int]:
+    """How many tickets wait in each view, over everything visible, for the chips."""
+    q = select(Ticket.id, Proposal).join(Proposal, Proposal.ticket_id == Ticket.id)
+    q = q.where(Proposal.state == "pending", Ticket.kind == kind)
+    if not can(p, "read:private"):
+        q = q.where(Ticket.visibility == "public")
+    by_ticket: dict[str, list[Proposal]] = {}
+    for tid, pr in (await db.execute(q)).all():
+        by_ticket.setdefault(tid, []).append(pr)
+    counts = {v: 0 for v in TRIAGE_VIEWS}
+    counts["all"] = len(by_ticket)
+    counts["proposals"] = sum(len(v) for v in by_ticket.values())
+    for prs in by_ticket.values():
+        for v in triage_views(prs):
+            counts[v] += 1
+    return counts
+
+
+def note_excerpt(n: Note | None, limit: int = 240) -> str:
+    """The agent's claim, for the row: the first paragraph of its note with the bold label stripped."""
+    if n is None:
+        return ""
+    first = (n.body or "").strip().split("\n", 1)[0]
+    first = first.replace("**Claim.**", "").replace("**Claim:**", "").strip()
+    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
 
 
 def to_dict(pr: Proposal, token: AgentToken | None = None) -> dict:

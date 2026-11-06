@@ -256,15 +256,12 @@ async def close_duplicates(
 
 @router.post("/proposals/bulk")
 async def decide_bulk(ctx: Ctx, db: Db, who: Who, request: Request, body: BulkIn):
+    """Adopt and reject in one request. Each decision is its own savepoint: one the desk refuses is
+    listed under `skipped` with the reason and the rest go through."""
     _team(who, request)
-    out = []
-    for pid, yes in [(i, True) for i in body.adopt] + [(i, False) for i in body.reject]:
-        pr = await psvc.get(db, pid)
-        if pr is None or pr.state != "pending":
-            continue
-        out.append(await psvc.decide(ctx, db, who.principal, pr, yes))
+    out = await psvc.decide_many(ctx, db, who.principal, body.adopt, body.reject)
     await db.commit()
-    return {"decided": out}
+    return out
 
 
 # ---- views ------------------------------------------------------------------------------------------

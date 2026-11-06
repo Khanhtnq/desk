@@ -48,6 +48,7 @@
       {% endif %}
       <a href="/log" {% if path.startswith("/log") %}aria-current="page"{% endif %}>{{ copy.labels.log }}</a>
       {% if team %}
+      <a href="/team/triage" {% if path == "/team/triage" %}aria-current="page"{% endif %}>{{ copy.labels.triage }}</a>
       {% if site == "bounty" %}<a href="/team/release" {% if path == "/team/release" %}aria-current="page"{% endif %}>{{ copy.labels.release }}</a>
       <a href="/team/awards" {% if path == "/team/awards" %}aria-current="page"{% endif %}>{{ copy.labels.awards }}</a>{% endif %}
       <a href="/team/outbox" {% if path == "/team/outbox" %}aria-current="page"{% endif %}>{{ copy.labels.outbox }}</a>
@@ -103,6 +104,7 @@
     {% endif %}
     <a class="mobile-nav-item" href="/log">{{ copy.labels.log }}</a>
     {% if team %}
+    <a class="mobile-nav-item" href="/team/triage">{{ copy.labels.triage }}</a>
     {% if site == "bounty" %}<a class="mobile-nav-item" href="/team/release">{{ copy.labels.release }}</a>
     <a class="mobile-nav-item" href="/team/awards">{{ copy.labels.awards }}</a>{% endif %}
     <a class="mobile-nav-item" href="/team/outbox">{{ copy.labels.outbox }}</a>

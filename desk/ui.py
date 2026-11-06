@@ -565,6 +565,87 @@ async def awards(request: Request):
     )
 
 
+@router.get("/team/triage", response_class=HTMLResponse)
+async def triage(request: Request):
+    """Everything an agent has proposed and nobody has ruled on, one row per ticket, in the views a
+    reviewer works through: duplicates, closures, assessments, awards, replies. Adopting from here goes
+    through the same per-proposal path as the ticket page; replies adopted here wait as drafts."""
+    c = get_context()
+    qp = request.query_params
+    view = qp.get("view") or "all"
+    if view not in psvc.TRIAGE_VIEWS:
+        view = "all"
+    area = qp.get("area") or None
+    tier = qp.get("tier") or None
+    try:
+        reporter = int(qp["reporter"]) if qp.get("reporter") else None
+    except ValueError:
+        reporter = None
+    kind = site_for(request)
+    async with session() as db:
+        p, csrf = await principal(db, request)
+        if not p.is_team:
+            return RedirectResponse("/team/login?next=/team/triage", status_code=302)
+        rows = await psvc.triage_rows(
+            db, c.config, p, kind=kind, view=view, area=area, tier=tier, reporter=reporter
+        )
+        counts = await psvc.triage_counts(db, p, kind=kind)
+        owners = await users.token_owners(db) if rows else {}
+        rids = {r.ticket.reporter_id for r in rows if r.ticket.reporter_id}
+        reporters = {
+            r.id: r
+            for r in (await db.execute(select(Reporter).where(Reporter.id.in_(rids)))).scalars().all()
+        } if rids else {}
+    families: dict[str, list] = {}
+    if view == "duplicates":
+        for r in rows:
+            families.setdefault(r.duplicate_of or "?", []).append(r)
+    can_tier, can_award = can(p, "tier"), can(p, "award")
+
+    def adoptable(pr) -> bool:
+        if pr.field == "assessed_tier":
+            return can_tier
+        if pr.field == "award_xe":
+            return can_award
+        return True
+
+    for r in rows:
+        r.mine = [pr.id for pr in r.proposals if adoptable(pr)]
+    total_xe = sum(
+        int(pr.value.get("value") or 0) for r in rows for pr in r.proposals if pr.field == "award_xe"
+    )
+
+    def flt(key: str, value: str | None) -> str:
+        params = {"view": view, "area": area, "tier": tier, "reporter": reporter}
+        params[key] = None if str(params.get(key)) == str(value) else value  # a second click clears it
+        return "/team/triage?" + "&".join(f"{k}={v}" for k, v in params.items() if v not in (None, "", "all"))
+
+    return render(
+        request,
+        "team/triage.html",
+        {
+            "p": p,
+            "csrf": csrf,
+            "rows": rows,
+            "families": families,
+            "counts": counts,
+            "view": view,
+            "area": area,
+            "tier": tier,
+            "reporter": reporter,
+            "owners": owners,
+            "reporters": reporters,
+            "can_tier": can_tier,
+            "can_award": can_award,
+            "adoptable": adoptable,
+            "excerpt": psvc.note_excerpt,
+            "total_xe": total_xe,
+            "flt": flt,
+            "views": psvc.TRIAGE_VIEWS,
+        },
+    )
+
+
 @router.get("/team/outbox", response_class=HTMLResponse)
 async def outbox(request: Request):
     c = get_context()

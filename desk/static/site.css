@@ -302,6 +302,28 @@ table.tickets td .mono { font-size:12px; }
 .login button { width:100%; margin-top:8px; }
 .login .or { text-align:center; color:var(--mute); margin:20px 0 8px; font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
 .release h2 { margin-top:48px; }
+/* the triage page: a ticket per row, the pending set as chips */
+.triage .filters a small { margin-left:6px; color:inherit; opacity:.6; font-size:11px; }
+.triage-table td.title { max-width:none; }
+.triage .claim { margin:6px 0 0; font-size:14px; line-height:1.45; color:var(--fg-2); max-width:90ch; }
+.triage .claim .checked { font:500 11px/14px var(--mono); letter-spacing:.04em; text-transform:uppercase; color:var(--text-low); white-space:nowrap; }
+.triage .claim .checked.none { color:var(--caution); }
+.triage .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.chip { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 4px 0 8px; font:500 12px/1 var(--mono); border:1px solid var(--outline); color:var(--text-high); background:var(--raised); white-space:nowrap; }
+.chip i { font-style:normal; color:var(--text-low); text-transform:uppercase; letter-spacing:.04em; font-size:10px; }
+.chip small { color:var(--caution); font-size:10px; text-transform:uppercase; }
+.chip.locked { opacity:.55; padding-right:8px; }
+.chip.duplicate_of, .chip.status { border-color:color-mix(in srgb, var(--brand) 50%, transparent); }
+.chip.award_xe { border-color:color-mix(in srgb, var(--live) 45%, transparent); }
+.chip a { color:inherit; }
+.chip .x { min-height:0; height:18px; width:18px; padding:0; border:0; background:none; color:var(--text-low); font-size:14px; line-height:1; cursor:pointer; }
+.chip .x:hover { color:var(--negative); }
+.chip.gone { opacity:.35; text-decoration:line-through; }
+.triage td.acts { white-space:nowrap; vertical-align:top; text-align:right; }
+.triage td.acts button { display:block; width:100%; margin-bottom:6px; }
+.triage td.acts button small { opacity:.6; }
+.triage tr.done { opacity:.35; transition:opacity .3s; }
+.triage .family-head .ftitle { font-weight:400; color:var(--fg-2); }
 .live li { list-style:none; padding:8px 0; border-top:1px solid var(--line); font-size:14px; }
 .live ul { padding:0; }
 input[type=email], input[type=number], input[type=password] { width:100%; min-height:48px; padding:11px 14px; border:1px solid var(--stroke-strong); background:var(--field); color:var(--text-high); font:inherit; font-size:16px; }

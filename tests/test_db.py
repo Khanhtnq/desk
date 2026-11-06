@@ -504,6 +504,122 @@ async def test_a_family_of_duplicates_closes_in_one_ruling(ctx, db):
     assert all(e.actor == p.actor for e in evs if e.kind.startswith("ticket."))
 
 
+async def test_a_family_with_a_paid_member_closes_the_rest(ctx, db):
+    # XE-0862: a member the state machine will not close (paid is terminal) used to raise MissingGreenlet
+    # on the way into `skipped`, because the row was expired by the savepoint rollback before its id was read
+    p = await _team(ctx, db, roles=("reviewer",))
+    agent = await _agent(ctx, db, p.user)
+    canon = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="first", source="web"))
+    a = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="a", source="web"))
+    b = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="b", source="web"))
+    for st in ("triaging", "accepted", "patched", "awarded", "paid"):
+        await tsvc.set_status(ctx, db, p, b, st, force=True)
+    for t in (a, b):
+        await psvc.propose(ctx, db, agent, t, "duplicate_of", canon.id, "same defect, filed later")
+    out = await psvc.close_duplicates(ctx, db, p, canon)
+    assert [d["ticket"] for d in out["closed"]] == [a.id]
+    assert [s["ticket"] for s in out["skipped"]] == [b.id] and "paid" in out["skipped"][0]["why"]
+    await db.refresh(a)
+    await db.refresh(b)
+    assert (a.status, a.duplicate_of) == ("closed", canon.id)
+    assert (b.status, b.duplicate_of) == ("paid", None), "the refused member is left exactly as it was"
+
+
+async def test_bulk_decisions_skip_the_refused_and_keep_the_rest(ctx, db):
+    # XE-0872: one refusal in a batch stopped the batch; now each decision is its own savepoint
+    p = await _team(ctx, db, roles=("reviewer",))
+    agent = await _agent(ctx, db, p.user)
+    a = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="a", source="web"))
+    b = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="b", source="web"))
+    c = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="c", source="web"))
+    for st in ("triaging", "accepted", "patched", "awarded", "paid"):
+        await tsvc.set_status(ctx, db, p, b, st, force=True)
+    ok1 = await psvc.propose(ctx, db, agent, a, "verdict", "valid", "reproduced")
+    bad_path = await psvc.propose(ctx, db, agent, b, "status", "fixing", "no path from paid")
+    bad_role = await psvc.propose(ctx, db, agent, c, "assessed_tier", "high", "reviewer lacks tier")
+    ok2 = await psvc.propose(ctx, db, agent, c, "verdict", "valid", "reproduced too")
+    gone = await psvc.propose(ctx, db, agent, a, "effort_eng", "s", "to be rejected")
+    with pytest.raises(HTTPException):
+        await psvc.decide_many(ctx, db, agent, [ok1.id], [])  # a person rules, never a token
+    out = await psvc.decide_many(
+        ctx, db, p, [ok1.id, bad_path.id, bad_role.id, ok2.id, 999_999], [gone.id]
+    )
+    assert len(out["decided"]) == 3
+    why = {s["proposal"]: s["why"] for s in out["skipped"]}
+    assert set(why) == {bad_path.id, bad_role.id, 999_999}
+    assert "paid to fixing" in why[bad_path.id] and why[999_999] == "no such proposal"
+    assert {s.get("ticket") for s in out["skipped"]} == {b.id, c.id, None}
+    for pr in (ok1, bad_path, bad_role, ok2, gone):
+        await db.refresh(pr)
+    assert (ok1.state, ok2.state, gone.state) == ("adopted", "adopted", "rejected")
+    assert (bad_path.state, bad_role.state) == ("pending", "pending")
+    await db.refresh(a)
+    await db.refresh(b)
+    await db.refresh(c)
+    assert (a.verdict, c.verdict, b.status, c.assessed_tier) == ("valid", "valid", "paid", None)
+    # a second pass on the same ids finds them decided already
+    again = await psvc.decide_many(ctx, db, p, [ok1.id], [gone.id])
+    assert again["decided"] == [] and [s["why"] for s in again["skipped"]] == ["not pending", "not pending"]
+
+
+async def test_triage_rows_sort_tickets_into_views(ctx, db):
+    p = await _team(ctx, db, roles=("reviewer", "tier"))
+    agent = await _agent(ctx, db, p.user)
+
+    def mk(title, **kw):
+        return tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=title, source="web", **kw))
+
+    canon = await mk("canonical")
+    dup = await mk("same again")
+    closing = await mk("not a bug")
+    finding = await mk("a real one")
+    paid_reply = await mk("worth paying")
+    await mk("nothing pending")  # stays off the page
+    hidden = await mk("private pending", visibility="private")
+    await tsvc.set_facts(ctx, db, p, finding, {"area": "sdk-docs-web"}, reason="t")
+    await psvc.propose(ctx, db, agent, dup, "duplicate_of", canon.id, "same defect")
+    closed = {"status": "closed", "closed_reason": "duplicate"}
+    await psvc.propose(ctx, db, agent, dup, "status", closed, "dup")
+    await psvc.propose(ctx, db, agent, dup, "verdict", "duplicate", "same defect")
+    closed = {"status": "closed", "closed_reason": "invalid"}
+    await psvc.propose(ctx, db, agent, closing, "status", closed, "no")
+    await psvc.propose(ctx, db, agent, closing, "verdict", "invalid", "by design")
+    await psvc.propose(ctx, db, agent, finding, "verdict", "valid", "reproduced")
+    await psvc.propose(ctx, db, agent, finding, "assessed_tier", "high", "targeted DoS")
+    await psvc.propose(ctx, db, agent, finding, "reply_draft", "Thanks, reproduced.", "")
+    await tsvc.set_facts(ctx, db, p, paid_reply, {"assessed_tier": "low"}, reason="t")
+    await psvc.propose(ctx, db, agent, paid_reply, "award_xe", 100, "Bottom of the band, reason long enough.")
+    await psvc.propose(ctx, db, agent, hidden, "verdict", "valid", "reproduced")
+    await thread.add_note(ctx, db, agent, finding, "**Claim.** Crashes the node with one packet.\n\nMore.")
+    await thread.add_note(ctx, db, agent, finding, "**Claim.** Second look: still crashes.")
+
+    rows = await psvc.triage_rows(db, ctx.config, p)
+    by = {r.ticket.id: r for r in rows}
+    assert set(by) == {dup.id, closing.id, finding.id, paid_reply.id, hidden.id}
+    assert by[dup.id].views == {"duplicates"} and by[dup.id].canonical.id == canon.id
+    assert by[closing.id].views == {"closures"}
+    assert by[finding.id].views == {"assessments", "replies"} and by[finding.id].tier == "high"
+    assert by[paid_reply.id].views == {"awards"} and by[paid_reply.id].tier == "low"
+    # most severe first, by the proposed tier; the agent's latest note rides along, first line only
+    assert rows[0].ticket.id == finding.id
+    assert psvc.note_excerpt(by[finding.id].note) == "Second look: still crashes."
+    assert by[dup.id].note is None
+    # the views and the other filters narrow; the counts do not
+    assert [r.ticket.id for r in await psvc.triage_rows(db, ctx.config, p, view="duplicates")] == [dup.id]
+    assert [r.ticket.id for r in await psvc.triage_rows(db, ctx.config, p, view="replies")] == [finding.id]
+    by_area = await psvc.triage_rows(db, ctx.config, p, area="sdk-docs-web")
+    assert [r.ticket.id for r in by_area] == [finding.id]
+    assert [r.ticket.id for r in await psvc.triage_rows(db, ctx.config, p, tier="low")] == [paid_reply.id]
+    counts = await psvc.triage_counts(db, p)
+    assert counts["all"] == 5 and counts["proposals"] == 10
+    assert (counts["duplicates"], counts["closures"], counts["assessments"]) == (1, 1, 2)
+    assert (counts["awards"], counts["replies"]) == (1, 1)
+    # a viewer without read:private sees neither the private row nor its count
+    public_eyes = await _agent(ctx, db, p.user, scopes=("read:public",))
+    assert hidden.id not in {r.ticket.id for r in await psvc.triage_rows(db, ctx.config, public_eyes)}
+    assert (await psvc.triage_counts(db, public_eyes))["all"] == 4
+
+
 def test_status_path_walks_forward_edges_only():
     assert tsvc.status_path("bounty", "new", "accepted") == ["triaging", "accepted"]
     assert tsvc.status_path("bounty", "new", "patched") == ["triaging", "accepted", "patched"]
@@ -684,9 +800,7 @@ async def test_internal_tracker_names_desk_filed_reports_by_id(ctx, db):
     for t in (web, dup, gh_t):
         assert t.status == "accepted" and t.internal_ref == "#1070"
     # naming the same ticket both ways is one ticket, not two
-    gh_t.source_ref = "66"
-    await db.commit()
-    stats = await sync.link_internal_issue(ctx, db, _issue(1071, f"bundle xe#66 {gh_t.id}"))
+    stats = await sync.link_internal_issue(ctx, db, _issue(1071, f"bundle xe#65 {gh_t.id}"))
     assert stats["tagged"] == 1 and stats["noted"] == 1  # already #1070; said once, not overwritten
     assert gh_t.internal_ref == "#1070"
     # the fix ships: closing the internal ticket patches every report it names

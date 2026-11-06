@@ -85,6 +85,7 @@ labels:
   leaderboard: Leaderboard
   log: Log
   scope: Scope
+  triage: Triage
   release: Release view
   awards: Awards
   outbox: Outbox
