@@ -516,9 +516,10 @@ async def test_a_family_with_a_paid_member_closes_the_rest(ctx, db):
         await tsvc.set_status(ctx, db, p, b, st, force=True)
     for t in (a, b):
         await psvc.propose(ctx, db, agent, t, "duplicate_of", canon.id, "same defect, filed later")
+    a_id, b_id = a.id, b.id  # the rollback expires b; its attributes need a refresh before they are read
     out = await psvc.close_duplicates(ctx, db, p, canon)
-    assert [d["ticket"] for d in out["closed"]] == [a.id]
-    assert [s["ticket"] for s in out["skipped"]] == [b.id] and "paid" in out["skipped"][0]["why"]
+    assert [d["ticket"] for d in out["closed"]] == [a_id]
+    assert [s["ticket"] for s in out["skipped"]] == [b_id] and "paid" in out["skipped"][0]["why"]
     await db.refresh(a)
     await db.refresh(b)
     assert (a.status, a.duplicate_of) == ("closed", canon.id)
@@ -541,14 +542,13 @@ async def test_bulk_decisions_skip_the_refused_and_keep_the_rest(ctx, db):
     gone = await psvc.propose(ctx, db, agent, a, "effort_eng", "s", "to be rejected")
     with pytest.raises(HTTPException):
         await psvc.decide_many(ctx, db, agent, [ok1.id], [])  # a person rules, never a token
-    out = await psvc.decide_many(
-        ctx, db, p, [ok1.id, bad_path.id, bad_role.id, ok2.id, 999_999], [gone.id]
-    )
+    bp, br, b_id, c_id = bad_path.id, bad_role.id, b.id, c.id  # read before the savepoints roll back
+    out = await psvc.decide_many(ctx, db, p, [ok1.id, bp, br, ok2.id, 999_999], [gone.id])
     assert len(out["decided"]) == 3
     why = {s["proposal"]: s["why"] for s in out["skipped"]}
-    assert set(why) == {bad_path.id, bad_role.id, 999_999}
-    assert "paid to fixing" in why[bad_path.id] and why[999_999] == "no such proposal"
-    assert {s.get("ticket") for s in out["skipped"]} == {b.id, c.id, None}
+    assert set(why) == {bp, br, 999_999}
+    assert "paid to fixing" in why[bp] and why[999_999] == "no such proposal"
+    assert {s.get("ticket") for s in out["skipped"]} == {b_id, c_id, None}
     for pr in (ok1, bad_path, bad_role, ok2, gone):
         await db.refresh(pr)
     assert (ok1.state, ok2.state, gone.state) == ("adopted", "adopted", "rejected")
@@ -587,7 +587,7 @@ async def test_triage_rows_sort_tickets_into_views(ctx, db):
     await psvc.propose(ctx, db, agent, finding, "verdict", "valid", "reproduced")
     await psvc.propose(ctx, db, agent, finding, "assessed_tier", "high", "targeted DoS")
     await psvc.propose(ctx, db, agent, finding, "reply_draft", "Thanks, reproduced.", "")
-    await tsvc.set_facts(ctx, db, p, paid_reply, {"assessed_tier": "low"}, reason="t")
+    await tsvc.set_facts(ctx, db, p, paid_reply, {"assessed_tier": "minor"}, reason="t")
     await psvc.propose(ctx, db, agent, paid_reply, "award_xe", 100, "Bottom of the band, reason long enough.")
     await psvc.propose(ctx, db, agent, hidden, "verdict", "valid", "reproduced")
     await thread.add_note(ctx, db, agent, finding, "**Claim.** Crashes the node with one packet.\n\nMore.")
@@ -599,7 +599,7 @@ async def test_triage_rows_sort_tickets_into_views(ctx, db):
     assert by[dup.id].views == {"duplicates"} and by[dup.id].canonical.id == canon.id
     assert by[closing.id].views == {"closures"}
     assert by[finding.id].views == {"assessments", "replies"} and by[finding.id].tier == "high"
-    assert by[paid_reply.id].views == {"awards"} and by[paid_reply.id].tier == "low"
+    assert by[paid_reply.id].views == {"awards"} and by[paid_reply.id].tier == "minor"
     # most severe first, by the proposed tier; the agent's latest note rides along, first line only
     assert rows[0].ticket.id == finding.id
     assert psvc.note_excerpt(by[finding.id].note) == "Second look: still crashes."
@@ -609,7 +609,7 @@ async def test_triage_rows_sort_tickets_into_views(ctx, db):
     assert [r.ticket.id for r in await psvc.triage_rows(db, ctx.config, p, view="replies")] == [finding.id]
     by_area = await psvc.triage_rows(db, ctx.config, p, area="sdk-docs-web")
     assert [r.ticket.id for r in by_area] == [finding.id]
-    assert [r.ticket.id for r in await psvc.triage_rows(db, ctx.config, p, tier="low")] == [paid_reply.id]
+    assert [r.ticket.id for r in await psvc.triage_rows(db, ctx.config, p, tier="minor")] == [paid_reply.id]
     counts = await psvc.triage_counts(db, p)
     assert counts["all"] == 5 and counts["proposals"] == 10
     assert (counts["duplicates"], counts["closures"], counts["assessments"]) == (1, 1, 2)
