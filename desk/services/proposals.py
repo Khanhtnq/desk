@@ -260,10 +260,13 @@ ASSESSMENT_FIELDS = ("verdict", "assessed_tier", "mainnet_gate", "effort_eng", "
 
 
 def _is_close(pr: Proposal) -> bool:
+    """A status proposal that closes for any reason but duplicate. The value is a string or a dict."""
+    if pr.field != "status":
+        return False
     v = pr.value.get("value")
-    status = v if isinstance(v, str) else (v or {}).get("status")
-    reason = None if isinstance(v, str) else (v or {}).get("closed_reason")
-    return pr.field == "status" and status == "closed" and reason != "duplicate"
+    if isinstance(v, dict):
+        return v.get("status") == "closed" and v.get("closed_reason") != "duplicate"
+    return v == "closed"
 
 
 def triage_views(prs: list[Proposal]) -> set[str]:
