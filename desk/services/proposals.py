@@ -363,7 +363,7 @@ async def triage_rows(
         nq = (
             select(Note)
             .where(Note.ticket_id.in_(ids), Note.author.like("token:%"))
-            .order_by(Note.created_at.desc(), Note.id.desc())  # one transaction shares a now(); id breaks the tie
+            .order_by(Note.created_at.desc(), Note.id.desc())  # one transaction shares a now()
         )
         notes: dict[str, Note] = {}
         for n in (await db.execute(nq)).scalars().all():
