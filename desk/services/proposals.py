@@ -333,7 +333,7 @@ async def triage_rows(
         select(Ticket, Proposal)
         .join(Proposal, Proposal.ticket_id == Ticket.id)
         .where(Proposal.state == "pending", Ticket.kind == kind)
-        .order_by(Proposal.created_at.desc())
+        .order_by(Proposal.created_at.desc(), Proposal.id.desc())
     )
     if not can(p, "read:private"):
         q = q.where(Ticket.visibility == "public")
@@ -363,7 +363,7 @@ async def triage_rows(
         nq = (
             select(Note)
             .where(Note.ticket_id.in_(ids), Note.author.like("token:%"))
-            .order_by(Note.created_at.desc())
+            .order_by(Note.created_at.desc(), Note.id.desc())  # one transaction shares a now(); id breaks the tie
         )
         notes: dict[str, Note] = {}
         for n in (await db.execute(nq)).scalars().all():
