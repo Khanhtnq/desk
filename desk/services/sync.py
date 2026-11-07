@@ -323,7 +323,7 @@ async def link_internal_issue(ctx: Context, db: AsyncSession, issue: dict) -> di
     via = f"internal:{repo}{ref}"
     text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}"
     stats = {"issue": number, "tagged": 0, "linked": 0, "moved": 0, "noted": 0}
-    for t in await _tagged_tickets(ctx, db, text):
+    for t in await _tagged_tickets(ctx, db, text, ref):
         stats["tagged"] += 1
         if not t.internal_ref:
             await tsvc.set_facts(ctx, db, SYSTEM, t, {"internal_ref": ref}, via=via)
@@ -342,9 +342,11 @@ async def link_internal_issue(ctx: Context, db: AsyncSession, issue: dict) -> di
     return stats
 
 
-async def _tagged_tickets(ctx: Context, db: AsyncSession, text: str) -> list[Ticket]:
-    """The desk tickets an internal issue names: GitHub-sourced ones by `xe#8`, any ticket by its desk id
-    `XE-0232`. One ticket named both ways is one ticket."""
+async def _tagged_tickets(ctx: Context, db: AsyncSession, text: str, ref: str = "") -> list[Ticket]:
+    """The desk tickets an internal issue applies to: GitHub-sourced ones it names by `xe#8`, any ticket it
+    names by desk id `XE-0232`, and every ticket already carrying it as `internal_ref`. The last keeps a
+    report following the engineering ticket after its body is edited and the mention drops out; a link
+    once made is not undone by a rewrite. One ticket reached several ways is one ticket."""
     out: list[Ticket] = []
     for pub_repo, pub_num in gh.public_tags(text, ctx.config.internal_aliases):
         t = await tsvc.find_by_source(db, "github", pub_repo, str(pub_num))
@@ -354,6 +356,11 @@ async def _tagged_tickets(ctx: Context, db: AsyncSession, text: str) -> list[Tic
         t = await tsvc.get(db, tid)
         if t is not None and t not in out:
             out.append(t)
+    if ref:
+        q = select(Ticket).where(Ticket.internal_ref == ref).order_by(Ticket.id)
+        for t in (await db.execute(q)).scalars().all():
+            if t not in out:
+                out.append(t)
     return out
 
 

@@ -803,10 +803,13 @@ async def test_internal_tracker_names_desk_filed_reports_by_id(ctx, db):
     stats = await sync.link_internal_issue(ctx, db, _issue(1071, f"bundle xe#65 {gh_t.id}"))
     assert stats["tagged"] == 1 and stats["noted"] == 1  # already #1070; said once, not overwritten
     assert gh_t.internal_ref == "#1070"
-    # the fix ships: closing the internal ticket patches every report it names
-    done = _issue(1070, "security: netcheck bundle", body=body, state="closed", state_reason="completed")
+    # the fix ships: closing the internal ticket patches every report linked to it, including one whose
+    # mention was edited out of the body since; the link made earlier is what counts
+    edited = f"Covers xe#65 and {dup.id}. Root cause in net/check."
+    done = _issue(1070, "security: netcheck bundle", body=edited, state="closed", state_reason="completed")
     stats = await sync.link_internal_issue(ctx, db, done)
-    assert stats["moved"] == 3 and {t.status for t in (web, dup, gh_t)} == {"patched"}
+    assert stats["tagged"] == 3 and stats["moved"] == 3
+    assert {t.status for t in (web, dup, gh_t)} == {"patched"}
 
 
 def _pull(number, title, body="", state="open", merged=False, login="grace", association="MEMBER"):
