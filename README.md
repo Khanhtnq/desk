@@ -2,7 +2,7 @@
 
 The ticket desk for the XE bug bounty and support: reports come in from GitHub (and, privately, by email), the team triages, agents suggest, people decide and reply, and every move is in a signed, hash-chained log. Two front doors, one app: `bounty.xe.network` and `support.xe.network`.
 
-The design is [`docs/DESK_BRIEF.md`](docs/DESK_BRIEF.md); the team's working guide is [`docs/BOUNTY_GUIDE.md`](docs/BOUNTY_GUIDE.md); sign-in and the wallet connection are [`docs/WALLET_BRIEF.md`](docs/WALLET_BRIEF.md). The seed data was the triage document, `BOUNTY_TRIAGE.md`, which the desk imported once; it carries private reports and is not in the repo. The live equivalent is `/v1/export/triage.md`. Deployment is [`docs/DEPLOY.md`](docs/DEPLOY.md).
+The design is [`docs/DESK_BRIEF.md`](docs/DESK_BRIEF.md); the team's working guide is [`docs/BOUNTY_GUIDE.md`](docs/BOUNTY_GUIDE.md); how a report becomes a fix is [`docs/FIX_BRIEF.md`](docs/FIX_BRIEF.md); sign-in and the wallet connection are [`docs/WALLET_BRIEF.md`](docs/WALLET_BRIEF.md). The seed data was the triage document, `BOUNTY_TRIAGE.md`, which the desk imported once; it carries private reports and is not in the repo. The live equivalent is `/v1/export/triage.md`. Deployment is [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## What it does (releases 1 to 3, Telegram pending)
 

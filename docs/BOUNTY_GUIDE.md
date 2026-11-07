@@ -87,12 +87,16 @@ Money is the smaller motive. The desk decides what is fixed before mainnet, so i
 2. Set status `triaging` (the list of pending proposals is where most of this is done in bulk; see §6).
 3. Set what you can: area, verdict, gate, effort, internal ref if one exists. If it's a duplicate, set `duplicate_of` and close it with reason `duplicate`; use the `duplicate` reply template so the reporter knows which ticket carries it.
 4. If it needs the reporter: `needs-info`, and reply with the `needs_info` template saying exactly what.
-5. If it's real: `accepted`. If no internal ticket exists, anyone on the team makes one in `core` naming the report (`xe#63` in the title); the desk links it on the next poll. Reply with `accepted` so the reporter knows it's taken.
+5. If it's real: `accepted`. If no internal ticket exists, anyone on the team makes one in `core` naming the report (`xe#63` or the desk id in the title or body); the desk links it on the next poll and keeps the link if the text is edited later. If one exists for the same class of bug, tag the report onto it rather than opening another: the internal ticket is for the class, not the report ([`FIX_BRIEF.md`](FIX_BRIEF.md) §6). Reply with `accepted` so the reporter knows it's taken.
 6. If it's not a bug: close with `invalid` / `out-of-scope` / `answered` and the matching template. Say why in a sentence; the reply is public and the next reporter reads it.
 
 **Tier (the `tier` role)**
 
 Set `assessed_tier` on accepted tickets. Adopting an agent's tier proposal also needs the `tier` role; a reviewer without it sees the proposal but can't adopt it. The role is separate from reviewer only because the tier is the money: give it to the people you want deciding awards, however many that is. The tier is what the award follows, so it's set with the fix in view, not from the report alone.
+
+**Making the fix (whoever takes the engineering ticket)**
+
+The fix closes the rule the code broke, not the path the report named; the engineering ticket states the rule and lists every site it applies to before the branch, the test asserts the rule across those sites, and an agent sweeps the tree for siblings before `patched`. The whole of it is [`FIX_BRIEF.md`](FIX_BRIEF.md). A report filed against a fix a fortnight after it shipped is the cost of skipping it.
 
 **When the fix lands (anyone)**
 
