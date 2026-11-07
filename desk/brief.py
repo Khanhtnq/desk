@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .config import Config
 from .models import PROPOSAL_FIELDS, AgentToken
-from .services.tickets import TRANSITIONS
+from .services.tickets import CLOSED_REASONS_FOR, TRANSITIONS
 
 FIX_BRIEF = Path(__file__).resolve().parent.parent / "docs" / "FIX_BRIEF.md"
 
@@ -438,6 +438,18 @@ def build_agent_brief(
             f"`{a}` → {', '.join(f'`{x}`' for x in sorted(bs))}" for a, bs in table.items() if bs
         )
         add(f"- {kind}: {moves}")
+    add("")
+    add(
+        _p(
+            "`closed` carries a `closed_reason`, and only these are accepted; the desk refuses the proposal",
+            "on arrival otherwise. There is no reason for 'by design' or 'works as intended': that is a",
+            "verdict (`design-gap` if the intent is the problem, `invalid` if the report is wrong), and the",
+            "ticket closes `invalid` or `out-of-scope`.",
+        )
+    )
+    add("")
+    for kind, reasons in CLOSED_REASONS_FOR.items():
+        add(f"- {kind}: {', '.join(f'`{r}`' for r in sorted(reasons))}")
     add("")
     add(
         _p(

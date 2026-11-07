@@ -431,6 +431,17 @@ async def test_agent_proposes_human_adopts(ctx, db):
     t = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="x", source="web"))
     with pytest.raises(HTTPException):
         await psvc.propose(ctx, db, p, t, "verdict", "valid", "people set facts directly")
+    # a status the desk could never apply is refused when proposed, not when a person clicks adopt (XE-1054)
+    for bad in (
+        {"status": "closed", "closed_reason": "by-design"},
+        {"status": "closed"},
+        {"status": "triaging", "closed_reason": "invalid"},
+        "resolved",
+        42,
+    ):
+        with pytest.raises(HTTPException) as e:
+            await psvc.propose(ctx, db, agent, t, "status", bad, "no")
+        assert e.value.status_code == 400, bad
     pr1 = await psvc.propose(ctx, db, agent, t, "verdict", "valid", "reproduced")
     pr2 = await psvc.propose(ctx, db, agent, t, "assessed_tier", "high", "targeted DoS")
     pr3 = await psvc.propose(ctx, db, agent, t, "reply_draft", "Thanks, reproduced. See {ticket_url}.", "")

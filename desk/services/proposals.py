@@ -28,8 +28,20 @@ async def propose(
         raise HTTPException(400, f"field must be one of {list(PROPOSAL_FIELDS)}")
     if p.token is None:
         raise HTTPException(403, "proposals come from agent tokens; a person sets the fact directly")
-    if field == "status" and not isinstance(value, (str, dict)):
-        raise HTTPException(400, "status proposals are a string or {status, closed_reason}")
+    if field == "status":
+        # checked here, not only on adoption: a proposal the desk could never apply would otherwise sit
+        # on the ticket until a person clicked it and met the 400 the agent should have (XE-1054)
+        if not isinstance(value, (str, dict)):
+            raise HTTPException(400, "status proposals are a string or {status, closed_reason}")
+        status = value if isinstance(value, str) else value.get("status")
+        closed_reason = None if isinstance(value, str) else value.get("closed_reason")
+        if status not in tsvc.STATUSES:
+            raise HTTPException(400, f"unknown status {status!r}; one of {list(tsvc.STATUSES)}")
+        reasons = sorted(tsvc.CLOSED_REASONS_FOR[t.kind])
+        if status == "closed" and closed_reason not in reasons:
+            raise HTTPException(400, f"closing a {t.kind} ticket needs closed_reason from {reasons}")
+        if status != "closed" and closed_reason:
+            raise HTTPException(400, "closed_reason goes with status closed only")
     if field == "reply_draft" and not isinstance(value, str):
         raise HTTPException(400, "a reply draft is a string")
     if field == "award_xe":
