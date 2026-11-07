@@ -216,6 +216,9 @@ footer .meta span { color:var(--text-low); } footer .meta span + span:not(:first
 .counts h4 { margin:0 0 10px; font:500 11px/14px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--text-low); }
 .counts .nums { display:flex; gap:24px; flex-wrap:wrap; }
 .counts .nums div { font:500 11px/14px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--mute); }
+/* the flat form, <div><b>n</b>label</div> straight under .counts, as the triage, awards and release pages use */
+.counts > div:not(.group) { margin:0 32px 12px 0; font:500 11px/14px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--mute); white-space:nowrap; }
+.counts > div:not(.group):last-child { margin-right:0; }
 .counts b { display:block; font:400 26px/28px var(--sans); letter-spacing:-.03em; color:var(--text-high); margin-bottom:4px; font-variant-numeric:tabular-nums; }
 
 .tier { display:inline-flex; align-items:center; height:22px; padding:0 8px; font:500 11px/1 var(--mono); letter-spacing:.04em; text-transform:uppercase; border:1px solid var(--outline); color:var(--text-low); white-space:nowrap; }
