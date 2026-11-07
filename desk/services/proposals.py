@@ -296,7 +296,7 @@ def proposed_tier(t: Ticket, prs: list[Proposal]) -> str | None:
 
 
 class TriageRow:
-    __slots__ = ("ticket", "proposals", "views", "tier", "note", "canonical", "mine")
+    __slots__ = ("ticket", "proposals", "views", "tier", "note", "canonical", "mine", "klass")
 
     def __init__(self, t: Ticket, prs: list[Proposal]):
         self.ticket = t
@@ -306,6 +306,7 @@ class TriageRow:
         self.note: Note | None = None
         self.canonical: Ticket | None = None
         self.mine: list[int] = []  # the proposal ids the viewer's roles let them adopt; set by the page
+        self.klass: list[Ticket] = []  # the other reports on the same engineering ticket
 
     @property
     def duplicate_of(self) -> str | None:
@@ -373,9 +374,12 @@ async def triage_rows(
             c.id: c
             for c in (await db.execute(select(Ticket).where(Ticket.id.in_(canon_ids)))).scalars().all()
         } if canon_ids else {}
+        refs = {r.ticket.internal_ref for r in rows if r.ticket.internal_ref}
+        by_ref = await tsvc.same_class(db, p, refs) if refs else {}
         for r in rows:
             r.note = notes.get(r.ticket.id)
             r.canonical = canons.get(r.duplicate_of or "")
+            r.klass = [o for o in by_ref.get(r.ticket.internal_ref, []) if o.id != r.ticket.id]
     return rows
 
 

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from . import __version__, brand
 from .auth import resolve, safe_next
 from .authz import ANON, Principal, can
-from .brief import build_agent_brief
+from .brief import build_agent_brief, fix_brief
 from .context import get_context
 from .db import session
 from .api.public import log_scope
@@ -296,6 +296,14 @@ async def agent_page(request: Request):
         p, csrf = await principal(db, request)
     text = build_agent_brief(c.config, site_url(c, site_for(request)), c.node.network_id)
     return render(request, "agent.html", {"p": p, "csrf": csrf, "brief": text})
+
+
+@router.get("/fix", response_class=HTMLResponse)
+async def fix_page(request: Request):
+    """How a report becomes a fix, as a page. The markdown is at /v1/agent/fix.md; same text."""
+    async with session() as db:
+        p, csrf = await principal(db, request)
+    return render(request, "fix.html", {"p": p, "csrf": csrf, "brief": fix_brief()})
 
 
 @router.get("/scope", response_class=HTMLResponse)
@@ -698,6 +706,11 @@ async def ticket_page(request: Request, tid: str):
         attachments = await rsvc.attachments_for(db, t) if (p.is_team or mine) else []
         # read across before ruling: what else on the desk looks like this one
         similar = await tsvc.similar(db, c.config, p, t, body=body or "") if can(p, "read:notes", t) else []
+        # the other reports on the same engineering ticket: the class the fix has to close
+        klass = []
+        if t.internal_ref and can(p, "read:notes", t):
+            siblings = (await tsvc.same_class(db, p, {t.internal_ref})).get(t.internal_ref, [])
+            klass = [o for o in siblings if o.id != t.id]
     og = {}
     if t.visibility == "public":
         labels = c.config.copy_public.get("labels") or {}
@@ -722,6 +735,7 @@ async def ticket_page(request: Request, tid: str):
             "patches": patches,
             "notes": notes,
             "similar": similar,
+            "klass": klass,
             "proposals": proposals,
             "family": family,
             "replies": replies,

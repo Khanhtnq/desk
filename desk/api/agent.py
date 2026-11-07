@@ -11,7 +11,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..authz import require
-from ..brief import build_agent_brief
+from ..brief import build_agent_brief, fix_brief
 from ..services import proposals as psvc
 from ..services import thread, users
 from ..services import tickets as tsvc
@@ -147,6 +147,12 @@ async def _brief(ctx: Ctx, db: Db, who: Who, request: Request) -> str:
 @router.get("/agent/brief.md", response_class=PlainTextResponse)
 async def agent_brief_md(ctx: Ctx, db: Db, who: Who, request: Request):
     return PlainTextResponse(await _brief(ctx, db, who, request), media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/agent/fix.md", response_class=PlainTextResponse)
+async def agent_fix_md():
+    """How a report becomes a fix, for whoever takes the engineering ticket. Public; no token needed."""
+    return PlainTextResponse(fix_brief(), media_type="text/markdown; charset=utf-8")
 
 
 @router.get("/agent/brief")

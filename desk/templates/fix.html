@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Fixing a report{% endblock %}
+{% block content %}
+<div class="tag"><span>Fixing</span></div>
+<h1>How a report becomes a fix.</h1>
+<p class="sub">For whoever takes the engineering ticket, person or agent, and whoever reviews the pull request. The markdown is at <a href="/v1/agent/fix.md"><code>/v1/agent/fix.md</code></a>; the agent brief is at <a href="/agent">/agent</a>.</p>
+<div class="prose brief">{{ brief|md }}</div>
+{% endblock %}

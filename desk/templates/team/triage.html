@@ -28,6 +28,7 @@
   <td class="title">
     <a href="/{{ t.id }}">{{ t.title }}</a>
     <span class="k">{% if t.claimed_tier %}claimed {{ cfg.tier_label(t.claimed_tier) }} · {% endif %}{% set rep = reporters.get(t.reporter_id) %}{% if rep %}<a href="{{ flt('reporter', rep.id|string) }}">{{ rep.display_name or rep.github_login or rep.email or ("reporter " ~ rep.id) }}</a> · {% endif %}{{ (t.source_created_at or t.created_at)|day }}</span>
+    {% if t.internal_ref %}<div class="k klass-strip"><span class="mono">{{ t.internal_ref }}</span>{% if r.klass %} · class of {{ r.klass|length + 1 }}: {% for o in r.klass %}{{ m.tlink(o) }} <span class="pill {{ o.status }}">{{ o.status }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %} · the only report on it{% endif %}</div>{% endif %}
     {% if r.note %}<div class="claim">{{ excerpt(r.note) }}{% if r.note.checked %} <span class="checked">· read {{ r.note.checked.desk }} desk{% if r.note.checked.tree %}, {{ r.note.checked.tree }}{% endif %}</span>{% else %} <span class="checked none">· no check recorded</span>{% endif %}</div>{% endif %}
     <div class="chips">{% for pr in r.proposals %}{{ chip(pr) }}{% endfor %}</div>
   </td>

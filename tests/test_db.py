@@ -618,6 +618,16 @@ async def test_triage_rows_sort_tickets_into_views(ctx, db):
     public_eyes = await _agent(ctx, db, p.user, scopes=("read:public",))
     assert hidden.id not in {r.ticket.id for r in await psvc.triage_rows(db, ctx.config, public_eyes)}
     assert (await psvc.triage_counts(db, public_eyes))["all"] == 4
+    # the class: every report on the same engineering ticket rides on the row, the private one included
+    for t in (finding, hidden, canon):
+        await tsvc.set_facts(ctx, db, p, t, {"internal_ref": "#1090"}, reason="one class")
+    klass = await tsvc.same_class(db, p, {"#1090", ""})
+    assert [o.id for o in klass["#1090"]] == sorted([finding.id, hidden.id, canon.id]) and "" not in klass
+    public_view = await tsvc.same_class(db, public_eyes, {"#1090"})
+    assert [o.id for o in public_view["#1090"]] == sorted([finding.id, canon.id])
+    rows = {r.ticket.id: r for r in await psvc.triage_rows(db, ctx.config, p)}
+    assert {o.id for o in rows[finding.id].klass} == {hidden.id, canon.id}  # not its own sibling
+    assert rows[dup.id].klass == []
 
 
 def test_status_path_walks_forward_edges_only():

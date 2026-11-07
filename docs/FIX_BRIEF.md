@@ -2,6 +2,8 @@
 
 How a bounty report becomes a fix. For whoever picks up the engineering ticket, person or agent, and for whoever reviews the pull request. The desk's working guide is [`BOUNTY_GUIDE.md`](BOUNTY_GUIDE.md); this is the part between `accepted` and `patched`.
 
+The desk serves this at `https://bounty.xe.network/fix` (markdown at `/v1/agent/fix.md`), and it is linked from `/llms.txt` and the agent brief. The engineering repos point at it from `AGENTS.md` and the bounty-fix issue template; the files to drop in are in [`repo-kit/`](repo-kit/).
+
 ## 1. The one rule
 
 A report names a path. The bug is a rule the code broke, and the path is one place it broke it. The fix closes the rule, not the path. `patched` means there is nothing left in that class for the next report to find.

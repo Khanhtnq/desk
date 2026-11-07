@@ -8,9 +8,25 @@ which `GET /v1/me` returns; this document is the part that is the same for every
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+
 from .config import Config
 from .models import PROPOSAL_FIELDS, AgentToken
 from .services.tickets import TRANSITIONS
+
+FIX_BRIEF = Path(__file__).resolve().parent.parent / "docs" / "FIX_BRIEF.md"
+
+
+@lru_cache(maxsize=1)
+def fix_brief() -> str:
+    """How a report becomes a fix: `docs/FIX_BRIEF.md`, served at `/v1/agent/fix.md` and `/fix` so the
+    people and agents taking an engineering ticket can be sent one URL. Authored, not generated; read once."""
+    try:
+        return FIX_BRIEF.read_text(encoding="utf-8")
+    except OSError:
+        return "# Fixing a report\n\nThe brief is not installed with this build.\n"
+
 
 GATE_NOTES = {
     "before": "the fix lands before mainnet",
@@ -507,6 +523,13 @@ def build_agent_brief(
     add(f"- `{b}/v1/openapi.json`: the schema.")
     add(f"- `{b}/llms.txt`: the reading list. Every page is also markdown with `.md` appended.")
     add(f"- `{b}/scope.md`: the programme's own words on tiers and scope.")
+    add(
+        _p(
+            f"- `{b}/v1/agent/fix.md`: how a report becomes a fix. If you are taking an engineering ticket",
+            "rather than triaging, read that: a fix closes the rule the code broke, not the path the",
+            "report named.",
+        )
+    )
     add(f"- `{b}/v1/export/triage.md`: the whole desk as triage tables, for a wide read.")
     add("")
     cfg_h = cfg.hashes.get("desk.yaml", "")[:12]

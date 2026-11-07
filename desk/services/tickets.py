@@ -446,6 +446,22 @@ async def similar(
     return out[:limit]
 
 
+async def same_class(db: AsyncSession, p: Principal, refs: set[str]) -> dict[str, list[Ticket]]:
+    """The reports behind each engineering ticket: every visible ticket carrying one of `refs` as its
+    `internal_ref`, grouped by ref, oldest first. One engineering ticket is one class of bug (the fix
+    brief); seeing its other reports beside a ticket is how a reviewer tells a resolution from a patch."""
+    refs = {r for r in refs if r}
+    if not refs:
+        return {}
+    q = select(Ticket).where(Ticket.internal_ref.in_(refs)).order_by(Ticket.id)
+    if not can(p, "read:private"):
+        q = q.where(Ticket.visibility == "public")
+    out: dict[str, list[Ticket]] = {r: [] for r in refs}
+    for row in (await db.execute(q)).scalars().all():
+        out[row.internal_ref].append(row)
+    return out
+
+
 def similar_dict(ctx: Context, s: Similar, p: Principal, t: Ticket) -> dict:
     """A row of the similar list: enough to decide whether to open it, under the usual holding rules."""
     o = s.ticket

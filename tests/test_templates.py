@@ -87,6 +87,7 @@ def test_llms_txt_shape(config):
     assert txt.startswith("# XE Bounty") and "> " in txt
     assert "https://bounty.xe.network/index.md" in txt and "/v1/events/stream" in txt
     assert "/scope.md" in txt and "/leaderboard.md" in txt
+    assert "/v1/agent/fix.md" in txt, "whoever fixes is pointed at the fix brief"
     assert lint_public_copy(config, [txt]) == []
     # the support door has its own list: no scope, no tiers, no leaderboard, a pointer to the bounty
     sup = build_llms_txt(
@@ -146,3 +147,13 @@ def test_agent_brief_carries_every_vocabulary(config):
     assert "## Your token" in mine and "owned by Ada" in mine and "`daily`" in mine
     assert "> Only p2p-sync tickets." in mine and "> Never propose status." in mine
 
+
+
+def test_fix_brief_is_served_and_signposted(config):
+    from desk.brief import build_agent_brief, fix_brief
+
+    text = fix_brief()
+    assert text.startswith("# Fixing a report") and "sibling sweep" in text.lower()
+    assert lint_public_copy(config, [text]) == []
+    brief = build_agent_brief(config, "https://bounty.xe.network", "testnet-0005")
+    assert "https://bounty.xe.network/v1/agent/fix.md" in brief

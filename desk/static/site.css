@@ -305,6 +305,8 @@ table.tickets td .mono { font-size:12px; }
 /* the triage page: a ticket per row, the pending set as chips */
 .triage .filters a small { margin-left:6px; color:inherit; opacity:.6; font-size:11px; }
 .triage-table td.title { max-width:none; }
+.triage .klass-strip { margin-top:4px; }
+.triage .klass-strip .pill { font-size:10px; padding:0 5px; }
 .triage .claim { margin:6px 0 0; font-size:14px; line-height:1.45; color:var(--fg-2); max-width:90ch; }
 .triage .claim .checked { font:500 11px/14px var(--mono); letter-spacing:.04em; text-transform:uppercase; color:var(--text-low); white-space:nowrap; }
 .triage .claim .checked.none { color:var(--caution); }

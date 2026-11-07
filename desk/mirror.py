@@ -210,6 +210,14 @@ def build_llms_txt(
         "- `POST /v1/tickets/{id}/patch-refs`: link a PR or commit (scope `write:patch-refs`)",
         "- No scope sends a reply, sets a status or an award, or reads a payout address.",
         "",
+        "## For whoever fixes",
+        link(
+            "/v1/agent/fix.md",
+            "Fixing a report",
+            "a fix closes the rule the code broke, not the path the report named: the rule, the sites, "
+            "the test, the sibling sweep, one engineering ticket per class; `/fix` is the same as a page",
+        ),
+        "",
     ]
     how = (
         f"Network `{network_id}`. Every page here is also markdown: append `.md` to its path (the home page "
