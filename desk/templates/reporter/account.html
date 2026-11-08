@@ -43,13 +43,14 @@
   <h3>Payout address</h3>
   {% if me.xe_address %}
   <p><code class="mono">{{ me.xe_address }}</code></p>
-  <p class="k">Bound by a signature from that address's key. Awards are paid here at mainnet launch. Bind another to replace it.</p>
+  <p class="k">Bound by a signature from that address's key. Awards are paid here at mainnet launch. Bind another to replace it, or <button class="ghost mini" type="button" id="payout-unbind">remove it</button>.</p>
   {% else %}
   <p>{{ copy.report.payout_none }}</p>
   {% endif %}
-  <div id="payout-box" style="margin-top:12px">
+  <div id="payout-box" style="margin-top:12px" data-known="{{ ([me.xe_address] + (me.xe_login_addresses or []))|join(',') }}">
     <p class="k">Proof is a signature from the address's key. Until the XE wallet can sign for the desk, that means a desk key: make one here and keep the seed, or paste the seed of a key made for this purpose. Never the key of a wallet that holds funds.</p>
-    <input type="password" id="payout-seed" placeholder="seed of the address to be paid to" autocomplete="off">
+    <p class="k">The field takes the <strong>seed</strong> (64 hex characters), not an address. An address is the same length; pasted here it would become a key that anyone who knows the address could use.</p>
+    <input type="password" id="payout-seed" placeholder="seed (not the address) of the key to be paid to" autocomplete="off">
     <div class="row" style="margin-top:8px"><button class="mini" type="button" id="payout-bind">{{ "Replace the address" if me.xe_address else "Bind this address" }}</button><button class="ghost mini" type="button" id="payout-generate">Make a new key</button></div>
     <div id="payout-new" style="display:none; margin-top:12px">
       <p class="k">New seed, shown once. Save it somewhere safe; losing it means losing the award.</p>

@@ -1157,6 +1157,21 @@ async def test_payout_binding_needs_matching_key(ctx, db):
     out = await rsvc.bind_payout(ctx, db, r, v)
     assert out == {"address": kp.address, "tickets_updated": 1}
     assert r.xe_address == kp.address and t.payout_address == kp.address
+    # an address is 64 hex like a seed; pasted as one it yields a key anyone can derive (XS-0008)
+    trap = KeyPair.from_seed_hex(kp.address)
+    v = await verify_signed(db, _signed(trap, DOMAIN_PAYOUT, {"address": trap.address}), DOMAIN_PAYOUT)
+    with pytest.raises(HTTPException) as e:
+        await rsvc.bind_payout(ctx, db, r, v)
+    assert e.value.status_code == 400 and "public address" in e.value.detail
+    assert r.xe_address == kp.address
+    # the reporter can take the address off again; unpaid tickets lose it, and twice is a 409
+    assert await rsvc.unbind_payout(ctx, db, r) == {"tickets_updated": 1}
+    assert r.xe_address == "" and t.payout_address == "" and r.payout_proof == {}
+    with pytest.raises(HTTPException) as e:
+        await rsvc.unbind_payout(ctx, db, r)
+    assert e.value.status_code == 409
+    v = await verify_signed(db, _signed(kp, DOMAIN_PAYOUT, {"address": kp.address}), DOMAIN_PAYOUT)
+    await rsvc.bind_payout(ctx, db, r, v)
     # the payout export lists tickets at awarded with the bound address, and nothing before that
     team = await _team(ctx, db)
     await tsvc.set_status(ctx, db, team, t, "triaging")

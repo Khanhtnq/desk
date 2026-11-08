@@ -90,18 +90,31 @@
   });
 
   // ---- payout address --------------------------------------------------------------------------
-  async function bindPayout(seedHex) {
+  async function bindPayout(seedHex, pasted) {
     const S = window.XeSigner;
+    const known = (($("#payout-box") || {}).dataset || {}).known || "";
+    if (pasted && known.split(",").filter(Boolean).includes(seedHex.toLowerCase()))
+      throw new Error("that is an address, not a seed; a key made from it could be used by anyone who knows the address");
     const { address } = await S.setSeed(seedHex);
-    try { return await signedPost("/v1/reporter/payout", "xe/desk/payout/v1", { address }); }
-    finally { S.forget(); }
+    try {
+      if (pasted && !confirm("This seed controls the address\n\n" + address + "\n\nAwards will be paid there. Bind it?")) return null;
+      return await signedPost("/v1/reporter/payout", "xe/desk/payout/v1", { address });
+    } finally { S.forget(); }
   }
   const payBtn = $("#payout-bind");
   if (payBtn) payBtn.addEventListener("click", async () => {
     payBtn.disabled = true;
-    try { const d = await bindPayout(($("#payout-seed").value || "").trim()); $("#payout-seed").value = ""; say("#payout-msg", "Bound to " + d.address + ".", true); setTimeout(() => location.reload(), 700); }
-    catch (e) { say("#payout-msg", e.message, false); }
+    try {
+      const d = await bindPayout(($("#payout-seed").value || "").trim(), true);
+      if (d) { $("#payout-seed").value = ""; say("#payout-msg", "Bound to " + d.address + ".", true); setTimeout(() => location.reload(), 700); }
+    } catch (e) { say("#payout-msg", e.message, false); }
     payBtn.disabled = false;
+  });
+  const payOff = $("#payout-unbind");
+  if (payOff) payOff.addEventListener("click", async () => {
+    if (!confirm("Remove the payout address? Nothing can be paid until another is bound.")) return;
+    try { await api("POST", "/v1/reporter/payout/unbind"); location.reload(); }
+    catch (e) { say("#payout-msg", e.message, false); }
   });
   const payGen = $("#payout-generate");
   if (payGen) payGen.addEventListener("click", async () => {
@@ -114,7 +127,7 @@
       $("#payout-new-seed").textContent = seed; $("#payout-new-addr").textContent = address;
       $("#payout-new").style.display = "";
       $("#payout-use-new").onclick = async () => {
-        try { await bindPayout(seed); say("#payout-msg", "Bound.", true); setTimeout(() => location.reload(), 700); }
+        try { await bindPayout(seed, false); say("#payout-msg", "Bound.", true); setTimeout(() => location.reload(), 700); }
         catch (e) { say("#payout-msg", e.message, false); }
       };
     } catch (e) { say("#payout-msg", e.message, false); }

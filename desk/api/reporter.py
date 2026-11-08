@@ -337,6 +337,16 @@ async def bind_payout(ctx: Ctx, db: Db, who: Who, request: Request, req: auth.Si
     return out
 
 
+@router.post("/payout/unbind")
+async def unbind_payout(ctx: Ctx, db: Db, who: Who, request: Request):
+    """Drop the bound payout address. Nothing to sign: the account's session is the authority here, since
+    removing an address can only ever stop a payment, not redirect one."""
+    r = _reporter(who, request)
+    out = await rsvc.unbind_payout(ctx, db, r)
+    await db.commit()
+    return out
+
+
 # ---- session ----------------------------------------------------------------------------------------
 
 

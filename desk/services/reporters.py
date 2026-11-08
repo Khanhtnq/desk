@@ -24,7 +24,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from xe.keys import KeyError_, derive_address
+from xe.keys import KeyError_, KeyPair, derive_address
 
 from ..auth import Verified
 from ..authz import Principal
@@ -239,6 +239,14 @@ async def bind_payout(ctx: Context, db: AsyncSession, r: Reporter, v: Verified) 
     address = str(v.payload.get("address") or "").lower()
     if address != v.account:
         raise HTTPException(400, "the address in the payload is not the one this key derives to")
+    if address in await _public_as_seed(db, r):
+        # An XE address is 64 hex, the same shape as a seed. Paste one into the seed field and the browser
+        # derives a key from it; anyone who knows the address can do the same and spend the award.
+        raise HTTPException(
+            400,
+            "that key was made from a public address used as a seed, so anyone who knows the address could "
+            "spend from it. Paste the seed, not the address, or make a new key.",
+        )
     r.xe_address = address
     r.payout_proof = {"pub_key": v.pub_key, "signature": v.signature, "timestamp": v.timestamp}
     n = 0
@@ -255,6 +263,39 @@ async def bind_payout(ctx: Context, db: AsyncSession, r: Reporter, v: Verified) 
         public=False,
     )
     return {"address": address, "tickets_updated": n}
+
+
+async def _public_as_seed(db: AsyncSession, r: Reporter) -> set[str]:
+    """Addresses that would result from using one of this reporter's public strings as a seed: their
+    sign-in addresses, their current payout address and any address already on their tickets."""
+    known = set(r.xe_login_addresses or []) | {r.xe_address}
+    q = select(Ticket.payout_address).where(Ticket.reporter_id == r.id, Ticket.payout_address != "")
+    known |= {a for (a,) in (await db.execute(q)).all()}
+    out = set()
+    for a in known:
+        if a and re.fullmatch(r"[0-9a-f]{64}", a):
+            out.add(KeyPair.from_seed_hex(a).address)
+    return out
+
+
+async def unbind_payout(ctx: Context, db: AsyncSession, r: Reporter) -> dict:
+    """Take the payout address off the account and off every ticket of theirs that is not yet paid."""
+    if not r.xe_address:
+        raise HTTPException(409, "no payout address is bound")
+    old = r.xe_address
+    r.xe_address = ""
+    r.payout_proof = {}
+    n = 0
+    q = select(Ticket).where(Ticket.reporter_id == r.id, Ticket.payout_address == old)
+    for t in (await db.execute(q)).scalars():
+        if t.status == "paid":
+            continue
+        t.payout_address = ""
+        n += 1
+    await ctx.events.append(
+        db, "reporter.payout_unbound", f"reporter:{r.id}", {"address": old, "tickets": n}, public=False
+    )
+    return {"tickets_updated": n}
 
 
 def check_address(address: str) -> str:
