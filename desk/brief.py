@@ -368,6 +368,19 @@ def build_agent_brief(
     add("")
     add(
         _p(
+            "**One root, one award.** A report that reaches a root already on the desk by a new path (a",
+            "different pair of operations, a different delivery order, a second code site the same fix",
+            "closes) is not a second finding at the same tier. If the earlier ticket is paid or pending,",
+            "propose the minimal step at most and name it; if the new path changes what the fix must cover,",
+            "say so in the note so it lands on the earlier ticket's fix line. **Regressions and 'still live",
+            "at HEAD'** reports on an awarded ticket are the minimal step at most: the discovery was the",
+            "earlier reporter's. When the fix exists in the team's tree and the public mirror lags, that",
+            "is a mirroring gap, not a finding; propose `notice` and say which commit carries the fix.",
+        )
+    )
+    add("")
+    add(
+        _p(
             "One recommendation per ticket per pass; if you revise it, say what changed. If the thread",
             "carries a payout address that differs from the one in the report body, say so in the note: the",
             "report is the submission and its address is the one that counts. The amount is for the note",
