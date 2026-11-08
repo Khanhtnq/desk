@@ -44,11 +44,11 @@
 <h1>What the agents have read, waiting for a ruling.</h1>
 <p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. Reply drafts adopted here wait on the ticket as drafts; a duplicate family closes and replies in one click.</p>
 <div class="counts">
-  <div><b>{{ counts.all }}</b>tickets waiting</div>
-  <div><b>{{ counts.proposals }}</b>proposals</div>
-  <div><b>{{ counts.duplicates }}</b>duplicates</div>
-  <div><b>{{ counts.closures }}</b>closures</div>
-  <div><b>{{ counts.assessments }}</b>assessments</div>
+  <div><b>{{ "{:,}".format(counts.all) }}</b>tickets waiting</div>
+  <div><b>{{ "{:,}".format(counts.proposals) }}</b>proposals</div>
+  <div><b>{{ "{:,}".format(counts.duplicates) }}</b>duplicates</div>
+  <div><b>{{ "{:,}".format(counts.closures) }}</b>closures</div>
+  <div><b>{{ "{:,}".format(counts.assessments) }}</b>assessments</div>
   <div><b>{{ "{:,}".format(total_xe) }} XE</b>proposed{% if view != "all" or area or tier or reporter %} in view{% endif %}</div>
 </div>
 <div class="filters">
