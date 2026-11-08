@@ -1094,7 +1094,9 @@ async def test_a_reporter_past_the_daily_cap_is_queued_not_refused(ctx, db):
     assert "queued" not in tsvc.to_dict(ctx, filed[-2], authz.ANON), "an account's pace is not public"
     as_r = authz.Principal(kind="reporter", reporter_id=r.id)
     assert tsvc.to_dict(ctx, filed[-2], as_r)["queued"] is True
-    assert any(e.kind == "ticket.queued" for e in await EventLog.page(db, 0, 50, ref=filed[-2].id))
+    evs = await EventLog.page(db, 0, 50, ref=filed[-2].id, public_only=False)
+    assert any(e.kind == "ticket.queued" for e in evs)
+    assert not any(e.kind == "ticket.queued" for e in await EventLog.page(db, 0, 50, ref=filed[-2].id))
 
 
 async def test_reporter_withdraws_and_replies(ctx, db):
