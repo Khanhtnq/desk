@@ -344,6 +344,8 @@ input[type=email]:focus, input[type=number]:focus, input[type=password]:focus { 
 a.button { display:inline-flex; align-items:center; min-height:48px; padding:0 20px; background:var(--brand-fill); color:var(--on-brand); font-weight:500; font-size:15px; letter-spacing:.007em; }
 a.button:hover { background:var(--brand-fill-high); color:var(--on-brand); text-decoration:none; }
 a.button.mini { min-height:32px; padding:0 14px; font-size:13px; }
+a.button.ghost { background:none; color:var(--text-high); border:1px solid var(--outline); }
+a.button.ghost:hover { background:var(--tonal); color:var(--text-high); border-color:var(--stroke-strong); }
 .report label { display:block; margin:0 0 6px; font-weight:500; }
 .report .grid > div label { margin-top:0; }
 .report input[type=file] { display:block; width:100%; padding:10px 0; font:inherit; font-size:14px; color:var(--fg-2); }

@@ -594,6 +594,7 @@ async def triage(request: Request):
         reporter = int(qp["reporter"]) if qp.get("reporter") else None
     except ValueError:
         reporter = None
+    reply = qp.get("reply") if qp.get("reply") in ("sends", "review") else None
     kind = site_for(request)
     async with session() as db:
         p, csrf = await principal(db, request)
@@ -627,6 +628,24 @@ async def triage(request: Request):
         """Why a reply draft waits rather than sends when the row is adopted; None when it sends."""
         return psvc.send_review(c, r.proposals, pr, r.ticket)
 
+    def reply_kind(r) -> str | None:
+        """`sends` when the row's reply goes out on adopt, `review` when it waits, None with no reply."""
+        drafts = [pr for pr in r.proposals if pr.field == "reply_draft"]
+        if not drafts:
+            return None
+        return "sends" if all(review(r, pr) is None for pr in drafts) else "review"
+
+    # the split is over the rows already filtered, so the chip counts say what this page would show
+    reply_counts = {"sends": 0, "review": 0}
+    for r in rows:
+        k = reply_kind(r)
+        if k:
+            reply_counts[k] += 1
+    if reply:
+        rows = [r for r in rows if reply_kind(r) == reply]
+        if view == "duplicates":
+            families = {k: [r for r in v if reply_kind(r) == reply] for k, v in families.items()}
+            families = {k: v for k, v in families.items() if v}
     for r in rows:
         r.mine = [pr.id for pr in r.proposals if adoptable(pr)]
     total_xe = sum(
@@ -634,7 +653,7 @@ async def triage(request: Request):
     )
 
     def flt(key: str, value: str | None) -> str:
-        params = {"view": view, "area": area, "tier": tier, "reporter": reporter}
+        params = {"view": view, "area": area, "tier": tier, "reporter": reporter, "reply": reply}
         params[key] = None if str(params.get(key)) == str(value) else value  # a second click clears it
         return "/team/triage?" + "&".join(f"{k}={v}" for k, v in params.items() if v not in (None, "", "all"))
 
@@ -651,6 +670,8 @@ async def triage(request: Request):
             "area": area,
             "tier": tier,
             "reporter": reporter,
+            "reply": reply,
+            "reply_counts": reply_counts,
             "owners": owners,
             "reporters": reporters,
             "records": records,

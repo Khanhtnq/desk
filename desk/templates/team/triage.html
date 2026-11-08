@@ -50,7 +50,7 @@
   <div><b>{{ "{:,}".format(counts.duplicates) }}</b>duplicates</div>
   <div><b>{{ "{:,}".format(counts.closures) }}</b>closures</div>
   <div><b>{{ "{:,}".format(counts.assessments) }}</b>assessments</div>
-  <div><b>{{ "{:,}".format(total_xe) }} XE</b>proposed{% if view != "all" or area or tier or reporter %} in view{% endif %}</div>
+  <div><b>{{ "{:,}".format(total_xe) }} XE</b>proposed{% if view != "all" or area or tier or reporter or reply %} in view{% endif %}</div>
 </div>
 <div class="filters">
   <div class="frow"><span class="flabel">View</span><div class="fset">
@@ -63,11 +63,16 @@
     {% for k in cfg.tier_order if k != "none" %}<a href="{{ flt('tier', k) }}" class="{{ 'on' if tier == k }}">{{ cfg.tier_label(k) }}</a>{% endfor %}
     {% if reporter %}<span class="gap"></span><a href="{{ flt('reporter', reporter|string) }}" class="on">reporter {{ reporter }} ×</a>{% endif %}
   </div></div>
+  <div class="frow"><span class="flabel">Reply</span><div class="fset">
+    <a href="{{ flt('reply', 'sends') }}" class="{{ 'on' if reply == 'sends' }}">sends on adopt <small>{{ reply_counts.sends }}</small></a>
+    <a href="{{ flt('reply', 'review') }}" class="{{ 'on' if reply == 'review' }}">needs review <small>{{ reply_counts.review }}</small></a>
+  </div></div>
 </div>
 {% if not can_tier or not can_award %}<p class="msg err" style="display:block">{% if not can_tier %}Tier proposals need the tier role. {% endif %}{% if not can_award %}Award proposals need the treasurer role. {% endif %}Those chips are shown locked and left out of Adopt.</p>{% endif %}
 {% if rows %}
 <div class="row" style="margin:0 0 16px">
   <button class="mini" id="adopt-shown" type="button">Adopt everything shown ({{ rows|length }} tickets)</button>
+  {% if reply != 'sends' and reply_counts.sends %}<a class="button mini ghost" href="{{ flt('reply', 'sends') }}">Only the {{ reply_counts.sends }} whose reply sends</a>{% elif reply == 'sends' %}<a class="button mini ghost" href="{{ flt('reply', 'sends') }}">Show all again</a>{% endif %}
   <span class="k">Writes every unlocked proposal on this page; plain acknowledgements are sent, reply drafts marked review wait on their tickets. Skipped ones are listed afterwards.</span>
 </div>
 {% endif %}
@@ -90,6 +95,6 @@
 </tbody>
 </table>
 {% endif %}
-{% if not rows %}<p class="mute" style="margin-top:24px">Nothing waiting{% if view != "all" or area or tier or reporter %} in this view{% endif %}. Ask an agent to read across the desk, or <a href="/team/triage">clear the filters</a>.</p>{% endif %}
+{% if not rows %}<p class="mute" style="margin-top:24px">Nothing waiting{% if view != "all" or area or tier or reporter or reply %} in this view{% endif %}. Ask an agent to read across the desk, or <a href="/team/triage">clear the filters</a>.</p>{% endif %}
 </div>
 {% endblock %}
