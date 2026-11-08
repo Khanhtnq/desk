@@ -323,6 +323,7 @@ table.tickets td .mono { font-size:12px; }
 .chip.locked { opacity:.55; padding-right:8px; }
 .chip.duplicate_of, .chip.status { border-color:color-mix(in srgb, var(--brand) 50%, transparent); }
 .chip.award_xe { border-color:color-mix(in srgb, var(--live) 45%, transparent); }
+.chip.sends { border-color:color-mix(in srgb, var(--live) 45%, transparent); }
 .chip a { color:inherit; }
 .chip .x { min-height:0; height:18px; width:18px; padding:0; border:0; background:none; color:var(--text-low); font-size:14px; line-height:1; cursor:pointer; }
 .chip .x:hover { color:var(--negative); }

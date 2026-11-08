@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .config import Config
 from .models import PROPOSAL_FIELDS, AgentToken
+from .services.thread import PLAIN_LIMIT
 from .services.tickets import CLOSED_REASONS_FOR, TRANSITIONS
 
 FIX_BRIEF = Path(__file__).resolve().parent.parent / "docs" / "FIX_BRIEF.md"
@@ -492,11 +493,15 @@ def build_agent_brief(
     add("")
     add(
         _p(
-            "A string: the words a person might send to the reporter. Adopting it puts the text in their",
-            "editor, where it waits until they edit and send. `{ticket_url}` and `{tier}` are filled in",
-            "on adoption. Write in the programme's voice: plain, specific, no promise of an award, no tier",
-            "named unless it has been set, nothing about other reports. On a private ticket say the fact,",
-            "not the detail.",
+            "A string: the words a person might send to the reporter. Adopted from the ticket page it goes",
+            "to their editor, where it waits until they edit and send. Adopted from the triage page, a",
+            "plain acknowledgement is sent as it stands: under",
+            f"{PLAIN_LIMIT} characters, nothing named but this ticket, no number, no link but its own, no",
+            "code or path, no word about tiers, money or closing, on a ticket that stays open. Anything",
+            "else waits as a",
+            "draft, flagged for a read. `{ticket_url}` and `{tier}` are filled in on adoption. Write in",
+            "the programme's voice: plain, specific, no promise of an award, no tier named unless it has",
+            "been set, nothing about other reports. On a private ticket say the fact, not the detail.",
         )
     )
     add("")

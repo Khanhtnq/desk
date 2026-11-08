@@ -581,7 +581,8 @@ async def awards(request: Request):
 async def triage(request: Request):
     """Everything an agent has proposed and nobody has ruled on, one row per ticket, in the views a
     reviewer works through: duplicates, closures, assessments, awards, replies. Adopting from here goes
-    through the same per-proposal path as the ticket page; replies adopted here wait as drafts."""
+    through the same per-proposal path as the ticket page; a reply draft the desk reads as a plain
+    acknowledgement is sent on adoption, any other waits as a draft with the reason shown on its chip."""
     c = get_context()
     qp = request.query_params
     view = qp.get("view") or "all"
@@ -622,6 +623,10 @@ async def triage(request: Request):
             return can_award
         return True
 
+    def review(r, pr) -> str | None:
+        """Why a reply draft waits rather than sends when the row is adopted; None when it sends."""
+        return psvc.send_review(c, r.proposals, pr, r.ticket)
+
     for r in rows:
         r.mine = [pr.id for pr in r.proposals if adoptable(pr)]
     total_xe = sum(
@@ -652,6 +657,7 @@ async def triage(request: Request):
             "can_tier": can_tier,
             "can_award": can_award,
             "adoptable": adoptable,
+            "review": review,
             "excerpt": psvc.note_excerpt,
             "total_xe": total_xe,
             "flt": flt,

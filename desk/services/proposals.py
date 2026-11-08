@@ -2,7 +2,8 @@
 
 Adopting writes the field through the same code path a human edit uses (so vocabulary and permission
 checks apply) and records who adopted what, proposed by which token. A `reply_draft` proposal is
-never written anywhere: adopting it hands the text to the reply editor.
+never written to the ticket's facts: adopting it hands the text to the reply editor, or, from the
+triage page, sends it when the desk reads it as a plain acknowledgement (`send_review`).
 """
 
 from __future__ import annotations
@@ -106,10 +107,46 @@ async def get(db: AsyncSession, pid: int) -> Proposal | None:
     return (await db.execute(select(Proposal).where(Proposal.id == pid))).scalar_one_or_none()
 
 
+def _closes(pr: Proposal) -> bool:
+    if pr.field == "duplicate_of":
+        return True
+    if pr.field != "status":
+        return False
+    v = pr.value.get("value")
+    return (v.get("status") if isinstance(v, dict) else v) == "closed"
+
+
+def send_review(ctx: Context, prs: list[Proposal], pr: Proposal, t: Ticket) -> str | None:
+    """Why this reply draft should wait in the editor rather than go out on adoption, or None when the
+    desk may send it as it stands. The text rule is `thread.review_reason`; on top of it, a draft that
+    rides with a closure or a duplicate ruling, a draft on a closed ticket, and a draft proposed before
+    the reporter was last written to all wait: the person may have said something since."""
+    from . import thread
+
+    if t.status == "closed":
+        return "the ticket is closed"
+    if any(_closes(o) for o in prs if o.state == "pending" and o.id != pr.id):
+        return "goes with a closure"
+    if t.told_at and pr.created_at and t.told_at > pr.created_at:
+        return "the reporter has been written to since"
+    return thread.review_reason(ctx, thread.fill(ctx, str(pr.value.get("value")), t), t)
+
+
 async def decide(
-    ctx: Context, db: AsyncSession, p: Principal, pr: Proposal, adopt: bool, *, reason: str = ""
+    ctx: Context,
+    db: AsyncSession,
+    p: Principal,
+    pr: Proposal,
+    adopt: bool,
+    *,
+    reason: str = "",
+    send_plain: bool = False,
 ) -> dict:
-    """Adopt or reject. Returns what happened, including a reply draft when that is what was adopted."""
+    """Adopt or reject. Returns what happened, including a reply draft when that is what was adopted.
+    With `send_plain`, a reply draft the desk reads as a plain acknowledgement (see `send_review`) is
+    sent to the reporter under the adopter's name instead of waiting in the editor; `sent` carries the
+    reply id and `reply_text` the words, for the caller to mail. Any other draft still waits, and
+    `review` says why."""
     if pr.state != "pending":
         raise HTTPException(409, f"proposal is already {pr.state}")
     if p.user is None or not can(p, "adopt"):
@@ -121,10 +158,20 @@ async def decide(
     value = pr.value.get("value")
     if adopt:
         if pr.field == "reply_draft":
-            # filled and kept on the ticket until a reply is sent; the browser's editor is not the only copy
             from . import thread
 
-            t.draft = out["reply_draft"] = thread.fill(ctx, str(value), t)
+            text = thread.fill(ctx, str(value), t)
+            why = send_review(ctx, await pending_for(db, t), pr, t) if send_plain else None
+            if send_plain and why is None:
+                require(p, "reply", t)
+                r = await thread.add_reply(ctx, db, p, t, text)  # clears t.draft
+                out["sent"] = r.id
+                out["reply_text"] = text
+            else:
+                # filled and kept on the ticket until a reply is sent; the editor is not the only copy
+                t.draft = out["reply_draft"] = text
+                if send_plain:
+                    out["review"] = why
         elif pr.field == "status":
             status = value if isinstance(value, str) else value.get("status")
             reason_c = None if isinstance(value, str) else value.get("closed_reason")
@@ -238,16 +285,27 @@ async def close_duplicates(
 
 
 async def decide_many(
-    ctx: Context, db: AsyncSession, p: Principal, adopt: list[int], reject: list[int]
+    ctx: Context,
+    db: AsyncSession,
+    p: Principal,
+    adopt: list[int],
+    reject: list[int],
+    *,
+    send_plain: bool = False,
 ) -> dict:
     """Many decisions in one request, each its own savepoint: one the desk refuses (a transition the
     state machine will not make, a field the role may not set) is reported in `skipped` and the rest go
-    through. A batch that stopped at the first refusal left a reviewer adopting one by one (XE-0872)."""
+    through. A batch that stopped at the first refusal left a reviewer adopting one by one (XE-0872).
+    Reply drafts are decided last, so a closure adopted in the same batch is seen by `send_review`."""
     if p.user is None or not can(p, "adopt"):
         raise HTTPException(403, "adopting is a reviewer's action")
     decided: list[dict] = []
     skipped: list[dict] = []
-    for pid, yes in [(i, True) for i in adopt] + [(i, False) for i in reject]:
+    todo: list[tuple[int, bool]] = [(i, True) for i in adopt] + [(i, False) for i in reject]
+    if send_plain:
+        found = {pr.id: pr for pr in [await get(db, i) for i in adopt] if pr is not None}
+        todo.sort(key=lambda x: x[1] and found.get(x[0]) is not None and found[x[0]].field == "reply_draft")
+    for pid, yes in todo:
         pr = await get(db, pid)
         if pr is None or pr.state != "pending":
             skipped.append({"proposal": pid, "why": "not pending" if pr else "no such proposal"})
@@ -255,7 +313,7 @@ async def decide_many(
         tid, field = pr.ticket_id, pr.field  # read before the savepoint (see close_duplicates)
         try:
             async with db.begin_nested():
-                decided.append(await decide(ctx, db, p, pr, yes))
+                decided.append(await decide(ctx, db, p, pr, yes, send_plain=send_plain))
         except HTTPException as e:
             skipped.append({"proposal": pid, "ticket": tid, "field": field, "why": str(e.detail)})
     return {"decided": decided, "skipped": skipped}

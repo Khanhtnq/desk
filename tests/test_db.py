@@ -471,6 +471,72 @@ async def test_agent_proposes_human_adopts(ctx, db):
     assert not any("Thanks, reproduced" in str(e.payload) for e in pub), "drafts never land in the public log"
 
 
+async def test_plain_acknowledgements_send_on_adopt_and_the_rest_wait(ctx, db):
+    p = await _team(ctx, db, roles=("reviewer",))
+    agent = await _agent(ctx, db, p.user)
+
+    def mk(title):
+        return tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=title, source="web"))
+
+    plain = await mk("plain")
+    tiered = await mk("names a tier")
+    closing = await mk("closes too")
+    told = await mk("already written to")
+    ack = "Thanks for the report. We have read it against the code and it is being handled; see {ticket_url}."
+    d_plain = await psvc.propose(ctx, db, agent, plain, "reply_draft", ack, "acknowledgement")
+    v_plain = await psvc.propose(ctx, db, agent, plain, "verdict", "valid", "reproduced")
+    d_tier = await psvc.propose(ctx, db, agent, tiered, "reply_draft", "Thanks. We rate this High.", "")
+    d_close = await psvc.propose(ctx, db, agent, closing, "reply_draft", "Thanks, we have read it.", "")
+    s_close = await psvc.propose(
+        ctx, db, agent, closing, "status", {"status": "closed", "closed_reason": "invalid"}, "no"
+    )
+    d_told = await psvc.propose(ctx, db, agent, told, "reply_draft", "Thanks, we have read it.", "")
+    await thread.add_reply(ctx, db, p, told, "Already answered by hand.")
+
+    # the text rule, on its own
+    rr = thread.review_reason
+    assert rr(ctx, thread.fill(ctx, ack, plain), plain) is None
+    assert rr(ctx, "Thanks. We rate this High.", plain) == "names a tier"
+    assert rr(ctx, "Thanks. Tracked as XE-0001.", plain) == "names another ticket"
+    assert rr(ctx, "Thanks. See https://example.com/x.", plain) == "has a link"
+    assert rr(ctx, "Thanks. Fixed in 2 days.", plain) == "has a number"
+    assert rr(ctx, "Thanks. The award follows the fix.", plain) == "mentions payment"
+    assert rr(ctx, "Thanks. Closing as invalid.", plain) == "explains a closure"
+    assert rr(ctx, "Thanks. The gap is in `VerifyMultisig`.", plain) == "names code or a path"
+    assert rr(ctx, "Thanks. The gap is in net/sync.", plain) == "names code or a path"
+    assert rr(ctx, "x" * 301, plain).startswith("over ")
+
+    # the ticket page's single adopt never sends, whatever the text
+    out = await psvc.decide(ctx, db, p, d_plain, True)
+    assert "sent" not in out and plain.draft == out["reply_draft"]
+    assert (await db.execute(select(Reply).where(Reply.ticket_id == plain.id))).scalars().all() == []
+    d_plain2 = await psvc.propose(ctx, db, agent, plain, "reply_draft", ack, "again")
+
+    # the triage page's batch: the plain one goes out; the status is adopted before the draft on the
+    # closing ticket, so that draft waits; a tier in the text waits; a reporter written to since waits
+    ids = [d_plain2.id, v_plain.id, d_tier.id, d_close.id, s_close.id, d_told.id]
+    out = await psvc.decide_many(ctx, db, p, ids, [], send_plain=True)
+    assert out["skipped"] == []
+    by = {d["proposal"]: d for d in out["decided"]}
+    sent = by[d_plain2.id]
+    assert sent["sent"] and sent["reply_text"].endswith(tsvc.ticket_url(ctx, plain) + ".")
+    assert by[d_tier.id]["review"] == "names a tier" and "sent" not in by[d_tier.id]
+    assert by[d_close.id]["review"] == "the ticket is closed" and "sent" not in by[d_close.id]
+    assert by[d_told.id]["review"] == "the reporter has been written to since"
+    await db.refresh(plain)
+    await db.refresh(tiered)
+    await db.refresh(closing)
+    replies = (await db.execute(select(Reply).where(Reply.ticket_id == plain.id))).scalars().all()
+    assert len(replies) == 1 and replies[0].author_id == p.user.id and plain.draft == ""
+    assert tiered.draft == "Thanks. We rate this High." and closing.draft == "Thanks, we have read it."
+    assert closing.status == "closed"
+    # a draft that rides with a pending closure waits even when the closure is not in the same batch
+    again = await mk("closure pending elsewhere")
+    d_again = await psvc.propose(ctx, db, agent, again, "reply_draft", "Thanks, we have read it.", "")
+    await psvc.propose(ctx, db, agent, again, "duplicate_of", plain.id, "same")
+    assert psvc.send_review(ctx, await psvc.pending_for(db, again), d_again, again) == "goes with a closure"
+
+
 async def test_a_family_of_duplicates_closes_in_one_ruling(ctx, db):
     p = await _team(ctx, db, roles=("reviewer",))
     agent = await _agent(ctx, db, p.user)

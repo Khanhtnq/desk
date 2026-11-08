@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% block title %}Triage{% endblock %}
-{% macro chip(pr) -%}
+{% macro chip(pr, r) -%}
 {%- set v = pr.value.value -%}
 {%- set ok = adoptable(pr) -%}
-<span class="chip {{ pr.field }}{% if not ok %} locked{% endif %}" data-pid="{{ pr.id }}" title="#{{ pr.id }}{% if owners.get(pr.token_id) %} · {{ owners[pr.token_id] }}{% endif %}{% if pr.reason %} · {{ pr.reason|e }}{% endif %}">
+{%- set why = review(r, pr) if pr.field == "reply_draft" else none -%}
+<span class="chip {{ pr.field }}{% if not ok %} locked{% endif %}{% if pr.field == "reply_draft" and not why %} sends{% endif %}" data-pid="{{ pr.id }}" title="#{{ pr.id }}{% if owners.get(pr.token_id) %} · {{ owners[pr.token_id] }}{% endif %}{% if pr.reason %} · {{ pr.reason|e }}{% endif %}{% if pr.field == "reply_draft" %} · {{ v|e }}{% endif %}">
   {%- if pr.field == "verdict" %}<i>verdict</i> {{ v }}
   {%- elif pr.field == "assessed_tier" %}<i>tier</i> {{ cfg.tier_label(v) }}{% if not ok %} <small>tier role</small>{% endif %}
   {%- elif pr.field == "mainnet_gate" %}<i>gate</i> {{ cfg.gates.get(v, v) }}
@@ -14,7 +15,7 @@
   {%- elif pr.field == "duplicate_of" %}<i>dup of</i> <a href="/{{ v }}">{{ v }}</a>
   {%- elif pr.field == "status" %}<i>status</i> {% if v is mapping %}{{ v.status }}{% if v.closed_reason %} · {{ v.closed_reason }}{% endif %}{% else %}{{ v }}{% endif %}
   {%- elif pr.field == "award_xe" %}<i>award</i> {{ "{:,}".format(v|int) }} XE{% if not ok %} <small>treasurer</small>{% endif %}
-  {%- elif pr.field == "reply_draft" %}<i>reply</i> draft, {{ v|length }} chars
+  {%- elif pr.field == "reply_draft" %}<i>reply</i> {% if why %}draft, {{ v|length }} chars <small>review · {{ why }}</small>{% else %}sends on adopt{% endif %}
   {%- else %}<i>{{ pr.field }}</i> {{ v }}{% endif %}
   {%- if ok %}<button type="button" class="x" data-reject-one="{{ pr.id }}" title="Reject #{{ pr.id }}">×</button>{% endif -%}
 </span>
@@ -30,7 +31,7 @@
     <span class="k">{% if t.claimed_tier %}claimed {{ cfg.tier_label(t.claimed_tier) }} · {% endif %}{% set rep = reporters.get(t.reporter_id) %}{% if rep %}<a href="{{ flt('reporter', rep.id|string) }}">{{ rep.display_name or rep.github_login or rep.email or ("reporter " ~ rep.id) }}</a>{% if records.get(rep.id) %} <span class="record">({{ m.record(records[rep.id], rep.id) }})</span>{% endif %} · {% endif %}{% if t.queued %}<span class="pill queued">{{ copy.labels.queued }}</span> · {% endif %}{{ (t.source_created_at or t.created_at)|day }}</span>
     {% if t.internal_ref %}<div class="k klass-strip"><span class="mono">{{ t.internal_ref }}</span>{% if r.klass %} · class of {{ r.klass|length + 1 }}: {% for o in r.klass %}{{ m.tlink(o) }} <span class="pill {{ o.status }}">{{ o.status }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %} · the only report on it{% endif %}</div>{% endif %}
     {% if r.note %}<div class="claim">{{ excerpt(r.note) }}{% if r.note.checked %} <span class="checked">· read {{ r.note.checked.desk }} desk{% if r.note.checked.tree %}, {{ r.note.checked.tree }}{% endif %}</span>{% else %} <span class="checked none">· no check recorded</span>{% endif %}</div>{% endif %}
-    <div class="chips">{% for pr in r.proposals %}{{ chip(pr) }}{% endfor %}</div>
+    <div class="chips">{% for pr in r.proposals %}{{ chip(pr, r) }}{% endfor %}</div>
   </td>
   <td class="acts">
     {% if mine %}<button type="button" class="mini" data-adopt-row>Adopt {{ mine|length }}{% if mine|length < ids|length %}<small> of {{ ids|length }}</small>{% endif %}</button>{% endif %}
@@ -42,7 +43,7 @@
 <div class="release triage">
 <div class="tag"><span>Triage</span></div>
 <h1>What the agents have read, waiting for a ruling.</h1>
-<p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. Reply drafts adopted here wait on the ticket as drafts; a duplicate family closes and replies in one click.</p>
+<p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. A reply chip marked <b>sends on adopt</b> is a plain acknowledgement, nothing in it but this ticket, and goes to the reporter under your name when you adopt; one marked <b>review</b> says why it waits on the ticket as a draft instead. A duplicate family closes and replies in one click.</p>
 <div class="counts">
   <div><b>{{ "{:,}".format(counts.all) }}</b>tickets waiting</div>
   <div><b>{{ "{:,}".format(counts.proposals) }}</b>proposals</div>
@@ -67,7 +68,7 @@
 {% if rows %}
 <div class="row" style="margin:0 0 16px">
   <button class="mini" id="adopt-shown" type="button">Adopt everything shown ({{ rows|length }} tickets)</button>
-  <span class="k">Writes every unlocked proposal on this page; reply drafts become ticket drafts, not sent replies. Skipped ones are listed afterwards.</span>
+  <span class="k">Writes every unlocked proposal on this page; plain acknowledgements are sent, reply drafts marked review wait on their tickets. Skipped ones are listed afterwards.</span>
 </div>
 {% endif %}
 <div id="triage-msg" class="msg" style="display:none"></div>

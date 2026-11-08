@@ -212,6 +212,56 @@ def fill(ctx: Context, tpl: str, t: Ticket, **extra: str) -> str:
         return tpl
 
 
+PLAIN_LIMIT = 300
+_URL = re.compile(r"https?://\S+")
+_CODE = re.compile(r"`|\w+\(\)|\w+_\w+|\w+\.(go|py|js|ts|html|yaml|md)\b|\b\w+/\w+")
+_TICKET_ID = re.compile(r"\b[A-Z]{2}-\d{4}\b")
+_MONEY = re.compile(r"\b(award|awards|awarded|reward|bounty|pay|paid|payout|payment|xe)\b", re.I)
+_CLOSING = re.compile(r"\b(clos(e|ed|ing)|invalid|out of scope|duplicate|not a bug|as designed)\b", re.I)
+_PROMISE = re.compile(
+    r"\b(within|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday|next))\b", re.I
+)
+
+
+def review_reason(ctx: Context, text: str, t: Ticket) -> str | None:
+    """Why a filled reply draft needs a person's read before it goes out, or None when it is a plain
+    acknowledgement the desk can send as it stands. Plain means: short, names nothing but this ticket, no
+    number (a tier, an amount, a date), no link but the ticket's own, no code or path, no word about
+    money or closing. The rule is deliberately narrow; everything it does not recognise waits in the
+    editor."""
+    from .tickets import ticket_url
+
+    body = (text or "").strip()
+    if not body:
+        return "empty"
+    if len(body) > PLAIN_LIMIT:
+        return f"over {PLAIN_LIMIT} characters"
+    own = ticket_url(ctx, t)
+    rest = body.replace(own, " ").replace(t.id, " ")
+    if _URL.search(rest):
+        return "has a link"
+    if _TICKET_ID.search(rest):
+        return "names another ticket"
+    if "{" in rest or "}" in rest:
+        return "has an unfilled placeholder"
+    if re.search(r"\d", rest):
+        return "has a number"
+    if _CODE.search(rest):
+        return "names code or a path"
+    tiers = [k for k in ctx.config.tier_order if k != "none"] + [
+        ctx.config.tier_label(k) for k in ctx.config.tier_order if k != "none"
+    ]
+    if re.search(r"\b(" + "|".join(re.escape(x) for x in tiers if x) + r"|tier)\b", rest, re.I):
+        return "names a tier"
+    if _MONEY.search(rest):
+        return "mentions payment"
+    if _CLOSING.search(rest):
+        return "explains a closure"
+    if _PROMISE.search(rest):
+        return "promises a time"
+    return None
+
+
 # ---- patch refs -------------------------------------------------------------------------------------
 
 

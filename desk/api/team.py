@@ -216,6 +216,7 @@ async def reject(ctx: Ctx, db: Db, who: Who, request: Request, pid: int, body: D
 class BulkIn(BaseModel):
     adopt: list[int] = []
     reject: list[int] = []
+    send_plain: bool = False  # send reply drafts the desk reads as plain acknowledgements (the triage page)
 
 
 class FamilyIn(BaseModel):
@@ -257,10 +258,18 @@ async def close_duplicates(
 @router.post("/proposals/bulk")
 async def decide_bulk(ctx: Ctx, db: Db, who: Who, request: Request, body: BulkIn):
     """Adopt and reject in one request. Each decision is its own savepoint: one the desk refuses is
-    listed under `skipped` with the reason and the rest go through."""
+    listed under `skipped` with the reason and the rest go through. With `send_plain`, a reply draft the
+    desk reads as a plain acknowledgement goes to the reporter under your name; the rest wait as drafts
+    with `review` saying why."""
     _team(who, request)
-    out = await psvc.decide_many(ctx, db, who.principal, body.adopt, body.reject)
+    out = await psvc.decide_many(ctx, db, who.principal, body.adopt, body.reject, send_plain=body.send_plain)
     await db.commit()
+    for d in out["decided"]:
+        text = d.pop("reply_text", None)
+        if d.get("sent") and text:
+            t = await tsvc.get(db, d["ticket"])
+            if t is not None:
+                d["mailed"] = await notify.reply_to_reporter(ctx, db, t, who.principal.name, text)
     return out
 
 

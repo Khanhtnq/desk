@@ -398,12 +398,24 @@
       if (!left) tr.classList.add("done");
       return left;
     };
+    // what the batch did with reply drafts: sent ones, and the ones the desk held back with its reason
+    const sentLine = (r) => {
+      const d = r.decided || [];
+      const sent = d.filter(x => x.sent).length;
+      const held = d.filter(x => x.field === "reply_draft" && !x.sent).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
+      const parts = [];
+      if (sent) parts.push(`Sent ${sent} ${sent === 1 ? "reply" : "replies"} to reporters.`);
+      if (held.length) parts.push(held.join(" · "));
+      return parts.join(" ");
+    };
     const decideRow = async (tr, adopt) => {
       const ids = adopt ? idsOf(tr, "ids") : idsOf(tr, "all");
       if (!ids.length) return;
       try {
-        const r = await api("POST", "/v1/team/proposals/bulk", adopt ? { adopt: ids } : { reject: ids });
+        const r = await api("POST", "/v1/team/proposals/bulk", adopt ? { adopt: ids, send_plain: true } : { reject: ids });
         settle(tr, r);
+        const line = adopt ? sentLine(r) : "";
+        if (line) say(tmsg, line, true);
         await reportSkipped(r);
       } catch (e) { say(tmsg, `${tr.dataset.ticket}: ${e.message}`, false); }
     };
@@ -422,10 +434,14 @@
       const rows = $$("tr.trow:not(.done)");
       const ids = rows.flatMap(tr => idsOf(tr, "ids").filter(id => !$(`.chip[data-pid="${id}"].gone`, tr)));
       if (!ids.length) return;
-      if (!await ask({ title: `Adopt ${ids.length} proposals on ${rows.length} tickets?`, body: "Each is written under your name through the same path as the ticket page: closures close, duplicates are marked, tiers and verdicts are set, awards are set but not approved, reply drafts wait on their tickets. Anything the desk refuses is listed afterwards.", ok: `Adopt ${ids.length}` })) return;
+      const sends = rows.reduce((n, tr) => n + $$(".chip.sends:not(.gone)", tr).length, 0);
+      const replyNote = sends ? ` ${sends} plain ${sends === 1 ? "acknowledgement is" : "acknowledgements are"} sent to reporters under your name; other reply drafts wait on their tickets.` : " Reply drafts wait on their tickets.";
+      if (!await ask({ title: `Adopt ${ids.length} proposals on ${rows.length} tickets?`, body: `Each is written under your name through the same path as the ticket page: closures close, duplicates are marked, tiers and verdicts are set, awards are set but not approved.${replyNote} Anything the desk refuses is listed afterwards.`, ok: `Adopt ${ids.length}` })) return;
       try {
-        const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids });
+        const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids, send_plain: true });
         rows.forEach(tr => settle(tr, r));
+        const line = sentLine(r);
+        if (line) say(tmsg, line, true);
         await reportSkipped(r, `Adopted ${(r.decided || []).length} of ${ids.length}.`);
       } catch (e) { say(tmsg, e.message, false); }
     });
