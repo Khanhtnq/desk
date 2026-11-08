@@ -232,7 +232,8 @@ async def pending_duplicates(ctx: Ctx, db: Db, who: Who, request: Request, tid: 
     return {
         "canonical": t.id,
         "tickets": [
-            {**tsvc.to_dict(ctx, o, who.principal), "proposal": psvc.to_dict(pr)} for o, pr in rows
+            {**tsvc.to_dict(ctx, o, who.principal), "proposal": psvc.to_dict(pr) if pr else None}
+            for o, pr in rows
         ],
     }
 

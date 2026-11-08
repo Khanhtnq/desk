@@ -163,7 +163,7 @@
   {% if family %}
   <section class="family">
     <h3>Filed as duplicates of this one <span class="k">{{ family|length }} waiting</span></h3>
-    <ul class="patches">{% for o, pr in family %}<li>{{ m.tlink(o) }} <span class="pill {{ o.status }}">{{ o.status }}</span> {{ o.title }} <span class="k">· token {{ pr.token_id }}{% if owners.get(pr.token_id) %} for {{ owners[pr.token_id] }}{% endif %}</span></li>{% endfor %}</ul>
+    <ul class="patches">{% for o, pr in family %}<li>{{ m.tlink(o) }} <span class="pill {{ o.status }}">{{ o.status }}</span> {{ o.title }} <span class="k">{% if pr %}· token {{ pr.token_id }}{% if owners.get(pr.token_id) %} for {{ owners[pr.token_id] }}{% endif %}{% else %}· marked, close pending{% endif %}</span></li>{% endfor %}</ul>
     {% if team %}<div class="row" style="margin-top:8px"><span class="k">One ruling for the family: sets the duplicate and the verdict, closes each, and sends the programme's duplicate reply under your name. Anything the desk refuses is left as it was and listed.</span><button class="ghost mini" id="close-family" type="button" data-count="{{ family|length }}">Close all {{ family|length }} as duplicates</button></div>{% endif %}
   </section>
   {% endif %}

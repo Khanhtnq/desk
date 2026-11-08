@@ -596,6 +596,33 @@ async def test_a_family_of_duplicates_closes_in_one_ruling(ctx, db):
     assert all(e.actor == p.actor for e in evs if e.kind.startswith("ticket."))
 
 
+async def test_a_marked_duplicate_with_the_close_still_pending_is_part_of_the_family(ctx, db):
+    # the mark was adopted on its own (or set by hand); the status chip is all that is left on the row.
+    # It still belongs to the duplicates view and to the family's one-click ruling.
+    p = await _team(ctx, db, roles=("reviewer",))
+    agent = await _agent(ctx, db, p.user)
+    canon = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="first", source="web"))
+    t = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="again", source="web"))
+    mark = await psvc.propose(ctx, db, agent, t, "duplicate_of", canon.id, "same defect, filed later")
+    closing = {"status": "closed", "closed_reason": "duplicate"}
+    s = await psvc.propose(ctx, db, agent, t, "status", closing, "dup")
+    await psvc.decide(ctx, db, p, mark, True)
+    assert t.duplicate_of == canon.id and s.state == "pending"
+    assert psvc.triage_views([s]) == {"duplicates"}
+    row = psvc.TriageRow(t, [s])
+    assert row.duplicate_of == canon.id
+    fam = await psvc.pending_duplicates_of(db, canon.id)
+    assert [(o.id, pr) for o, pr in fam] == [(t.id, None)]
+    out = await psvc.close_duplicates(ctx, db, p, canon)
+    assert [d["ticket"] for d in out["closed"]] == [t.id] and out["skipped"] == []
+    await db.refresh(t)
+    await db.refresh(s)
+    assert (t.status, t.closed_reason, t.verdict, s.state) == ("closed", "duplicate", "duplicate", "adopted")
+    replies = (await db.execute(select(Reply).where(Reply.ticket_id == t.id))).scalars().all()
+    assert len(replies) == 1 and canon.id in replies[0].body
+    assert await psvc.pending_duplicates_of(db, canon.id) == []
+
+
 async def test_a_family_with_a_paid_member_closes_the_rest(ctx, db):
     # XE-0862: a member the state machine will not close (paid is terminal) used to raise MissingGreenlet
     # on the way into `skipped`, because the row was expired by the savepoint rollback before its id was read

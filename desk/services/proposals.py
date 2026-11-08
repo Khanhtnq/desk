@@ -211,9 +211,19 @@ async def decide(
     return out
 
 
-async def pending_duplicates_of(db: AsyncSession, tid: str) -> list[tuple[Ticket, Proposal]]:
-    """Open tickets carrying a pending `duplicate_of` proposal that names `tid`: the family an agent has
-    read as re-filings of this one, waiting for a ruling."""
+def _is_dup_close(pr: Proposal) -> bool:
+    v = pr.value.get("value")
+    return (
+        pr.field == "status"
+        and isinstance(v, dict)
+        and (v.get("status"), v.get("closed_reason")) == ("closed", "duplicate")
+    )
+
+
+async def pending_duplicates_of(db: AsyncSession, tid: str) -> list[tuple[Ticket, Proposal | None]]:
+    """The family waiting for one ruling: open tickets carrying a pending `duplicate_of` proposal that
+    names `tid`, and open tickets already marked `duplicate_of` `tid` whose close is still pending (the
+    mark was adopted on its own; the proposal in the pair is then None)."""
     q = (
         select(Ticket, Proposal)
         .join(Proposal, Proposal.ticket_id == Ticket.id)
@@ -224,16 +234,34 @@ async def pending_duplicates_of(db: AsyncSession, tid: str) -> list[tuple[Ticket
             Ticket.status != "closed",
             Ticket.id != tid,
         )
-        .order_by(Ticket.id)
     )
-    return [(t, pr) for t, pr in (await db.execute(q)).all()]
+    out: dict[str, tuple[Ticket, Proposal | None]] = {t.id: (t, pr) for t, pr in (await db.execute(q)).all()}
+    marked = (
+        select(Ticket)
+        .join(Proposal, Proposal.ticket_id == Ticket.id)
+        .where(
+            Ticket.duplicate_of == tid,
+            Ticket.status != "closed",
+            Ticket.id != tid,
+            Proposal.state == "pending",
+            Proposal.field == "status",
+        )
+        .distinct()
+    )
+    for t in (await db.execute(marked)).scalars().all():
+        if t.id in out:
+            continue
+        if any(_is_dup_close(o) for o in await pending_for(db, t) if o.state == "pending"):
+            out[t.id] = (t, None)
+    return [out[k] for k in sorted(out)]
 
 
 async def close_duplicates(
     ctx: Context, db: AsyncSession, p: Principal, canon: Ticket, only: list[str] | None = None
 ) -> dict:
     """Rule a whole family at once. For every open ticket with a pending `duplicate_of` proposal naming
-    `canon`: adopt it, set the verdict, close as duplicate (walking the status path), and send the
+    `canon` (or already marked so, with the close still pending): adopt the mark, set the verdict, close
+    as duplicate (walking the status path), and send the
     programme's own duplicate reply under the person ruling. Each ticket is its own savepoint, so one the
     desk refuses (a transition, a permission) is reported and left as it was while the rest go through.
     The decision stays a person's: this is one click for a family instead of four per ticket."""
@@ -254,7 +282,8 @@ async def close_duplicates(
                 require(p, "reply", t)
                 why = f"duplicate of {canon.id}"
                 via = f"family:{canon.id}"
-                await decide(ctx, db, p, pr, True, reason=why)
+                if pr is not None:
+                    await decide(ctx, db, p, pr, True, reason=why)
                 others = {o.field: o for o in await pending_for(db, t) if o.state == "pending"}
                 v = others.get("verdict")
                 if v is not None and v.value.get("value") == "duplicate":
@@ -262,12 +291,7 @@ async def close_duplicates(
                 elif t.verdict != "duplicate":
                     await tsvc.set_facts(ctx, db, p, t, {"verdict": "duplicate"}, reason=why, via=via)
                 s = others.get("status")
-                sv = s.value.get("value") if s is not None else None
-                is_dup_close = isinstance(sv, dict) and (sv.get("status"), sv.get("closed_reason")) == (
-                    "closed",
-                    "duplicate",
-                )
-                if is_dup_close:
+                if s is not None and _is_dup_close(s):
                     await decide(ctx, db, p, s, True, reason=why)
                 else:
                     await tsvc.set_status_via_path(
@@ -344,7 +368,7 @@ def triage_views(prs: list[Proposal]) -> set[str]:
     closure; anything else with an assessment field is an assessment. Awards and replies cut across."""
     fields = {pr.field for pr in prs}
     out: set[str] = set()
-    if "duplicate_of" in fields:
+    if "duplicate_of" in fields or any(_is_dup_close(pr) for pr in prs):
         out.add("duplicates")
     elif any(_is_close(pr) for pr in prs):
         out.add("closures")
@@ -380,10 +404,11 @@ class TriageRow:
 
     @property
     def duplicate_of(self) -> str | None:
+        """The canonical the row groups under: the pending proposal, else the mark already on the ticket."""
         for pr in self.proposals:
             if pr.field == "duplicate_of":
                 return str(pr.value.get("value"))
-        return None
+        return self.ticket.duplicate_of
 
 
 async def triage_rows(
