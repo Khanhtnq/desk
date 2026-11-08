@@ -16,7 +16,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,13 @@ DESK_MARK = "<!-- xe-desk -->"
 # While the desk has not ruled, the GitHub issue is the reporter's draft and edits flow in. From `accepted`
 # on, the desk's copy is what was assessed and stays as it was.
 EDITABLE_STATUSES = ("new", "triaging", "needs-info")
+BLOCKED_MARK = "[comment from a blocked account removed]"
+
+
+def login_blocked(ctx: Context, login: str) -> bool:
+    """An account on GITHUB_BLOCKED_LOGINS: its pull requests are not linked and its comments are not
+    mirrored, so nothing it writes reaches a ticket page or a payout decision (XE-0128)."""
+    return bool(login) and login.lower() in ctx.settings.blocked_logins
 
 
 def _dt(s: str | None) -> datetime | None:
@@ -146,6 +153,10 @@ async def upsert_comment(
     user = comment.get("user") or {}
     login = user.get("login") or ""
     body = comment.get("body") or ""
+    if login_blocked(ctx, login):
+        # not mirrored; a copy taken before the block is emptied rather than left to stand
+        await thread.remove_message(db, "github", str(comment["id"]), mark=BLOCKED_MARK)
+        return False
     # team authorship is the bot account and nothing else; the marker is a public string anyone can type,
     # so it only ever strips, never vouches
     is_team = bool(ctx.settings.github_bot_login) and login == ctx.settings.github_bot_login
@@ -191,6 +202,18 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
     fixes = gh.closing_refs(text)
     state = "merged" if pull.get("merged_at") else (pull.get("state") or "open")
     author = (pull.get("user") or {}).get("login") or ""
+    if login_blocked(ctx, author):
+        # the PR is not linked, and a link made before the block comes off; a ref that moved a ticket
+        # (only ever a maintainer's) is left so the return hop still has its record
+        await db.execute(
+            delete(PatchRef).where(
+                PatchRef.repo == repo,
+                PatchRef.ref == str(pull["number"]),
+                PatchRef.kind == "pr",
+                PatchRef.moved_from == "",
+            )
+        )
+        return 0
     trusted = pull_is_maintainers(ctx, pull)
     n = 0
     for issue_no in refs:

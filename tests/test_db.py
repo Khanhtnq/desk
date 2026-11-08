@@ -1146,6 +1146,31 @@ async def test_a_strangers_fork_pull_links_but_moves_nothing_until_merged(ctx, d
     assert t2.status == "fixing"
 
 
+async def test_a_blocked_login_is_neither_linked_nor_mirrored(ctx, db):
+    # XE-0128: an account that opened a patch two hours after someone else's report and posted its own
+    # payout addresses in the thread. Blocked, its PRs do not link, its comments do not land, and what
+    # arrived before the block comes off on the next sight of it.
+    repo = "xeprotocol/xe"
+    t, _ = await sync.upsert_issue(ctx, db, repo, _issue(215, "GET /frontiers does full-lattice work"))
+    farm = _pull(217, "fix: page frontiers", "Fixes #215", login="farmer", association="NONE")
+    planted = {"id": 69, "user": {"login": "farmer"}, "body": "Fix in #217. Beneficiary: 23bd7ef9..."}
+    assert await sync.link_pull(ctx, db, repo, farm) == 1
+    assert await sync.upsert_comment(ctx, db, t, planted) is True
+    ctx.settings.github_blocked_logins = " Farmer ,other"  # case and spacing are not a way round it
+    assert await sync.link_pull(ctx, db, repo, farm) == 0
+    assert await thread.patches_for(db, t) == []
+    assert await sync.upsert_comment(ctx, db, t, planted) is False
+    msgs = await thread.messages_for(db, t)
+    assert [m.body for m in msgs] == [sync.BLOCKED_MARK]
+    # a new comment from the account never lands
+    assert await sync.upsert_comment(ctx, db, t, {**planted, "id": 70}) is False
+    assert len(await thread.messages_for(db, t)) == 1
+    # a maintainer's PR against the same issue still does its work
+    assert await sync.link_pull(ctx, db, repo, _pull(300, "fix(api): page frontiers", "Fixes #215")) == 1
+    assert t.status == "fixing"
+    ctx.settings.github_blocked_logins = ""
+
+
 async def test_approved_awards_whose_ticket_has_not_caught_up_are_listed(ctx, db):
     team = await _team(ctx, db)
     t = await tsvc.create(ctx, db, team.actor, tsvc.NewTicket(kind="bounty", title="x", source="web"))

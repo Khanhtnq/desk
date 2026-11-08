@@ -57,14 +57,16 @@ def clean_checked(raw: dict | None) -> dict:
     return out
 
 
-async def remove_message(db: AsyncSession, source: str, source_ref: str) -> bool:
-    """A comment deleted at the source is marked here, its body gone; the row stays so the thread's
-    shape is honest about what was there (XE-1014)."""
+async def remove_message(
+    db: AsyncSession, source: str, source_ref: str, *, mark: str = "[comment deleted at the source]"
+) -> bool:
+    """A comment deleted at the source (or taken off here) is marked, its body gone; the row stays so the
+    thread's shape is honest about what was there (XE-1014)."""
     q = select(Message).where(Message.source == source, Message.source_ref == source_ref)
     m = (await db.execute(q)).scalar_one_or_none()
     if m is None:
         return False
-    m.body, m.body_sealed = "[comment deleted at the source]", None
+    m.body, m.body_sealed = mark, None
     return True
 
 

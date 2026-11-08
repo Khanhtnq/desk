@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
     github_webhook_secret: str = Field(default="", alias="GITHUB_WEBHOOK_SECRET")
     github_bot_login: str = Field(default="", alias="GITHUB_BOT_LOGIN")  # the account GITHUB_TOKEN belongs to
+    # GitHub logins the desk does not take in: their pull requests are not linked and their comments are
+    # not mirrored (comma-separated). For an account that farms patches against other people's reports
+    # and plants payout addresses in the threads (XE-0128).
+    github_blocked_logins: str = Field(default="", alias="GITHUB_BLOCKED_LOGINS")
     # Reporter sign-in with GitHub (an OAuth app; callback is {bounty host}/v1/reporter/auth/github/callback)
     github_oauth_client_id: str = Field(default="", alias="GITHUB_OAUTH_CLIENT_ID")
     github_oauth_client_secret: str = Field(default="", alias="GITHUB_OAUTH_CLIENT_SECRET")
@@ -61,6 +65,10 @@ class Settings(BaseSettings):
     @property
     def sync_database_url(self) -> str:
         return self.database_url.replace("+asyncpg", "+psycopg")
+
+    @property
+    def blocked_logins(self) -> frozenset[str]:
+        return frozenset(x.strip().lower() for x in self.github_blocked_logins.split(",") if x.strip())
 
     @property
     def discord_bot_enabled(self) -> bool:
