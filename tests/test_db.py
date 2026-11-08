@@ -320,7 +320,9 @@ async def test_a_report_is_read_across_the_desk(ctx, db):
     # one reporter's filings, for the team only
     hers = tsvc.Filters(status="all", reporter=r1.id)
     assert {t.id for t in await tsvc.list_tickets(db, ctx.config, p, hers)} == {a.id, c.id}
-    assert len(await tsvc.list_tickets(db, ctx.config, authz.ANON, hers)) == 4
+    with pytest.raises(HTTPException) as e:  # a public caller is refused the axis, not given the unfiltered set (XE-1560)
+        await tsvc.list_tickets(db, ctx.config, authz.ANON, hers)
+    assert e.value.status_code == 403
     # a page knows the size of the whole selection
     f = tsvc.Filters(status="all", limit=2)
     assert len(await tsvc.list_tickets(db, ctx.config, p, f)) == 2
