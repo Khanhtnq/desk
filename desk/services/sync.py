@@ -140,7 +140,9 @@ async def upsert_issue(
     return t, created
 
 
-async def upsert_comment(ctx: Context, db: AsyncSession, t: Ticket, comment: dict) -> bool:
+async def upsert_comment(
+    ctx: Context, db: AsyncSession, t: Ticket, comment: dict, *, update: bool = False
+) -> bool:
     user = comment.get("user") or {}
     login = user.get("login") or ""
     body = comment.get("body") or ""
@@ -157,6 +159,7 @@ async def upsert_comment(ctx: Context, db: AsyncSession, t: Ticket, comment: dic
         body=body.replace(DESK_MARK, "").strip(),
         created_at=_dt(comment.get("created_at")),
         is_team=is_team,
+        update=update,
     )
     return m is not None
 
@@ -231,15 +234,23 @@ async def _follow_pull_state(
     if state == "merged":
         target, reason = "patched", f"{ref} merged"  # a merge is a maintainer's act whoever wrote the PR
     elif state == "open":
-        if not trusted or t.status == "fixing":
+        if not trusted:
+            return False
+        if t.status == "fixing":
+            if not pr.moved_from:
+                # a second maintainer PR while fixing: it inherits where the ticket came from, so its
+                # close returns the ticket there and not to a guessed status (XE-0634)
+                pr.moved_from = await _moved_from(db, t)
             return False
         target, reason = "fixing", f"{ref} opened"
     else:  # closed without merging: only the PR that moved the ticket (or a maintainer's) moves it back
         if t.status != "fixing" or not (trusted or pr.moved_from):
             return False
-        if await _other_live_patches(db, t, pr.repo, pr.ref):
+        if await _other_live_patches(ctx, db, t, pr.repo, pr.ref):
             return False
-        target, reason = pr.moved_from or "accepted", f"{ref} closed unmerged"
+        # where the ticket was before any maintainer PR moved it; this PR's own record first (XE-0634)
+        target = pr.moved_from or await _moved_from(db, t) or "accepted"
+        reason = f"{ref} closed unmerged"
         if target == "new":
             target = "triaging"  # nothing goes back to new; the PR was read, so someone has looked
     if tsvc.status_path(t.kind, t.status, target) is None:
@@ -251,15 +262,29 @@ async def _follow_pull_state(
     return True
 
 
-async def _other_live_patches(db: AsyncSession, t: Ticket, repo: str, ref: str) -> bool:
-    """Is any other PR against this ticket still open or merged?"""
-    q = select(PatchRef.id).where(
+async def _moved_from(db: AsyncSession, t: Ticket) -> str:
+    q = (
+        select(PatchRef.moved_from)
+        .where(PatchRef.ticket_id == t.id, PatchRef.kind == "pr", PatchRef.moved_from != "")
+        .order_by(PatchRef.id)
+    )
+    return (await db.execute(q)).scalars().first() or ""
+
+
+async def _other_live_patches(ctx: Context, db: AsyncSession, t: Ticket, repo: str, ref: str) -> bool:
+    """Is any other PR against this ticket still open or merged, from someone whose PR counts? A
+    stranger's open PR holds nothing (XE-0634): only a maintainer's, or one that moved the ticket."""
+    q = select(PatchRef).where(
         PatchRef.ticket_id == t.id,
         PatchRef.kind == "pr",
         PatchRef.state.in_(("open", "merged")),
         ~((PatchRef.repo == repo) & (PatchRef.ref == ref)),
     )
-    return (await db.execute(q)).first() is not None
+    bot = ctx.settings.github_bot_login
+    for other in (await db.execute(q)).scalars().all():
+        if other.state == "merged" or other.moved_from or (bot and other.author == bot):
+            return True
+    return False
 
 
 async def import_repo(
@@ -298,8 +323,14 @@ async def import_repo(
 async def poll(ctx: Context, db: AsyncSession, client: gh.GitHub) -> list[dict]:
     out = []
     for repo in ctx.config.repos:
-        since = await get_cursor(db, f"github:{repo}:issues")
-        out.append(await import_repo(ctx, db, client, repo, since=since or None))
+        # one repo's bad day does not stop the others or the tracker being read (XE-1160)
+        try:
+            async with db.begin_nested():
+                since = await get_cursor(db, f"github:{repo}:issues")
+                out.append(await import_repo(ctx, db, client, repo, since=since or None))
+        except Exception as e:
+            log.exception("poll of %s failed: %s", repo, e)
+            out.append({"repo": repo, "error": str(e)[:200]})
     if ctx.config.internal_repo:
         since = await get_cursor(db, f"github:{ctx.config.internal_repo}:issues")
         out.append(await import_internal(ctx, db, client, since=since or None))
@@ -444,8 +475,11 @@ async def handle_webhook(ctx: Context, db: AsyncSession, event: str, payload: di
             return {"ignored": "pr comment"}
         t, _ = await upsert_issue(ctx, db, repo, payload["issue"])
         if action in ("created", "edited"):
-            added = await upsert_comment(ctx, db, t, payload["comment"])
+            added = await upsert_comment(ctx, db, t, payload["comment"], update=action == "edited")
             return {"ticket": t.id, "comment": added}
+        if action == "deleted":
+            gone = await thread.remove_message(db, "github", str(payload["comment"].get("id") or ""))
+            return {"ticket": t.id, "action": action, "removed": gone}
         return {"ticket": t.id, "action": action}
     if event == "pull_request" and "pull_request" in payload:
         n = await link_pull(ctx, db, repo, payload["pull_request"])

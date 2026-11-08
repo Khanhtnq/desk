@@ -5,13 +5,14 @@ from __future__ import annotations
 import re
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import auth
+from ..auth import clean_lookup
 from ..authz import Principal
 from ..context import Context
-from ..models import ROLES, AgentToken, Passkey, User
+from ..models import ROLES, AgentToken, Invite, Passkey, Session, User
 from .tickets import utcnow
 
 
@@ -19,7 +20,8 @@ EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 async def by_email(db: AsyncSession, email: str) -> User | None:
-    return (await db.execute(select(User).where(User.email == email.strip().lower()))).scalar_one_or_none()
+    email = clean_lookup(email).strip().lower()
+    return (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
 
 
 async def by_id(db: AsyncSession, uid: int) -> User | None:
@@ -92,6 +94,9 @@ async def set_active(ctx: Context, db: AsyncSession, actor: str, u: User, active
     await ctx.events.append(db, "user.active", actor, {"user": u.id, "active": active}, public=False)
     if not active:
         await revoke_all(ctx, db, actor, u, why="owner deactivated")
+        # sessions and outstanding invites end with the account, not at their own expiry (XE-0838)
+        await db.execute(delete(Session).where(Session.user_id == u.id))
+        await db.execute(delete(Invite).where(Invite.user_id == u.id, Invite.used_at.is_(None)))
 
 
 async def revoke_all(ctx: Context, db: AsyncSession, actor: str, u: User, *, why: str) -> int:

@@ -198,8 +198,10 @@ def verify_webhook(secret: str, body: bytes, signature_header: str) -> bool:
 
 # ---- text helpers -----------------------------------------------------------------------------------
 
-ISSUE_REF = re.compile(r"(?<![\w/])#(\d+)\b")
-CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)\b", re.I)
+# an issue number is at most twelve digits: longer runs are not references, and int() of a few thousand
+# digits is refused by CPython (XE-1160)
+ISSUE_REF = re.compile(r"(?<![\w/])#(\d{1,12})\b")
+CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d{1,12})\b", re.I)
 TIER_HINT = re.compile(
     r"\b(?:severity|tier|suggested(?:\s+severity)?)\s*[:\-–]?\s*\**\s*(critical|severe|high|medium|minor|low)\b",
     re.I,
@@ -222,7 +224,9 @@ def closing_refs(text: str) -> set[int]:
     return {int(m.group(1)) for m in CLOSES.finditer(text or "")}
 
 
-PUBLIC_TAG = re.compile(r"(?<![\w/#])(?:(?P<owner>[\w.-]+)/)?(?P<repo>[A-Za-z][\w.-]*)#(?P<num>\d+)\b")
+PUBLIC_TAG = re.compile(
+    r"(?<![\w/#])(?:(?P<owner>[\w.-]+)/)?(?P<repo>[A-Za-z][\w.-]*)#(?P<num>\d{1,12})\b"
+)
 
 
 def public_tags(text: str, aliases: dict[str, str]) -> list[tuple[str, int]]:

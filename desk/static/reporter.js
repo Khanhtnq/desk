@@ -4,7 +4,7 @@
   const $ = (s, r) => (r || document).querySelector(s);
   const csrf = () => (document.querySelector('meta[name="desk-csrf"]') || {}).content || "";
   const say = (sel, msg, ok) => { const el = $(sel); if (!el) return; el.textContent = msg; el.className = "msg " + (ok ? "ok" : "err"); el.style.display = ""; };
-  const safe = (n) => (n && n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\")) ? n : "/my";
+  const safe = (n) => (n && n.startsWith("/") && !n.startsWith("//") && !n.includes("\\")) ? n : "/my";
   const nextPath = () => {
     const l = $(".login");
     return safe((l && l.dataset.next) || new URLSearchParams(location.search).get("next"));
@@ -116,6 +116,21 @@
     try { await api("POST", "/v1/reporter/payout/unbind"); location.reload(); }
     catch (e) { say("#payout-msg", e.message, false); }
   });
+  // ---- ways in: remove one; end other sessions --------------------------------------------------
+  document.querySelectorAll("button.unlink").forEach((b) => b.addEventListener("click", async () => {
+    const kind = b.dataset.kind, value = b.dataset.value || "";
+    if (!confirm("Remove this way in? You will no longer be able to sign in with it.")) return;
+    try { await api("POST", "/v1/reporter/identities/unlink", { kind, value }); location.reload(); }
+    catch (e) { say("#unlink-msg", e.message, false); }
+  }));
+  const revokeOthers = $("#revoke-others");
+  if (revokeOthers) revokeOthers.addEventListener("click", async () => {
+    try {
+      const d = await api("POST", "/v1/reporter/sessions/revoke-others");
+      say("#session-msg", d.ended ? "Ended " + d.ended + " other " + (d.ended === 1 ? "session." : "sessions.") : "No other sessions.", true);
+    } catch (e) { say("#session-msg", e.message, false); }
+  });
+
   const payGen = $("#payout-generate");
   if (payGen) payGen.addEventListener("click", async () => {
     try {
@@ -153,7 +168,7 @@
       const d = await api("POST", "/v1/reporter/tickets", fd);
       const mailed = d.notify_sent === true;
       say("#report-msg", "Filed as " + d.ticket + "." + (mailed ? " A link to confirm your email is on its way." : ""), true);
-      setTimeout(() => location.assign(d.url || ("/t/" + d.ticket)), mailed ? 1800 : 0);
+      setTimeout(() => location.assign(d.url || ("/" + d.ticket)), mailed ? 1800 : 0);
     } catch (err) { say("#report-msg", err.message, false); btn.disabled = false; }
   });
 

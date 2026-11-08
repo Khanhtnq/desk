@@ -178,8 +178,9 @@ def build_agent_brief(
         _p(
             "Scopes: `read:public` and `read:private` are what you may read (a private ticket's body is",
             "sealed without the second); `write:notes`, `write:proposals`, `write:patch-refs` are the three",
-            "things you may write. There is no scope that replies, sets a status, a tier or an award, or",
-            "reads a payout address.",
+            "things you may write. Notes, proposals and the assessment as it changes are read with any scope",
+            "but `write:patch-refs` alone. There is no scope that replies, sets a status, a tier or an",
+            "award, or reads a payout address.",
         )
     )
     add("")

@@ -55,7 +55,15 @@ async def from_platform(
     """The reporter behind a platform account; created on first contact. With `link_to` (a signed-in web
     reporter adding the platform to their account) the platform identity moves onto that account and
     any platform-only row merges into it."""
+    email = (email or "").lower()[:256]
+    await rsvc.identity_lock(db, f"{platform}:{pid}", f"email:{email}" if email else "")
     existing = await by_platform(db, platform, pid)
+    if existing is None and email:
+        # the platform vouched for the address; a row that holds it without this platform is the same
+        # person (XE-1012)
+        held = await rsvc.by_email(db, email)
+        if held is not None and platform not in (held.platform_ids or {}):
+            existing = held
     r = link_to or existing
     if r is None:
         r = Reporter(display_name=(name or handle or f"{platform}:{pid}")[:128], platform_ids={})
@@ -72,7 +80,7 @@ async def from_platform(
     if not r.display_name or r.display_name.startswith(f"{platform}:"):
         r.display_name = (name or handle or r.display_name)[:128]
     if email and not r.email:
-        r.email = email.lower()
+        r.email = email
     return r
 
 
@@ -194,6 +202,10 @@ async def close_from_channel(ctx: Context, db: AsyncSession, t: Ticket, *, user_
         closed_reason = "duplicate"
     if closed_reason == "duplicate" and not t.duplicate_of:
         closed_reason = "answered"
+    if t.kind == "bounty" and t.status not in ("new", "triaging", "needs-info"):
+        # a thread command closes a question; a report that the team has accepted, or that carries an
+        # award, is closed from the desk by the person responsible (XE-0690, XE-0805)
+        raise HTTPException(409, f"{t.id} is a {t.status} bounty report; close it on the desk")
     await tsvc.set_status(
         ctx,
         db,
@@ -202,7 +214,6 @@ async def close_from_channel(ctx: Context, db: AsyncSession, t: Ticket, *, user_
         "closed",
         closed_reason=closed_reason,
         reason=words[:500],
-        force=True,
         via=f"{t.source}:{user_id}",
     )
     t.channel_state = "closed"
@@ -268,7 +279,8 @@ async def queued_replies(db: AsyncSession, platform: str, limit: int = 50) -> li
 
 def reply_text(ctx: Context, t: Ticket, r: Reply) -> str:
     """How a desk reply reads in the channel: the person's name, the words, the ticket link as a footnote."""
-    return f"**{r.author_name or 'XE team'}** · XE team\n{r.body}\n-# {t.id} · {tsvc.ticket_url(ctx, t)}"
+    body = thread.reply_body(ctx, r)
+    return f"**{r.author_name or 'XE team'}** · XE team\n{body}\n-# {t.id} · {tsvc.ticket_url(ctx, t)}"
 
 
 async def mark_mirrored(

@@ -545,7 +545,7 @@ async def export_markdown(ctx: Context, db: AsyncSession, p: Principal) -> str:
             )
             status = t.status + (f" / {t.closed_reason}" if t.closed_reason else "")
             internal = f"`{t.internal_ref}`" if t.internal_ref else "—"
-            title = t.title.replace("|", "\\|")
+            title = " ".join(t.title.split()).replace("|", "\\|")  # one cell, one line (XE-0713)
             out.append(
                 f"| {ref} | {title} | {cfg.verdicts.get(t.verdict or '', t.verdict or '—')} | {gate} | {tier} | "
                 f"{EFFORT_LABEL.get(t.effort_eng or '', '—')} | {internal} | {status} | {prs} |"

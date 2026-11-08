@@ -19,8 +19,8 @@
   <tbody>
   {% for t in tickets %}
   <tr>
-    <td class="mono"><a href="/t/{{ t.id }}">{{ t.id }}</a></td>
-    <td><a href="/t/{{ t.id }}">{{ t.title }}</a>{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}</td>
+    <td class="mono"><a href="/{{ t.id }}">{{ t.id }}</a></td>
+    <td><a href="/{{ t.id }}">{{ t.title }}</a>{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}</td>
     <td>{{ m.status(t) }}{% if t.queued %} <span class="pill queued">{{ copy.labels.queued }}</span>{% endif %}</td>
     {% if site == "bounty" %}
     <td>{% if t.assessed_tier and not held(t) %}{{ m.tier(t.assessed_tier) }}{% elif t.claimed_tier %}<span class="k">claimed</span> {{ m.tier(t.claimed_tier) }}{% else %}<span class="mute">—</span>{% endif %}</td>

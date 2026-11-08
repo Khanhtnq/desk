@@ -21,15 +21,15 @@ from datetime import timedelta
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from xe.keys import KeyError_, KeyPair, derive_address
 
-from ..auth import Verified
+from ..auth import Verified, clean_lookup
 from ..authz import Principal
 from ..context import Context
-from ..models import AREAS, TIERS, TOPICS, Attachment, Reporter, Ticket
+from ..models import AREAS, TIERS, TOPICS, Attachment, Reporter, ReporterLink, ReporterSession, Ticket
 from . import thread
 from . import tickets as tsvc
 from .tickets import NewTicket, utcnow
@@ -67,13 +67,29 @@ async def by_github(db: AsyncSession, github_id: int | None, login: str) -> Repo
 
 
 async def by_email(db: AsyncSession, email: str) -> Reporter | None:
-    q = select(Reporter).where(Reporter.email == email.lower()).order_by(Reporter.id)
+    email = clean_lookup(email).lower()
+    if not email:
+        return None
+    q = select(Reporter).where(Reporter.email == email).order_by(Reporter.id)
     return (await db.execute(q)).scalars().first()
 
 
 async def by_login_address(db: AsyncSession, address: str) -> Reporter | None:
     q = select(Reporter).where(Reporter.xe_login_addresses.contains([address])).order_by(Reporter.id)
     return (await db.execute(q)).scalars().first()
+
+
+async def identity_lock(db: AsyncSession, *keys: str) -> None:
+    """A transaction-scoped advisory lock on an identity about to be looked up and perhaps created, so two
+    first sign-ins with the same key, login or email in the same second make one row, not two
+    (XE-0969, XE-1012). Postgres only; released with the transaction."""
+    for k in keys:
+        if k:
+            await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"reporter:{k}"})
+
+
+def _name(s: str) -> str:
+    return (s or "")[:128]
 
 
 def clean_email(email: str) -> str:
@@ -121,7 +137,7 @@ async def attach(
         r = await by_email(db, e)
         how = "email"
         if r is None:
-            r = Reporter(email=e, display_name=e.split("@")[0])
+            r = Reporter(email=e, display_name=_name(e.split("@")[0]))
             db.add(r)
             await db.flush()
             await ctx.events.append(
@@ -132,8 +148,19 @@ async def attach(
         raise HTTPException(400, "give a reporter_id or an email")
     if t.reporter_id == r.id:
         return r
+    if t.award_approved_at is not None or t.status in ("awarded", "paid"):
+        # who is paid is settled with the award; moving the ticket afterwards is the treasurer's call
+        # and the stamp follows (XE-0351)
+        from ..authz import can
+
+        if not can(p, "award", t):
+            raise HTTPException(409, "the award is approved; only a treasurer moves the ticket now")
+        if t.status == "paid":
+            raise HTTPException(409, "the ticket is paid; the reporter on record stands")
     prev = t.reporter_id
     t.reporter_id = r.id
+    if t.kind == "bounty":
+        t.payout_address = r.xe_address
     await ctx.events.append(
         db,
         "ticket.reporter",
@@ -154,11 +181,19 @@ async def from_github(
     """The GitHub identity claims the imported reporter row with that login, so their old issues show up
     under "my reports" the first time they sign in."""
     gid = int(gh_user["id"])
-    login = gh_user.get("login") or ""
+    login = (gh_user.get("login") or "")[:128]
+    email = (email or "").lower()[:256]
+    await identity_lock(db, f"github:{gid}", f"email:{email}" if email else "")
     existing = await by_github(db, gid, login)
+    if existing is None and email:
+        # the provider vouched for the address: a row already holding it (an emailed report the team
+        # attached, an email sign-in) is this person, provided no other GitHub identity has it (XE-1012)
+        held = await by_email(db, email)
+        if held is not None and held.github_id is None:
+            existing = held
     r = link_to or existing
     if r is None:
-        name = gh_user.get("name") or login
+        name = _name(gh_user.get("name") or login)
         r = Reporter(github_login=login, github_id=gid, email=email, display_name=name)
         db.add(r)
         await db.flush()
@@ -170,7 +205,7 @@ async def from_github(
         raise HTTPException(409, "this account already has a different GitHub identity")
     r.github_id, r.github_login = gid, login or r.github_login
     if not r.display_name:
-        r.display_name = gh_user.get("name") or login
+        r.display_name = _name(gh_user.get("name") or login)
     if email and not r.email:
         r.email = email
     return r
@@ -178,10 +213,11 @@ async def from_github(
 
 async def from_email(ctx: Context, db: AsyncSession, email: str, *, link_to: Reporter | None) -> Reporter:
     email = clean_email(email)
+    await identity_lock(db, f"email:{email}")
     existing = await by_email(db, email)
     r = link_to or existing
     if r is None:
-        r = Reporter(email=email, display_name=email.split("@")[0])
+        r = Reporter(email=email, display_name=_name(email.split("@")[0]))
         db.add(r)
         await db.flush()
         await ctx.events.append(db, "reporter.created", f"reporter:{r.id}", {"how": "email"}, public=False)
@@ -194,6 +230,7 @@ async def from_email(ctx: Context, db: AsyncSession, email: str, *, link_to: Rep
 
 
 async def from_xe(ctx: Context, db: AsyncSession, v: Verified, *, link_to: Reporter | None) -> Reporter:
+    await identity_lock(db, f"xe:{v.account}")
     existing = await by_login_address(db, v.account)
     r = link_to or existing
     if r is None:
@@ -222,12 +259,73 @@ async def merge(ctx: Context, db: AsyncSession, *, into: Reporter, other: Report
     if not into.xe_address and other.xe_address:
         into.xe_address, into.payout_proof = other.xe_address, other.payout_proof
     into.xe_login_addresses = sorted(set(into.xe_login_addresses or []) | set(other.xe_login_addresses or []))
+    # platform ids move too, so the chat bot keys later messages to the live row, not the shell (XE-0473)
+    into.platform_ids = {**(other.platform_ids or {}), **(into.platform_ids or {})}
+    other.platform_ids = {}
     other.github_id, other.github_login, other.email = None, "", ""
     other.xe_address, other.payout_proof, other.xe_login_addresses = "", {}, []
     other.display_name = f"merged into {into.id}"
+    await db.flush()
+    await restamp(db, into)  # moved tickets carry the surviving account's address (XE-0801)
+    # the shell keeps no way in: its sessions and outstanding links end with the merge (XE-0710)
+    await db.execute(delete(ReporterSession).where(ReporterSession.reporter_id == other.id))
+    await db.execute(delete(ReporterLink).where(ReporterLink.reporter_id == other.id))
     await ctx.events.append(
         db, "reporter.merged", f"reporter:{into.id}", {"into": into.id, "other": other.id}, public=False
     )
+
+
+# ---- taking a way in off an account -----------------------------------------------------------------------
+
+
+def ways_in(r: Reporter) -> int:
+    """How many independent ways this account can still be signed in to."""
+    n = len(r.xe_login_addresses or [])
+    n += 1 if r.email else 0
+    n += 1 if r.github_id is not None else 0
+    n += sum(1 for k in (r.platform_ids or {}) if not k.endswith("_handle"))
+    return n
+
+
+async def unlink(ctx: Context, db: AsyncSession, r: Reporter, kind: str, value: str = "") -> dict:
+    """Take one identity off the account (XE-0575, XE-0812): an XE login key, the email, GitHub or a chat
+    platform. The last way in stays; the payout address is separate and untouched."""
+    if ways_in(r) <= 1:
+        raise HTTPException(409, "that is the only way into this account; add another first")
+    value = (value or "").strip().lower()
+    if kind == "xe":
+        if value not in (r.xe_login_addresses or []):
+            raise HTTPException(404, "that key is not on this account")
+        r.xe_login_addresses = [a for a in r.xe_login_addresses if a != value]
+    elif kind == "email":
+        if not r.email:
+            raise HTTPException(404, "no email is on this account")
+        value, r.email = r.email, ""
+    elif kind == "github":
+        if r.github_id is None:
+            raise HTTPException(404, "GitHub is not linked")
+        value, r.github_id, r.github_login = r.github_login, None, ""
+    elif kind in (r.platform_ids or {}):
+        ids = dict(r.platform_ids)
+        value = ids.pop(kind, "")
+        ids.pop(f"{kind}_handle", None)
+        r.platform_ids = ids
+    else:
+        raise HTTPException(400, "kind is xe, email, github or a linked platform")
+    await ctx.events.append(
+        db, "reporter.unlinked", f"reporter:{r.id}", {"kind": kind, "value": value}, public=False
+    )
+    return {"kind": kind, "ways_in": ways_in(r)}
+
+
+async def end_other_sessions(db: AsyncSession, r: Reporter, keep: int | None) -> int:
+    """Sign the account out everywhere but here. Outstanding email links for it die too."""
+    q = delete(ReporterSession).where(ReporterSession.reporter_id == r.id)
+    if keep is not None:
+        q = q.where(ReporterSession.id != keep)
+    res = await db.execute(q)
+    await db.execute(delete(ReporterLink).where(ReporterLink.reporter_id == r.id))
+    return int(res.rowcount or 0)
 
 
 # ---- the payout address -------------------------------------------------------------------------------
@@ -249,12 +347,7 @@ async def bind_payout(ctx: Context, db: AsyncSession, r: Reporter, v: Verified) 
         )
     r.xe_address = address
     r.payout_proof = {"pub_key": v.pub_key, "signature": v.signature, "timestamp": v.timestamp}
-    n = 0
-    q = select(Ticket).where(Ticket.reporter_id == r.id, Ticket.kind == "bounty", Ticket.payout_address == "")
-    for t in (await db.execute(q)).scalars():
-        if t.status not in ("paid",):
-            t.payout_address = address
-            n += 1
+    n = await restamp(db, r)
     await ctx.events.append(
         db,
         "reporter.payout_bound",
@@ -263,6 +356,18 @@ async def bind_payout(ctx: Context, db: AsyncSession, r: Reporter, v: Verified) 
         public=False,
     )
     return {"address": address, "tickets_updated": n}
+
+
+async def restamp(db: AsyncSession, r: Reporter) -> int:
+    """Put the reporter's current payout address on every bounty ticket of theirs not yet paid; a rebind
+    replaces the earlier stamp, it does not leave it (XE-0711, XE-0801). Returns how many changed."""
+    n = 0
+    q = select(Ticket).where(Ticket.reporter_id == r.id, Ticket.kind == "bounty", Ticket.status != "paid")
+    for t in (await db.execute(q)).scalars():
+        if t.payout_address != r.xe_address:
+            t.payout_address = r.xe_address
+            n += 1
+    return n
 
 
 async def _public_as_seed(db: AsyncSession, r: Reporter) -> set[str]:
@@ -285,13 +390,7 @@ async def unbind_payout(ctx: Context, db: AsyncSession, r: Reporter) -> dict:
     old = r.xe_address
     r.xe_address = ""
     r.payout_proof = {}
-    n = 0
-    q = select(Ticket).where(Ticket.reporter_id == r.id, Ticket.payout_address == old)
-    for t in (await db.execute(q)).scalars():
-        if t.status == "paid":
-            continue
-        t.payout_address = ""
-        n += 1
+    n = await restamp(db, r)
     await ctx.events.append(
         db, "reporter.payout_unbound", f"reporter:{r.id}", {"address": old, "tickets": n}, public=False
     )
@@ -497,10 +596,18 @@ async def my_tickets(db: AsyncSession, r: Reporter) -> list[Ticket]:
     return list((await db.execute(q)).scalars())
 
 
-async def payout_rows(db: AsyncSession) -> list[list]:
-    """Awards still to pay: bounty tickets at `awarded` with an approved amount, oldest approval first,
-    with the reporter's bound address (blank when none is bound yet). Closed and paid tickets are not
-    payable and never appear, whatever approval they once carried."""
+PAYOUT_COLUMNS = (
+    "ticket", "title", "status", "tier", "award_xe", "approved_at", "reporter_id", "reporter", "xe_address",
+    "stamped_address",
+)
+
+
+async def payout_rows(db: AsyncSession) -> list[dict]:
+    """Awards still to pay: bounty tickets at `awarded` with an approved amount, oldest approval first.
+    The one source for the treasurer's JSON and CSV (XE-0711, XE-0801): `xe_address` is the reporter's
+    live bound address (blank when none is bound), `stamped_address` the one on the ticket, which a
+    rebind or merge has refreshed; when they differ the list says so and the live one is paid. Closed
+    and paid tickets are not payable and never appear."""
     q = (
         select(Ticket, Reporter)
         .outerjoin(Reporter, Reporter.id == Ticket.reporter_id)
@@ -509,25 +616,38 @@ async def payout_rows(db: AsyncSession) -> list[list]:
             Ticket.status == "awarded",
             Ticket.award_approved_at.is_not(None),
             Ticket.award_xe.is_not(None),
+            Ticket.paid_ref == "",
         )
         .order_by(Ticket.award_approved_at)
     )
-    out: list[list] = []
+    out: list[dict] = []
     for t, r in (await db.execute(q)).all():
+        live = r.xe_address if r else ""
         out.append(
-            [
-                t.id,
-                t.title,
-                t.status,
-                t.assessed_tier or "",
-                (t.award_xe or 0) // 1_000_000,
-                t.award_approved_at.isoformat() if t.award_approved_at else "",
-                r.id if r else "",
-                (r.display_name or r.github_login or r.email) if r else "",
-                r.xe_address if r else "",
-            ]
+            {
+                "ticket": t.id,
+                "title": t.title,
+                "status": t.status,
+                "tier": t.assessed_tier or "",
+                "award_xe": t.award_xe or 0,
+                "approved_at": t.award_approved_at.isoformat() if t.award_approved_at else "",
+                "reporter_id": r.id if r else None,
+                "reporter": (r.display_name or r.github_login or r.email) if r else "",
+                "xe_address": live,
+                "stamped_address": t.payout_address,
+                "address_changed": bool(t.payout_address) and t.payout_address != live,
+            }
         )
     return out
+
+
+def csv_cell(v) -> str:
+    """A spreadsheet reads a leading =, +, -, @ or a tab/CR as a formula or a control; reporter-written
+    text gets a leading apostrophe so it stays text (XE-0714)."""
+    s = "" if v is None else str(v)
+    if s and s[0] in "=+-@\t\r":
+        return "'" + s
+    return s
 
 
 async def withdraw(ctx: Context, db: AsyncSession, r: Reporter, t: Ticket, reason: str = "") -> None:

@@ -4,12 +4,14 @@ tokens in the authorisation layer."""
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from ..auth import check_csrf
 from ..authz import require
 from ..brief import build_agent_brief, fix_brief
 from ..services import proposals as psvc
@@ -35,12 +37,36 @@ class ProposalIn(BaseModel):
 
 
 class PatchIn(BaseModel):
-    repo: str = ""
-    ref: str
-    kind: str = "pr"
-    title: str = ""
-    url: str = ""
-    note: str = ""
+    repo: str = Field(default="", max_length=128)
+    ref: str = Field(max_length=64)
+    kind: str = Field(default="pr", max_length=8)
+    title: str = Field(default="", max_length=512)
+    url: str = Field(default="", max_length=512)
+    note: str = Field(default="", max_length=128)
+
+
+def _writer(who: Who, request: Request) -> None:
+    """A write from a browser session carries the CSRF header like every other cookie write (XE-1545);
+    a bearer token has no cookie to protect."""
+    if who.session is not None:
+        check_csrf(request, who.session)
+
+
+def _storable(v: Any, depth: int = 0) -> None:
+    """A proposal value goes into JSONB: finite numbers, bounded nesting, no NUL (XE-1015)."""
+    if depth > 8:
+        raise HTTPException(400, "the value is nested too deep")
+    if isinstance(v, float) and not math.isfinite(v):
+        raise HTTPException(400, "the value has a non-finite number in it")
+    if isinstance(v, str) and "\x00" in v:
+        raise HTTPException(400, "the value has a NUL in it")
+    if isinstance(v, dict):
+        for k, x in v.items():
+            _storable(k, depth + 1)
+            _storable(x, depth + 1)
+    elif isinstance(v, list):
+        for x in v:
+            _storable(x, depth + 1)
 
 
 @router.get("/tickets/{tid}/notes")
@@ -64,7 +90,8 @@ async def list_notes(db: Db, who: Who, tid: str):
 
 
 @router.post("/tickets/{tid}/notes", status_code=201)
-async def add_note(ctx: Ctx, db: Db, who: Who, tid: str, body: NoteIn):
+async def add_note(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: NoteIn):
+    _writer(who, request)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:notes", t)
     n = await thread.add_note(ctx, db, who.principal, t, body.body, body.checked)
@@ -80,7 +107,9 @@ async def list_proposals(db: Db, who: Who, tid: str):
 
 
 @router.post("/tickets/{tid}/proposals", status_code=201)
-async def propose(ctx: Ctx, db: Db, who: Who, tid: str, body: ProposalIn):
+async def propose(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: ProposalIn):
+    _writer(who, request)
+    _storable(body.value)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:proposals", t)
     pr = await psvc.propose(ctx, db, who.principal, t, body.field, body.value, body.reason)
@@ -89,10 +118,13 @@ async def propose(ctx: Ctx, db: Db, who: Who, tid: str, body: ProposalIn):
 
 
 @router.post("/tickets/{tid}/proposals/bulk", status_code=201)
-async def propose_bulk(ctx: Ctx, db: Db, who: Who, tid: str, body: list[ProposalIn]):
+async def propose_bulk(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: list[ProposalIn]):
     """Several fields at once, one transaction; the usual shape after reading a new ticket."""
+    _writer(who, request)
     if len(body) > 12:
         raise HTTPException(400, "at most 12 proposals per call")
+    for b in body:
+        _storable(b.value)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:proposals", t)
     out = [
@@ -106,7 +138,8 @@ async def propose_bulk(ctx: Ctx, db: Db, who: Who, tid: str, body: list[Proposal
 
 
 @router.post("/tickets/{tid}/patch-refs", status_code=201)
-async def add_patch(ctx: Ctx, db: Db, who: Who, tid: str, body: PatchIn):
+async def add_patch(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: PatchIn):
+    _writer(who, request)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:patch-refs", t)
     repo, ref = body.repo, body.ref

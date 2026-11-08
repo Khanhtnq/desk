@@ -222,10 +222,16 @@ def test_totp_verify_window_and_garbage():
 
     secret = base64.b32encode(b"12345678901234567890").decode()
     now = int(time.time())
-    assert totp_verify(secret, totp_code(secret, at=now))
-    assert totp_verify(secret, totp_code(secret, at=now - 30))
-    assert not totp_verify(secret, "abc")
-    assert not totp_verify(secret, totp_code(secret, at=now - 300))
+    step = totp_verify(secret, totp_code(secret, at=now))
+    assert step == now // 30
+    assert totp_verify(secret, totp_code(secret, at=now - 30)) == now // 30 - 1
+    assert totp_verify(secret, "abc") is None
+    assert totp_verify(secret, totp_code(secret, at=now - 300)) is None
+    # a code is accepted once: the step it matched is refused after it was recorded (XE-0820)
+    assert totp_verify(secret, totp_code(secret, at=now), after_step=step) is None
+    assert totp_verify(secret, totp_code(secret, at=now - 30), after_step=step) is None
+    # Unicode digits are not a code, and do not raise (XE-1033)
+    assert totp_verify(secret, "\u0661\u0662\u0663\u0664\u0665\u0666") is None
 
 
 # ---- config -----------------------------------------------------------------------------------------

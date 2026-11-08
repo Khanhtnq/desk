@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..authz import Principal
 from ..context import Context
 from ..models import Message, Note, PatchRef, Reply, Ticket
-from .tickets import utcnow
+from .tickets import clean_text, utcnow
 
 REPO_ALIASES = {
     "": "xeprotocol/xe",
@@ -57,10 +57,21 @@ def clean_checked(raw: dict | None) -> dict:
     return out
 
 
+async def remove_message(db: AsyncSession, source: str, source_ref: str) -> bool:
+    """A comment deleted at the source is marked here, its body gone; the row stays so the thread's
+    shape is honest about what was there (XE-1014)."""
+    q = select(Message).where(Message.source == source, Message.source_ref == source_ref)
+    m = (await db.execute(q)).scalar_one_or_none()
+    if m is None:
+        return False
+    m.body, m.body_sealed = "[comment deleted at the source]", None
+    return True
+
+
 async def add_note(
     ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str, checked: dict | None = None
 ) -> Note:
-    body = (body or "").strip()
+    body = clean_text(body).strip()
     if not body:
         raise HTTPException(400, "empty note")
     if len(body) > 20_000:
@@ -106,8 +117,10 @@ async def add_message(
     body: str,
     created_at=None,
     is_team: bool = False,
+    update: bool = False,
 ) -> Message | None:
-    """Append to the public thread; idempotent on (source, source_ref). Private tickets seal the body."""
+    """Append to the public thread; idempotent on (source, source_ref). Private tickets seal the body.
+    With `update`, an existing public row takes the new body (a comment edited at the source)."""
     if source_ref:
         exists = (
             await db.execute(
@@ -115,7 +128,13 @@ async def add_message(
             )
         ).scalar_one_or_none()
         if exists:
+            if update and body is not None and t.visibility == "public" and not exists.body_sealed:
+                new = clean_text(body)[:60_000]
+                if new != exists.body:
+                    exists.body = new  # an edited comment reads as edited here too (XE-1014)
+                    return exists
             return None
+    body = clean_text(body)[:60_000]
     m = Message(
         ticket_id=t.id, source=source, source_ref=source_ref, author=author[:128], author_is_team=is_team
     )
@@ -145,7 +164,7 @@ def message_body(ctx: Context, t: Ticket, m: Message) -> str:
 
 
 async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str) -> Reply:
-    body = (body or "").strip()
+    body = clean_text(body).strip()
     if not body:
         raise HTTPException(400, "empty reply")
     if p.user is None:
@@ -154,6 +173,11 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
     # The worker handles GitHub; each bot handles its own channel.
     mirror = "queued" if t.source in ("github", "discord", "telegram") and t.visibility == "public" else "none"
     r = Reply(ticket_id=t.id, author_id=p.user.id, author_name=p.name, body=body, mirror=mirror)
+    if t.visibility == "private":
+        # the reply row follows the body into the vault, like the thread copy (XE-0426)
+        if not ctx.vault.available:
+            raise HTTPException(503, "the vault key is not loaded; replies on a private ticket wait")
+        r.body, r.body_sealed = "", ctx.vault.seal_text(body)
     db.add(r)
     t.last_public_at = utcnow()
     t.told_at = utcnow()
@@ -176,6 +200,15 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
     return r
 
 
+def reply_body(ctx: Context, r: Reply) -> str:
+    if r.body_sealed:
+        try:
+            return ctx.vault.open_text(r.body_sealed)
+        except Exception:
+            return "[sealed]"
+    return r.body
+
+
 async def replies_for(db: AsyncSession, t: Ticket) -> list[Reply]:
     return list(
         (await db.execute(select(Reply).where(Reply.ticket_id == t.id).order_by(Reply.created_at.asc())))
@@ -196,9 +229,12 @@ def fill(ctx: Context, tpl: str, t: Ticket, **extra: str) -> str:
     its front door. Text that is not a template (a stray brace) comes back as it was."""
     from .tickets import ticket_url
 
+    from .tickets import assessment_held
+
     values = {
         "ticket_url": ticket_url(ctx, t),
-        "tier": ctx.config.tier_label(t.assessed_tier),
+        # the tier is held until the fix ships; a draft that names it early names nothing (XE-0733)
+        "tier": "" if assessment_held(t) else ctx.config.tier_label(t.assessed_tier),
         "duplicate_url": ticket_url(ctx, t).rsplit("/", 1)[0] + "/" + (t.duplicate_of or ""),
         "patch_refs": extra.pop("patch_refs", "the linked PR"),
         "what": extra.pop("what", "a reproduction"),
@@ -206,10 +242,17 @@ def fill(ctx: Context, tpl: str, t: Ticket, **extra: str) -> str:
         "answer": extra.pop("answer", "(the answer goes here)"),
     }
     values.update(extra)
-    try:
-        return tpl.format(**values)
-    except (KeyError, IndexError):
-        return tpl
+    return _fill_known(tpl, values)
+
+
+_FIELD = re.compile(r"\{([a-z_]+)\}")
+
+
+def _fill_known(tpl: str, values: dict[str, str]) -> str:
+    """Only `{name}` placeholders the desk knows are filled, by plain substitution: no attribute or index
+    access, no format specs, so a draft cannot reach into the ticket or the config (XE-0956). Anything
+    else, braces included, stays as written."""
+    return _FIELD.sub(lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0), tpl)
 
 
 PLAIN_LIMIT = 300

@@ -33,7 +33,7 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from xe.keys import KeyError_, derive_address, verify_hex_signature
@@ -76,7 +76,24 @@ def new_secret(nbytes: int = 32) -> str:
 
 
 def hash_secret(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha256(clean_lookup(raw).encode("utf-8")).hexdigest()
+
+
+def clean_lookup(raw: str | None, limit: int = 256) -> str:
+    """A value about to be looked up or hashed: no NUL, no lone surrogates, bounded. Postgres and
+    `str.encode` both raise on those and the request would end as a bare 500 (XE-0827); a value with
+    them in it matches nothing, which is what the empty string does."""
+    s = raw or ""
+    if "\x00" in s:
+        return ""
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    return s[:limit]
+
+
+_DECOY_KEY = secrets.token_bytes(32)  # per process; see passkey_begin_login
 
 
 # ---- sessions ---------------------------------------------------------------------------------------
@@ -183,12 +200,14 @@ async def end_reporter_session(db: AsyncSession, request: Request) -> None:
 def safe_next(settings, nxt: str | None, default: str = "/my") -> str:
     """A post-sign-in destination: a path on this deployment (not protocol-relative, not a backslash
     trick), or an absolute URL on one of its hosts. Anything else is the default."""
-    if not nxt:
+    if not nxt or any(c in nxt for c in "\\\r\n\x00") or nxt != nxt.strip():
+        # browsers read a backslash as a slash in http(s) URLs while urlsplit does not (XE-1092):
+        # nothing with one is a destination we can reason about
         return default
-    if nxt.startswith("/") and not nxt.startswith(("//", "/\\")):
+    if nxt.startswith("/") and not nxt.startswith("//"):
         return nxt
     u = urlsplit(nxt)
-    if u.scheme == settings.scheme and u.hostname in settings.hosts.values():
+    if u.scheme == settings.scheme and u.hostname in settings.hosts.values() and not u.username:
         return nxt
     return default
 
@@ -211,12 +230,30 @@ async def create_reporter_link(
 
 
 async def consume_reporter_link(db: AsyncSession, raw: str) -> ReporterLink | None:
-    link = (
-        await db.execute(select(ReporterLink).where(ReporterLink.token_hash == hash_secret(raw)))
-    ).scalar_one_or_none()
-    if link is None or link.used_at is not None or link.expires_at < now():
+    """Single use, atomically: the row is claimed with one conditional UPDATE, so two concurrent
+    consumers of one link cannot both sign in (XE-0709). Consuming a link also burns every other
+    outstanding link for the same address: the person has recovered, older mail is not a credential
+    any more (XE-0782)."""
+    stamp = now()
+    res = await db.execute(
+        update(ReporterLink)
+        .where(
+            ReporterLink.token_hash == hash_secret(raw),
+            ReporterLink.used_at.is_(None),
+            ReporterLink.expires_at >= stamp,
+        )
+        .values(used_at=stamp)
+        .returning(ReporterLink.id)
+    )
+    row = res.first()
+    if row is None:
         return None
-    link.used_at = now()
+    link = (await db.execute(select(ReporterLink).where(ReporterLink.id == row[0]))).scalar_one()
+    await db.execute(
+        update(ReporterLink)
+        .where(ReporterLink.email == link.email, ReporterLink.used_at.is_(None))
+        .values(used_at=stamp)
+    )
     return link
 
 
@@ -254,11 +291,27 @@ async def create_invite(db: AsyncSession, user: User, purpose: str = "invite") -
 async def consume_invite(
     db: AsyncSession, raw: str, purposes: tuple[str, ...] = ("invite", "magic-link")
 ) -> User | None:
-    inv = (await db.execute(select(Invite).where(Invite.token_hash == hash_secret(raw)))).scalar_one_or_none()
-    if inv is None or inv.used_at is not None or inv.expires_at < now() or inv.purpose not in purposes:
+    # one conditional UPDATE claims the row (XE-0837); the user's other outstanding invites and magic
+    # links are burned with it (XE-0782)
+    stamp = now()
+    res = await db.execute(
+        update(Invite)
+        .where(
+            Invite.token_hash == hash_secret(raw),
+            Invite.used_at.is_(None),
+            Invite.expires_at >= stamp,
+            Invite.purpose.in_(purposes),
+        )
+        .values(used_at=stamp)
+        .returning(Invite.user_id)
+    )
+    row = res.first()
+    if row is None:
         return None
-    inv.used_at = now()
-    u = (await db.execute(select(User).where(User.id == inv.user_id))).scalar_one_or_none()
+    await db.execute(
+        update(Invite).where(Invite.user_id == row[0], Invite.used_at.is_(None)).values(used_at=stamp)
+    )
+    u = (await db.execute(select(User).where(User.id == row[0]))).scalar_one_or_none()
     return u if u and u.active else None
 
 
@@ -278,14 +331,19 @@ def totp_code(secret_b32: str, at: int | None = None, step: int = 30, digits: in
     return str(code).zfill(digits)
 
 
-def totp_verify(secret_b32: str, code: str, window: int = 1) -> bool:
+def totp_verify(secret_b32: str, code: str, window: int = 1, after_step: int = 0) -> int | None:
+    """The time step the code matches, or None. Only ASCII digits are a code (`str.isdigit` admits
+    Unicode digits that `compare_digest` then rejects with a TypeError, XE-1033). A step at or before
+    `after_step` is refused, which is how a code becomes single-use (XE-0820): the caller records the
+    step it accepted."""
     code = (code or "").strip().replace(" ", "")
-    if not code.isdigit():
-        return False
-    t = int(time.time())
-    return any(
-        hmac.compare_digest(totp_code(secret_b32, t + i * 30), code) for i in range(-window, window + 1)
-    )
+    if not code or not all(c in "0123456789" for c in code):
+        return None
+    step = int(time.time()) // 30
+    for i in range(-window, window + 1):
+        if hmac.compare_digest(totp_code(secret_b32, (step + i) * 30), code):
+            return step + i if step + i > after_step else None
+    return None
 
 
 def totp_uri(secret_b32: str, email: str, issuer: str) -> str:
@@ -311,6 +369,7 @@ async def _store_challenge(db: AsyncSession, kind: str, challenge: bytes, user_i
 
 
 async def _take_challenge(db: AsyncSession, cid: str, kind: str) -> Challenge:
+    cid = clean_lookup(cid, 64)
     ch = (await db.execute(select(Challenge).where(Challenge.id == cid))).scalar_one_or_none()
     if ch is None or ch.kind != kind or ch.expires_at < now():
         raise HTTPException(400, "challenge expired; try again")
@@ -383,12 +442,18 @@ async def passkey_begin_login(db: AsyncSession, settings: Settings, email: str |
 
     allow = []
     user_id = None
+    email = clean_lookup(email)
     if email:
         u = (await db.execute(select(User).where(User.email == email.strip().lower()))).scalar_one_or_none()
         if u and u.active:
             user_id = u.id
             keys = list((await db.execute(select(Passkey).where(Passkey.user_id == u.id))).scalars().all())
             allow = [PublicKeyCredentialDescriptor(id=p.credential_id) for p in keys]
+        if not allow:
+            # the same shape for an unknown address, an inactive member and a member without a passkey,
+            # so the list is not a membership oracle (XE-0523): one decoy id, stable per address
+            decoy = hmac.new(_DECOY_KEY, email.encode("utf-8"), hashlib.sha256).digest()
+            allow = [PublicKeyCredentialDescriptor(id=decoy)]
     opts = generate_authentication_options(
         rp_id=settings.rp_id,
         allow_credentials=allow or None,
@@ -586,11 +651,12 @@ async def send_mail(settings: Settings, to: str, subject: str, body: str) -> boo
     if not settings.smtp_host:
         log.info("mail not configured; would send to %s: %s\n%s", to, subject, body)
         return False
-    msg = EmailMessage()
-    msg["From"], msg["To"], msg["Subject"] = settings.smtp_from, to, subject
-    msg.set_content(body)
-
     def _send():
+        msg = EmailMessage()
+        # header values are one line each; a name with a line break in it is not a header (XE-1167)
+        one = lambda v: " ".join(str(v).split())  # noqa: E731
+        msg["From"], msg["To"], msg["Subject"] = one(settings.smtp_from), one(to), one(subject)[:998]
+        msg.set_content(body)
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as s:
             s.starttls()
             if settings.smtp_user:

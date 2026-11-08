@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -82,6 +83,59 @@ app.include_router(og.router)
 app.include_router(ui_router)
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 app.add_middleware(MarkdownMirror, base_url="")
+
+
+class BodyLimit:
+    """Pure ASGI. A request body is bounded before anything parses it (XE-0777): a JSON body at 1 MB, a
+    filing (the one multipart route) at the attachment count times the attachment size plus the report.
+    A body that declares more is refused at once; one with no declared length is refused too, since
+    every client the desk serves sends one and a chunked upload is the way round the limit."""
+
+    JSON_MAX = 2 << 20
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") not in ("POST", "PUT", "PATCH"):
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        limit = self.JSON_MAX
+        if scope["path"] == "/v1/reporter/tickets":
+            st = get_context().settings
+            limit = (st.max_attachments * st.max_attachment_mb << 20) + self.JSON_MAX
+        length = headers.get("content-length", "")
+        if not length.isdigit():
+            if "chunked" in headers.get("transfer-encoding", "").lower():
+                return await _refuse(scope, send, 411, "a request body needs a Content-Length")
+        elif int(length) > limit:
+            return await _refuse(scope, send, 413, "request body too large")
+        return await self.app(scope, receive, send)
+
+
+async def _refuse(scope, send, status: int, why: str):
+    if scope["path"].startswith("/v1"):
+        resp = JSONResponse({"error": why, "status": status}, status_code=status)
+    else:
+        resp = PlainTextResponse(why, status_code=status)
+    await resp(scope, None, send)
+
+
+app.add_middleware(BodyLimit)
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(request: Request, exc: RequestValidationError):
+    """A 422 that names the fields and says nothing else: the default handler echoes the input, which
+    fails to render on non-finite numbers, deep nesting or lone surrogates and becomes a 500 (XE-0826)."""
+    problems = []
+    for e in exc.errors()[:20]:
+        loc = ".".join(str(x) for x in e.get("loc", ()) if x != "body")
+        problems.append({"field": loc, "msg": str(e.get("msg", ""))[:200]})
+    if request.url.path.startswith("/v1"):
+        return JSONResponse({"error": "invalid request", "status": 422, "detail": problems}, status_code=422)
+    ctx = {"status": 422, "detail": "The request was not valid."}
+    return render(request, "error.html", ctx, status_code=422)
 
 
 @app.exception_handler(StarletteHTTPException)

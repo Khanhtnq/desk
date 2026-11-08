@@ -257,7 +257,9 @@ async def _email_link(ctx: Ctx, db, who: Who, email: str, next_path: str) -> boo
     if who.reporter and existing and existing.id != who.reporter.id:
         # never a merge by mail: the person who clicks is not the person who asked
         raise HTTPException(409, "that address is already on another account; sign in there to use it")
-    link_to = who.reporter.id if who.reporter else (existing.id if existing else None)
+    # signed out, the link is a sign-in whether or not the address is known (XE-0363); only a signed-in
+    # asker gets a link bound to their account
+    link_to = who.reporter.id if who.reporter else None
     raw = await auth.create_reporter_link(db, email, link_to, next_path)
     await db.commit()
     host = ctx.settings.hosts["bounty"]
@@ -357,6 +359,31 @@ async def logout(ctx: Ctx, db: Db, who: Who, request: Request, response: Respons
         await db.commit()
     auth.clear_session_cookie(response, ctx.settings, name=auth.REPORTER_COOKIE)
     return {"ok": True}
+
+
+class UnlinkIn(BaseModel):
+    kind: str
+    value: str = ""
+
+
+@router.post("/identities/unlink")
+async def unlink_identity(ctx: Ctx, db: Db, who: Who, request: Request, body: UnlinkIn):
+    """Take a way in off the account: {"kind": "xe", "value": <address>}, or kind email, github, discord.
+    The last way in cannot be removed (XE-0575)."""
+    r = _reporter(who, request)
+    out = await rsvc.unlink(ctx, db, r, body.kind[:32], body.value)
+    await db.commit()
+    return out
+
+
+@router.post("/sessions/revoke-others")
+async def revoke_other_sessions(ctx: Ctx, db: Db, who: Who, request: Request):
+    """Sign this account out of every other browser and burn its outstanding email links."""
+    r = _reporter(who, request)
+    n = await rsvc.end_other_sessions(db, r, keep=who.reporter_session.id)
+    await ctx.events.append(db, "reporter.sessions_ended", f"reporter:{r.id}", {"n": n}, public=False)
+    await db.commit()
+    return {"ended": n}
 
 
 @router.get("/me")

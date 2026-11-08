@@ -147,10 +147,12 @@ async def decide(
     sent to the reporter under the adopter's name instead of waiting in the editor; `sent` carries the
     reply id and `reply_text` the words, for the caller to mail. Any other draft still waits, and
     `review` says why."""
-    if pr.state != "pending":
-        raise HTTPException(409, f"proposal is already {pr.state}")
     if p.user is None or not can(p, "adopt"):
         raise HTTPException(403, "adopting is a reviewer's action")
+    await db.flush()
+    await db.refresh(pr, with_for_update=True)  # two clicks in the same second decide it once (XE-0814)
+    if pr.state != "pending":
+        raise HTTPException(409, f"proposal is already {pr.state}")
     t = await tsvc.get(db, pr.ticket_id)
     if t is None:
         raise HTTPException(404, "ticket is gone")

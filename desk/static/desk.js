@@ -310,6 +310,13 @@
         if (!ok) return;
         try { await api("POST", T("/award"), { approve: true }); flash(`Award of ${xe} XE approved.`); reload(); } catch (e) { say(fmsg, e.message, false); }
       });
+      if ($("#mark-paid")) $("#mark-paid").addEventListener("click", async () => {
+        const ref = ($("#paid-ref").value || "").trim();
+        if (!ref) return say(fmsg, "the payment reference first", false);
+        const ok = await ask({ title: `Mark ${tid} paid?`, body: `The reference ${ref} goes on the ticket and the award leaves the payout list. This is not undone.`, ok: "Mark paid" });
+        if (!ok) return;
+        try { await api("POST", T("/paid"), { paid_ref: ref }); flash("Paid."); reload(); } catch (e) { say(fmsg, e.message, false); }
+      });
       if ($("#unapprove-award")) $("#unapprove-award").addEventListener("click", async () => {
         const xe = $("#award-xe").value;
         const ok = await ask({ title: `Take back approval of ${xe} XE for ${tid}?`, body: "The amount stays set; it leaves the payout list until approved again. Recorded against you in the log.", ok: "Take it back" });

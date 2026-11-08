@@ -283,6 +283,12 @@ def page_spec(c, site: str, slug: str) -> dict:
     return {"title": card.get("title") or slug.replace("-", " ").capitalize(), "line": card.get("line", "")}
 
 
+def _xe(micro: int) -> str:
+    """Whole XE with any fraction kept, as the ticket page shows it (XE-1107)."""
+    whole, frac = divmod(int(micro), 1_000_000)
+    return f"{whole:,}" if frac == 0 else f"{whole:,}.{frac:06d}".rstrip("0")
+
+
 def ticket_spec(c, t) -> dict:
     labels = c.config.copy_public.get("labels") or {}
     chips: list[tuple[str, dict]] = []
@@ -291,7 +297,7 @@ def ticket_spec(c, t) -> dict:
     status = labels.get(t.status, t.status)
     chips.append((status, {"outline": brand.STROKE_STRONG, "colour": brand.TEXT_MEDIUM}))
     if t.kind == "bounty" and t.award_xe is not None and t.status in ("awarded", "paid"):
-        chips.append((f"{t.award_xe // 1_000_000:,} XE", {"outline": brand.BRAND, "colour": brand.BRAND}))
+        chips.append((f"{_xe(t.award_xe)} XE", {"outline": brand.BRAND, "colour": brand.BRAND}))
     return {"kicker": t.id, "title": t.title, "chips": chips}
 
 
@@ -349,7 +355,8 @@ async def page_card(request: Request, slug: str):
     c = get_context()
     site, host = _site_host(request)
     spec = page_spec(c, site, slug)
-    etag = _etag("page", site, slug, spec, c.config.hashes.get("copy/public.yaml", ""))
+    key = slug if slug in PAGES else "index"  # every unknown slug is the one site card (XE-1274)
+    etag = _etag("page", site, key, spec, c.config.hashes.get("copy/public.yaml", ""))
 
     def make():
         return draw_card(programme=_programme(site), host=host, **spec)
@@ -371,7 +378,8 @@ async def ticket_card(request: Request, tid: str):
         etag = _etag("page", site, "index", spec, c.config.hashes.get("copy/public.yaml", ""))
     else:
         spec = ticket_spec(c, t)
-        etag = _etag("ticket", site, t.id, t.title, t.status, t.assessed_tier, t.award_xe, t.updated_at)
+        # the key covers what the card shows and nothing it withholds (XE-0822)
+        etag = _etag("ticket", site, spec, c.config.hashes.get("copy/public.yaml", ""))
 
     def make():
         return draw_card(programme=_programme(site), host=host, **spec)

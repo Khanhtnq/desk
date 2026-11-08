@@ -12,14 +12,14 @@
   <h3>Ways in</h3>
   <table class="toks">
     {% if bounty or me.github_login %}
-    <tr><td>GitHub</td><td class="k">{% if me.github_login %}@{{ me.github_login }}{% else %}not linked{% endif %}</td><td class="right">{% if not me.github_login and github_sign_in %}<a class="mini button" href="/v1/reporter/auth/github?next=/account">Link</a>{% endif %}</td></tr>
+    <tr><td>GitHub</td><td class="k">{% if me.github_login %}@{{ me.github_login }}{% else %}not linked{% endif %}</td><td class="right">{% if not me.github_login and github_sign_in %}<a class="mini button" href="/v1/reporter/auth/github?next=/account">Link</a>{% elif me.github_login %}<button class="ghost mini unlink" type="button" data-kind="github">Remove</button>{% endif %}</td></tr>
     {% endif %}
     {% if (not bounty and discord_sign_in) or has_discord %}
-    <tr><td>Discord</td><td class="k">{% if has_discord %}{{ me.platform_ids.get("discord_handle") or has_discord }}{% else %}not linked{% endif %}</td><td class="right">{% if not has_discord and discord_sign_in %}<a class="mini button" href="/v1/reporter/auth/discord?next=/account">Link</a>{% endif %}</td></tr>
+    <tr><td>Discord</td><td class="k">{% if has_discord %}{{ me.platform_ids.get("discord_handle") or has_discord }}{% else %}not linked{% endif %}</td><td class="right">{% if not has_discord and discord_sign_in %}<a class="mini button" href="/v1/reporter/auth/discord?next=/account">Link</a>{% elif has_discord %}<button class="ghost mini unlink" type="button" data-kind="discord">Remove</button>{% endif %}</td></tr>
     {% endif %}
-    <tr><td>Email{% if bounty %} <span class="k">for replies</span>{% endif %}</td><td class="k">{{ me.email or "none" }}</td><td class="right">{% if not me.email %}<div class="row"><input type="email" id="email" placeholder="you@example.org" style="max-width:200px"><button class="mini" type="button" id="email-start">Add</button></div>{% endif %}</td></tr>
+    <tr><td>Email{% if bounty %} <span class="k">for replies</span>{% endif %}</td><td class="k">{{ me.email or "none" }}</td><td class="right">{% if not me.email %}<div class="row"><input type="email" id="email" placeholder="you@example.org" style="max-width:200px"><button class="mini" type="button" id="email-start">Add</button></div>{% else %}<button class="ghost mini unlink" type="button" data-kind="email">Remove</button>{% endif %}</td></tr>
     {% if bounty or me.xe_login_addresses %}
-    <tr><td>Desk key</td><td class="k">{% if me.xe_login_addresses %}{% for a in me.xe_login_addresses %}<code class="mono">{{ a }}</code><br>{% endfor %}{% else %}none{% endif %}</td><td class="right"><button class="ghost mini" type="button" id="xe-link-toggle">Add a key</button></td></tr>
+    <tr><td>Desk key</td><td class="k">{% if me.xe_login_addresses %}{% for a in me.xe_login_addresses %}<code class="mono">{{ a }}</code> <button class="ghost mini unlink" type="button" data-kind="xe" data-value="{{ a }}">Remove</button><br>{% endfor %}{% else %}none{% endif %}</td><td class="right"><button class="ghost mini" type="button" id="xe-link-toggle">Add a key</button></td></tr>
     {% endif %}
   </table>
   {% if not me.email %}<p class="k" style="margin-top:8px">{% if bounty %}The team's replies to a private report are only visible here. With an email on the account, you are told when one lands; a link confirms the address first.{% else %}Add an email and the answer to your question reaches you there as well; a link confirms the address first.{% endif %}</p>{% endif %}
@@ -35,7 +35,8 @@
     <div class="msg" id="xe-msg" style="display:none"></div>
   </div>
   <div class="msg" id="email-msg" style="display:none"></div>
-  <p class="k" style="margin-top:12px">Signed in with one way on a different account? Sign in with that, then link this one from there; the two merge.</p>
+  <div class="msg" id="unlink-msg" style="display:none"></div>
+  <p class="k" style="margin-top:12px">Signed in with one way on a different account? Sign in with that, then link this one from there; the two merge. Remove a way in you do not recognise; the last one stays.</p>
 </div>
 
 {% if site == "bounty" or me.xe_address %}
@@ -66,8 +67,9 @@
 
 <div class="card">
   <h3>Session</h3>
-  <p>Signed in. Sessions last 30 days; signing out ends this one.</p>
-  <button class="ghost mini" type="button" id="reporter-logout">Sign out</button>
+  <p>Signed in. Sessions last 14 days; signing out ends this one. If a way in was not yours, remove it above and then sign out everywhere else.</p>
+  <div class="row"><button class="ghost mini" type="button" id="reporter-logout">Sign out</button><button class="ghost mini" type="button" id="revoke-others">Sign out everywhere else</button></div>
+  <div class="msg" id="session-msg" style="display:none"></div>
   <p class="k" style="margin-top:16px"><a href="/my">{{ "Your questions" if site == "support" else "Your reports" }}</a></p>
 </div>
 </div>

@@ -17,12 +17,12 @@ from sqlalchemy import select
 
 from . import __version__, brand
 from .auth import resolve, safe_next
-from .authz import ANON, Principal, can
+from .authz import ANON, Principal, can, can_see
 from .brief import build_agent_brief, fix_brief
 from .context import get_context
 from .db import session
 from .api.public import log_scope
-from .log import EventLog, event_to_dict, is_admin_kind
+from .log import EventLog, event_to_dict
 from .mirror import build_llms_txt, md_path
 from .models import Reporter
 from .services import proposals as psvc
@@ -58,7 +58,7 @@ def _xe(micro) -> str:
     if micro is None:
         return "—"
     whole, frac = divmod(int(micro), 1_000_000)
-    return f"{whole:,}" if frac == 0 else f"{whole:,}.{str(frac).rstrip('0')}"
+    return f"{whole:,}" if frac == 0 else f"{whole:,}.{frac:06d}".rstrip("0")  # 0.05, not 0.5 (XE-0493)
 
 
 def _render_md(text: str | None) -> Markup:
@@ -357,8 +357,7 @@ async def log_entry(request: Request, index: int):
     async with session() as db:
         p, csrf = await principal(db, request)
         ev = await EventLog.get(db, index)
-        hidden = not ev.public or is_admin_kind(ev.kind) if ev else True
-        if ev is None or (hidden and not can(p, "read:private")):
+        if ev is None or not (can(p, "read:private") or await EventLog.served_public(db, ev)):
             raise HTTPException(404, "no such entry")
     return render(
         request, "log_entry.html", {"p": p, "csrf": csrf, "ev": ev, "d": event_to_dict(ev, full=p.is_team)}
@@ -726,6 +725,8 @@ async def ticket_page(request: Request, tid: str):
         family = await psvc.pending_duplicates_of(db, t.id) if can(p, "read:notes", t) else []
         replies = await thread.replies_for(db, t) if p.is_team else []
         dup = await tsvc.get(db, t.duplicate_of) if t.duplicate_of else None
+        if dup is not None and not can_see(p, dup):
+            dup = None  # a private canonical is not named to a reader who cannot open it (XE-0799)
         events = await EventLog.page(db, 0, 50, ref=t.id, **log_scope(p, t))
         team_users = await users.list_users(db) if p.is_team else []
         owners = await users.token_owners(db) if (notes or proposals or family) else {}
@@ -753,7 +754,7 @@ async def ticket_page(request: Request, tid: str):
     if t.visibility == "public":
         labels = c.config.copy_public.get("labels") or {}
         bits = [labels.get(t.status, t.status)]
-        if t.kind == "bounty" and t.assessed_tier:
+        if t.kind == "bounty" and t.assessed_tier and not tsvc.assessment_held(t):  # XE-0612
             bits.insert(0, c.config.tier_label(t.assessed_tier))
         og = {
             "title": f"{t.id} · {t.title}",

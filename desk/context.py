@@ -45,14 +45,17 @@ class Context:
     async def refresh_node(self) -> NodeIdentity:
         try:
             info = await self.chain.node()
+            if not isinstance(info, dict):
+                raise TypeError(f"node answered with {type(info).__name__}, not an object")
         except Exception as e:  # node unreachable at boot is survivable; the desk reads, it never writes
             log.warning("node unreachable: %s", e)
             return self.node
-        self.node = NodeIdentity(
-            network_id=info.get("network_id", ""),
-            node_id=info.get("id", ""),
-            version=info.get("version", ""),
-        )
+
+        def text(k: str) -> str:  # a string whatever the node sent (XE-0983)
+            v = info.get(k, "")
+            return v[:128] if isinstance(v, str) else ""
+
+        self.node = NodeIdentity(network_id=text("network_id"), node_id=text("id"), version=text("version"))
         return self.node
 
     async def aclose(self) -> None:

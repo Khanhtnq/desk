@@ -152,6 +152,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     roles: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # subset of ROLES
     totp_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # sealed by the vault
+    totp_last_step: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)  # codes are single-use
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -433,6 +434,7 @@ class Reply(Base):
     author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     author_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    body_sealed: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # private tickets
     mirror: Mapped[str] = mapped_column(
         String(16), nullable=False, default="queued"
     )  # queued | sent | failed | none

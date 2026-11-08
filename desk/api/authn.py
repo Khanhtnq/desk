@@ -127,22 +127,26 @@ class TotpConfirmIn(BaseModel):
 async def totp_login(ctx: Ctx, db: Db, request: Request, response: Response, body: TotpLoginIn):
     _limit(request)
     u = await users.by_email(db, body.email)
-    if u is None or not u.active or not u.totp_secret:
-        raise HTTPException(401, "no code is set up for that address")
-    try:
-        secret = ctx.vault.open_text(u.totp_secret)
-    except Exception:
-        raise HTTPException(503, "the vault key is not loaded; codes cannot be checked") from None
-    if not auth.totp_verify(secret, body.code):
-        await ctx.events.append(
-            db,
-            "team.login_failed",
-            f"user:{u.id}",
-            {"how": "totp", "ip": auth.client_ip(request)},
-            public=False,
-        )
-        await db.commit()
-        raise HTTPException(401, "wrong code")
+    # one answer whether the address is a member, is active, or has a code set up (XE-0523)
+    step = None
+    if u is not None and u.active and u.totp_secret:
+        try:
+            secret = ctx.vault.open_text(u.totp_secret)
+        except Exception:
+            raise HTTPException(503, "the vault key is not loaded; codes cannot be checked") from None
+        step = auth.totp_verify(secret, body.code, after_step=u.totp_last_step or 0)
+    if step is None:
+        if u is not None:
+            await ctx.events.append(
+                db,
+                "team.login_failed",
+                f"user:{u.id}",
+                {"how": "totp", "ip": auth.client_ip(request)},
+                public=False,
+            )
+            await db.commit()
+        raise HTTPException(401, "that address and code do not match")
+    u.totp_last_step = step  # a code is accepted once (XE-0820)
     return await _sign_in(ctx, db, request, response, u, "totp")
 
 
@@ -170,9 +174,11 @@ async def totp_confirm(ctx: Ctx, db: Db, who: Who, request: Request, body: TotpC
     if ch.user_id != u.id:
         raise HTTPException(400, "that setup belongs to another sign-in")
     secret = ch.challenge.decode("ascii")
-    if not auth.totp_verify(secret, body.code):
+    step = auth.totp_verify(secret, body.code)
+    if step is None:
         raise HTTPException(400, "the code did not match; try the next one")
     u.totp_secret = ctx.vault.seal_text(secret)
+    u.totp_last_step = step
     await ctx.events.append(db, "team.totp_set", who.principal.actor, {}, public=False)
     await db.commit()
     return {"ok": True}

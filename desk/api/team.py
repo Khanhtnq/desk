@@ -59,13 +59,13 @@ class AwardIn(BaseModel):
 
 
 class NewTicketIn(BaseModel):
-    kind: str = "bounty"
+    kind: str = Field(default="bounty", max_length=16)
     title: str = Field(min_length=3, max_length=512)
-    body: str = ""
-    visibility: str = "public"
-    source: str = "web"
-    area: str | None = None
-    claimed_tier: str | None = None
+    body: str = Field(default="", max_length=60_000)
+    visibility: str = Field(default="public", max_length=16)
+    source: str = Field(default="web", max_length=16)
+    area: str | None = Field(default=None, max_length=32)
+    claimed_tier: str | None = Field(default=None, max_length=16)
 
 
 # ---- tickets ----------------------------------------------------------------------------------------
@@ -122,13 +122,16 @@ async def set_kind(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, kind:
     require(who.principal, "facts", t)
     if kind not in ("bounty", "support") or kind == t.kind:
         raise HTTPException(400, "kind is bounty or support, and must change")
+    settled = ("accepted", "fixing", "patched", "disclosed", "awarded", "paid")
+    if t.award_xe or t.award_approved_at or t.status in settled:
+        # a report that has been accepted, or carries an award, is a bounty record; it is closed or
+        # paid as one, never walked back through a conversion (XE-0789)
+        raise HTTPException(409, f"a {t.status} ticket with a bounty record is not converted; close it")
     old = t.kind
     t.kind = kind
     t.area = None  # areas are engineering areas on the bounty and topics on support; neither carries over
     if kind == "support" and t.status not in ("new", "triaging", "needs-info", "closed"):
-        await tsvc.set_status(
-            ctx, db, who.principal, t, "triaging", force=True, reason="converted to support"
-        )
+        await tsvc.set_status(ctx, db, who.principal, t, "triaging", reason="converted to support")
     await ctx.events.append(
         db,
         "ticket.kind",
@@ -184,6 +187,21 @@ async def award(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: Aw
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "award", t)
     await tsvc.set_award(ctx, db, who.principal, t, body.award_xe, approve=body.approve)
+    await db.commit()
+    return tsvc.to_dict(ctx, t, who.principal)
+
+
+class PaidIn(BaseModel):
+    paid_ref: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/tickets/{tid}/paid")
+async def paid(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: PaidIn):
+    """The treasurer records the payment reference; the ticket goes from awarded to paid (XE-0737)."""
+    _team(who, request)
+    t = await tsvc.get_for(db, who.principal, tid)
+    require(who.principal, "award", t)
+    await tsvc.mark_paid(ctx, db, who.principal, t, body.paid_ref)
     await db.commit()
     return tsvc.to_dict(ctx, t, who.principal)
 
@@ -298,19 +316,19 @@ async def payouts(ctx: Ctx, db: Db, who: Who, request: Request):
     """Approved awards not yet paid, with addresses: the treasurer's list."""
     _team(who, request)
     require(who.principal, "export:payouts")
-    rows = await tsvc.list_tickets(
-        db, ctx.config, who.principal, tsvc.Filters(kind="bounty", status="awarded", limit=500)
-    )
+    rows = await rsvc.payout_rows(db)  # the same rows as payouts.csv (XE-0711)
     return {
         "payouts": [
             {
-                "ticket": t.id,
-                "award_xe": t.award_xe,
-                "payout_address": t.payout_address,
-                "reporter_id": t.reporter_id,
-                "tier": t.assessed_tier,
+                "ticket": r["ticket"],
+                "award_xe": r["award_xe"],
+                "payout_address": r["xe_address"],
+                "stamped_address": r["stamped_address"],
+                "address_changed": r["address_changed"],
+                "reporter_id": r["reporter_id"],
+                "tier": r["tier"] or None,
             }
-            for t in rows
+            for r in rows
         ]
     }
 
@@ -377,8 +395,8 @@ async def revoke_token(ctx: Ctx, db: Db, who: Who, request: Request, tid: int):
 
 
 class UserIn(BaseModel):
-    email: str
-    name: str = ""
+    email: str = Field(max_length=256)
+    name: str = Field(default="", max_length=128)
     roles: list[str] = []
 
 
@@ -458,14 +476,10 @@ async def payouts_csv(ctx: Ctx, db: Db, who: Who, request: Request):
     rows = await rsvc.payout_rows(db)
     out = io.StringIO()
     w = csv.writer(out)
-    w.writerow(
-        [
-            "ticket", "title", "status", "tier", "award_xe", "approved_at", "reporter_id", "reporter",
-            "xe_address",
-        ]
-    )
+    w.writerow(rsvc.PAYOUT_COLUMNS)
     for r in rows:
-        w.writerow(r)
+        cells = dict(r, award_xe=r["award_xe"] // 1_000_000, reporter_id=r["reporter_id"] or "")
+        w.writerow([rsvc.csv_cell(cells[c]) for c in rsvc.PAYOUT_COLUMNS])
     return Response(
         content=out.getvalue(),
         media_type="text/csv",

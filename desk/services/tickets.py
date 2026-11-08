@@ -81,6 +81,21 @@ FACT_VOCAB: dict[str, tuple[str, ...] | None] = {
 }
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_text(s: str | None, *, one_line: bool = False) -> str:
+    """Reporter or team text on its way to a text column: NUL and the other control characters go
+    (Postgres refuses NUL and the request would end as a bare 500, XE-1426), lone surrogates go, and a
+    one-line field loses its line breaks too."""
+    s = (s or "").replace("\x00", "")
+    s = _CONTROL.sub("", s)
+    s = s.encode("utf-8", "ignore").decode("utf-8", "ignore")
+    if one_line:
+        s = " ".join(s.split())
+    return s
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -172,14 +187,14 @@ async def create(
         source_ref=spec.source_ref,
         source_url=spec.source_url,
         reporter_id=spec.reporter_id,
-        title=spec.title[:512],
-        area=spec.area,
-        claimed_tier=spec.claimed_tier,
+        title=clean_text(spec.title, one_line=True)[:512],
+        area=(spec.area or None) and spec.area[:32],
+        claimed_tier=(spec.claimed_tier or None) and spec.claimed_tier[:16],
         status=status,
         source_created_at=spec.source_created_at,
         github_state=spec.github_state,
     )
-    set_body(ctx, t, spec.body)
+    set_body(ctx, t, clean_text(spec.body))
     db.add(t)
     await db.flush()
     await ctx.events.append(
@@ -239,8 +254,11 @@ def assessment_held(t: Ticket) -> bool:
 
 
 def sees_assessment(p: Principal) -> bool:
-    """The team, its agents and the desk itself see the assessment at every stage."""
-    return p.is_team or p.is_agent or p.kind == "system"
+    """The team, the desk itself, and agent tokens that take part in the working layer (XE-1560): a token
+    with a write scope but no notes access sees what the public sees."""
+    if p.is_team or p.kind == "system":
+        return True
+    return p.is_agent and can(p, "read:notes")
 
 
 def shown_tier(t: Ticket, p: Principal) -> str | None:
@@ -295,6 +313,13 @@ def _filtered(cfg: Config, p: Principal, f: Filters):
     # held ticket matches on the reporter's claim, never on the assessment, and the team-only axes
     # (gate, internal ref, pending proposals) are not questions it can ask.
     full = sees_assessment(p)
+    if not full and (
+        f.gate or f.has_internal is not None or f.pending is not None or f.reporter is not None
+        or f.queued is not None
+    ):
+        # the team-only axes are not questions a public caller can ask; refused, not quietly dropped
+        # (XE-1560)
+        raise HTTPException(403, "gate, has_internal, pending, reporter and queued are team filters")
     unheld = Ticket.status.notin_(ASSESSMENT_HELD)
     if f.verdict:
         q = q.where(Ticket.verdict == f.verdict if full else (Ticket.verdict == f.verdict) & unheld)
@@ -643,6 +668,8 @@ async def set_facts(
         if k == "area":
             vocab = TOPICS if t.kind == "support" else AREAS
         if v in ("", None):
+            if k == "visibility":
+                raise HTTPException(400, "visibility is public or private")  # NOT NULL (XE-0973)
             v = "" if k == "internal_ref" else None
         elif vocab is not None and v not in vocab:
             raise HTTPException(400, f"{k} must be one of {list(vocab)}")
@@ -662,11 +689,22 @@ async def set_facts(
         old = getattr(t, k)
         if old == v:
             continue
+        if k == "assessed_tier" and t.award_approved_at and t.status not in ("awarded", "paid"):
+            # the approval was for an amount under the old tier; it is taken back, the amount stays and
+            # is re-checked against the new ceiling on the next approval (XE-0890)
+            t.award_approved_by, t.award_approved_at = None, None
+            diff["award_approved"] = {"from": True, "to": False}
+        if k == "assessed_tier" and t.status in ("awarded", "paid"):
+            raise HTTPException(409, f"the ticket is {t.status}; the tier behind the award stands")
         if k == "visibility" and v == "private":
             text = t.body
             t.visibility = "private"
             set_body(ctx, t, text)
             await seal_thread(ctx, db, t)
+            # the one public word on it from here: the ticket went private. Served whatever the ticket's
+            # visibility is, so the public log explains why the rest of its history is gone (XE-0410,
+            # XE-0350)
+            await ctx.events.append(db, "ticket.sealed", p.actor, {"ticket": t.id}, ref=t.id, public=True)
         else:
             setattr(t, k, v)
         diff[k] = {"from": old, "to": v}
@@ -690,6 +728,14 @@ async def set_facts(
 # ---- status -----------------------------------------------------------------------------------------
 
 
+async def lock(db: AsyncSession, t: Ticket) -> None:
+    """Take the row lock on a ticket and re-read it, so the check that follows is against what is in the
+    database now, not what this request read a moment ago (XE-0463). Pending changes are flushed first
+    so nothing of this transaction is lost; the lock is held to commit."""
+    await db.flush()
+    await db.refresh(t, with_for_update=True)
+
+
 async def set_status(
     ctx: Context,
     db: AsyncSession,
@@ -704,6 +750,7 @@ async def set_status(
 ) -> None:
     if status not in STATUSES:
         raise HTTPException(400, f"unknown status {status!r}")
+    await lock(db, t)
     allowed = TRANSITIONS[t.kind].get(t.status, set())
     if not force and status != t.status and status not in allowed:
         raise HTTPException(409, f"{t.kind} ticket cannot go from {t.status} to {status}")
@@ -715,6 +762,9 @@ async def set_status(
     if status == "disclosed":
         if t.visibility != "private":
             raise HTTPException(400, "only a private ticket is disclosed; a public one goes to awarded")
+        if not ctx.vault.available:
+            # the body has to leave the vault whole; without the key there is nothing to publish (XE-0791)
+            raise HTTPException(503, "the vault key is not loaded; the ticket cannot be disclosed now")
         n = int(
             (
                 await db.execute(select(func.count()).select_from(PatchRef).where(PatchRef.ticket_id == t.id))
@@ -725,8 +775,13 @@ async def set_status(
     if status == "awarded" and not force:
         if t.award_xe is None or t.award_approved_at is None:
             raise HTTPException(400, "awarded needs an approved award")
+        _check_ceiling(ctx, t, t.award_xe)
     if status == "paid" and not t.paid_ref and not force:
         raise HTTPException(400, "paid needs paid_ref")
+    if not force and t.status == "paid" and status != "paid":
+        raise HTTPException(409, "the ticket is paid; the record does not walk back")  # XE-0789
+    if not force and t.status == "awarded" and status not in ("awarded", "paid", "closed"):
+        raise HTTPException(409, "an awarded ticket is paid or closed, not walked back")
     old, old_reason = t.status, t.closed_reason
     if old == status and old_reason == closed_reason:
         return
@@ -739,7 +794,10 @@ async def set_status(
     if status == "disclosed" and t.visibility == "private":
         # the one disclosure path, whoever called: the body leaves the vault and the ticket goes public
         # here, so a proposal, a walked path or a force can never leave a sealed ticket at "disclosed"
-        text = body_for(ctx, t)
+        try:
+            text = ctx.vault.open_text(t.body_sealed) if t.body_sealed else ""
+        except VaultError as e:
+            raise HTTPException(503, f"the sealed body did not open: {e}") from e
         t.visibility = "public"
         t.body, t.body_sealed = text, None
         await ctx.events.append(
@@ -843,10 +901,12 @@ async def seal_thread(ctx: Context, db: AsyncSession, t: Ticket) -> dict:
                 path.write_bytes(ctx.vault.seal(path.read_bytes()))
             a.sealed = True
             n_att += 1
-    q = select(Reply).where(Reply.ticket_id == t.id, Reply.mirror == "queued")
-    for r in (await db.execute(q)).scalars().all():
-        r.mirror = "none"
-        n_rep += 1
+    for r in (await db.execute(select(Reply).where(Reply.ticket_id == t.id))).scalars().all():
+        if r.mirror == "queued":
+            r.mirror = "none"
+            n_rep += 1
+        if r.body_sealed is None and r.body:
+            r.body_sealed, r.body = ctx.vault.seal_text(r.body), ""  # XE-0426
     return {"messages": n_msg, "attachments": n_att, "replies_unqueued": n_rep}
 
 
@@ -858,6 +918,23 @@ async def disclose(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> N
 
 # An amount may be set from `accepted` on (the awards pass does that); approval waits for the fix.
 AWARD_APPROVABLE_STATUSES = ("patched", "disclosed", "awarded", "paid")
+
+
+AWARD_MAX = 1_000_000 * 1_000_000  # a million XE in micro-XE: no tier comes near it (XE-0973)
+
+
+def _check_ceiling(ctx: Context, t: Ticket, award_xe: int | None) -> None:
+    """An amount above zero needs an assessed tier and stays within twice that tier's ceiling (XE-0470,
+    XE-0890). Zero (no award) is always allowed."""
+    if not award_xe:
+        return
+    ceiling = ctx.config.ceiling_micro(t.assessed_tier)
+    if not ceiling:
+        raise HTTPException(409, "an award needs an assessed tier first; set the tier, then the amount")
+    if award_xe > ceiling * 2:
+        raise HTTPException(
+            400, f"award exceeds twice the {t.assessed_tier} ceiling ({ceiling // 1_000_000:,} XE)"
+        )
 
 
 def award_approvable(t: Ticket) -> str | None:
@@ -874,22 +951,23 @@ async def set_award(
 ) -> None:
     """Set the amount, approve it, or take approval back. `approve` None leaves approval as it is; True
     needs a set amount on a patched or disclosed ticket; False clears it (the amount stays)."""
-    cfg = ctx.config
+    await lock(db, t)
     if award_xe is not None:
         if award_xe < 0:
             raise HTTPException(400, "award must be ≥ 0")
+        if award_xe > AWARD_MAX:
+            raise HTTPException(400, f"award must be at most {AWARD_MAX // 1_000_000:,} XE")
         if t.award_approved_at and award_xe != t.award_xe:
             raise HTTPException(409, "the award is approved; take approval back before changing the amount")
-        ceiling = cfg.ceiling_micro(t.assessed_tier)
-        if ceiling and award_xe > ceiling * 2:
-            raise HTTPException(
-                400, f"award exceeds twice the {t.assessed_tier} ceiling; exceptional awards need a note"
-            )
+        if award_xe and t.status in ("awarded", "paid") and award_xe != t.award_xe:
+            raise HTTPException(409, f"the ticket is {t.status}; the award stands")
+        _check_ceiling(ctx, t, award_xe)
         t.award_xe = award_xe
     if approve is True:
         why = award_approvable(t)
         if why:
             raise HTTPException(409 if t.award_xe is not None else 400, why)
+        _check_ceiling(ctx, t, t.award_xe)  # the tier may have moved since the amount was set (XE-0890)
         t.award_approved_by = p.user.id if p.user else None
         t.award_approved_at = utcnow()
     elif approve is False:
@@ -910,6 +988,19 @@ async def set_award(
         ref=t.id,
         public=t.visibility == "public",
     )
+
+
+async def mark_paid(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, paid_ref: str) -> None:
+    """The treasurer records the payment: the reference goes on the ticket and it walks awarded → paid
+    (XE-0737). The reference is a transaction hash or whatever the payer has; it is public with the
+    ticket, like the amount."""
+    ref = (paid_ref or "").strip()
+    if not ref or len(ref) > 64 or not ref.isprintable():
+        raise HTTPException(400, "paid_ref is 1 to 64 printable characters")
+    if t.status != "awarded":
+        raise HTTPException(409, f"only an awarded ticket is paid; this one is {t.status}")
+    t.paid_ref = ref
+    await set_status(ctx, db, p, t, "paid", reason=f"paid: {ref[:64]}")
 
 
 # ---- serialisation ----------------------------------------------------------------------------------

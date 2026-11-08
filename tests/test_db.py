@@ -227,6 +227,7 @@ async def test_ticket_lifecycle(ctx, db):
     # award needs the treasurer and approval before awarded
     with pytest.raises(HTTPException):
         await tsvc.set_status(ctx, db, p, t, "awarded")
+    t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
     await tsvc.set_award(ctx, db, p, t, 5_000_000_000, approve=True)
     await tsvc.set_status(ctx, db, p, t, "awarded")
     await db.commit()
@@ -386,6 +387,112 @@ async def test_private_ticket_is_sealed_and_hidden(ctx, db):
     assert evs == []
 
 
+async def test_private_history_leaves_the_public_log_and_replies_seal(ctx, db):
+    team = await _team(ctx, db)
+    t, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(79, "public first", body="b"))
+    await tsvc.set_status(ctx, db, team, t, "triaging")
+    r = await thread.add_reply(ctx, db, team, t, "public words")
+    assert (await EventLog.page(db, 0, 50, ref=t.id)) != []
+    await tsvc.set_facts(ctx, db, team, t, {"visibility": "private"})
+    # the history is gone from every public read path while the ticket is private; the one row that stays
+    # says why (XE-0350, XE-0410)
+    pub = await EventLog.page(db, 0, 50, ref=t.id)
+    assert [e.kind for e in pub] == ["ticket.sealed"]
+    sealed = pub[0]
+    assert await EventLog.served_public(db, sealed) is True
+    every = await EventLog.page(db, 0, 50, ref=t.id, public_only=False)
+    created = next(e for e in every if e.kind == "ticket.created")
+    assert created.public is True and await EventLog.served_public(db, created) is False
+    assert all(e.ref != t.id or e.kind == "ticket.sealed" for e in await EventLog.since(db, -1, 1000))
+    # the reply row followed the body into the vault (XE-0426), and a new reply on a private ticket seals
+    await db.refresh(r)
+    assert r.body == "" and r.body_sealed and thread.reply_body(ctx, r) == "public words"
+    r2 = await thread.add_reply(ctx, db, team, t, "private words")
+    assert r2.body == "" and thread.reply_body(ctx, r2) == "private words"
+    # disclosed again: the history is served again
+    await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref="9", kind="pr")
+    for st in ("accepted", "patched"):
+        await tsvc.set_status(ctx, db, team, t, st)
+    await tsvc.set_status(ctx, db, team, t, "disclosed")
+    assert await EventLog.served_public(db, created) is True
+    # the chain still verifies: nothing was rewritten
+    assert (await EventLog.verify(db))["ok"]
+
+
+async def test_held_facts_stay_out_of_public_payloads(ctx, db):
+    from desk.log import public_payload
+
+    assert public_payload("ticket.award", {"ticket": "XE-0001", "award_xe": 5, "tier": "high"}) == {
+        "ticket": "XE-0001", "award_xe": 5,
+    }  # XE-0604
+    assert public_payload("ticket.status", {"via": "internal:xeprotocol/core#12", "reason": "x"}) == {
+        "via": "internal",
+    }  # XE-0612
+    predates = public_payload("ticket.internal_predates", {"ticket": "x", "internal_ref": "#9"})
+    assert "internal_ref" not in predates
+    adopted = public_payload("proposal.adopted", {"ticket": "x", "reason": "it is High"})
+    assert "reason" not in adopted  # XE-0768
+    # fill never names a held tier and never reaches past known placeholders (XE-0733, XE-0956)
+    team = await _team(ctx, db)
+    t = await tsvc.create(ctx, db, team.actor, tsvc.NewTicket(kind="bounty", title="x", source="web"))
+    await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "high"})
+    assert thread.fill(ctx, "Tier: {tier}.", t) == "Tier: ."
+    assert thread.fill(ctx, "{ticket_url.__class__} {0} {reason!r} {tier:>5} {unknown}", t) == (
+        "{ticket_url.__class__} {0} {reason!r} {tier:>5} {unknown}"
+    )
+    for st in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, team, t, st)
+    assert thread.fill(ctx, "Tier: {tier}.", t) == "Tier: High."
+    # the team-only axes and the assessment go with notes access, not with being a token (XE-1560, XE-0696)
+    linker = await _agent(ctx, db, team.user, scopes=("write:patch-refs",))
+    assert not tsvc.sees_assessment(linker) and not authz.can(linker, "read:notes")
+    reader = await _agent(ctx, db, team.user, scopes=("read:public",))
+    assert tsvc.sees_assessment(reader)
+
+
+async def test_text_is_cleaned_and_chat_closes_stay_in_their_lane(ctx, db):
+    team = await _team(ctx, db)
+    title, body = "nul\x00 in\nthe title", "body\x00 here\x07"
+    spec = tsvc.NewTicket(kind="bounty", title=title, body=body, source="web")
+    t = await tsvc.create(ctx, db, team.actor, spec)
+    assert t.title == "nul in the title" and t.body == "body here"  # XE-1426
+    assert tsvc.clean_text("a\udc80b") == "ab"
+    # a Discord /close is for questions; an accepted report is closed from the desk (XE-0690, XE-0805)
+    for st in ("triaging", "accepted"):
+        await tsvc.set_status(ctx, db, team, t, st)
+    with pytest.raises(HTTPException) as e:
+        await channels.close_from_channel(ctx, db, t, user_id="1", reason="")
+    assert e.value.status_code == 409 and t.status == "accepted"
+    # the awarded record does not walk back (XE-0789), and an award needs a tier (XE-0470)
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_award(ctx, db, team, t, 1_000_000)
+    assert e.value.status_code == 409 and "tier" in e.value.detail
+    await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "minor"})
+    await tsvc.set_award(ctx, db, team, t, 1_000_000)
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_award(ctx, db, team, t, tsvc.AWARD_MAX + 1)
+    assert e.value.status_code == 400  # XE-0973
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_facts(ctx, db, team, t, {"visibility": None})
+    assert e.value.status_code == 400
+    await tsvc.set_status(ctx, db, team, t, "patched")
+    await tsvc.set_award(ctx, db, team, t, None, approve=True)
+    # the tier moves after approval: approval is taken back and the amount is re-checked (XE-0890)
+    diff = await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "high"})
+    assert t.award_approved_at is None and diff["award_approved"] == {"from": True, "to": False}
+    await tsvc.set_award(ctx, db, team, t, 8_000_000_000)  # within 2x high
+    await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "minor"})
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_award(ctx, db, team, t, None, approve=True)  # 8,000 XE is over 2x minor
+    assert e.value.status_code == 400
+    await tsvc.set_award(ctx, db, team, t, 1_000_000_000)
+    await tsvc.set_award(ctx, db, team, t, None, approve=True)
+    await tsvc.set_status(ctx, db, team, t, "awarded")
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_status(ctx, db, team, t, "triaging")
+    assert e.value.status_code == 409
+
+
 async def test_severity_sort(ctx, db):
     p = await _team(ctx, db)
     a = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="minor", source="web"))
@@ -409,7 +516,9 @@ async def test_severity_sort(ctx, db):
     assert [r.id for r in await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(tier="high"))] == [c.id]
     await tsvc.set_facts(ctx, db, p, b, {"verdict": "valid", "mainnet_gate": "later", "internal_ref": "#9"})
     assert await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(verdict="valid")) == []
-    assert await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(status="all", gate="later")) != []
+    with pytest.raises(HTTPException) as e:  # a team-only axis is refused, not quietly dropped (XE-1560)
+        await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(status="all", gate="later"))
+    assert e.value.status_code == 403
     assert await tsvc.list_tickets(db, ctx.config, anon, tsvc.Filters(q="#9")) == []
     assert [r.id for r in await tsvc.list_tickets(db, ctx.config, p, tsvc.Filters(q="#9"))] == [b.id]
     for st in ("triaging", "accepted", "patched"):
@@ -842,6 +951,7 @@ async def test_agent_proposes_an_award_and_a_treasurer_sets_it(ctx, db):
     assert t.id not in [d.id for d in await tsvc.awards_due(db, ctx.config, treasurer)]
     # an approved amount cannot be changed, but approval can be taken back and the amount stays
     with pytest.raises(HTTPException) as e:
+        t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
         await tsvc.set_award(ctx, db, treasurer, t, 1_000_000_000)
     assert e.value.status_code == 409
     await tsvc.set_award(ctx, db, treasurer, t, None, approve=False)
@@ -979,9 +1089,19 @@ async def test_a_fixing_pull_moves_the_ticket_and_a_mention_only_links(ctx, db):
     await sync.link_pull(ctx, db, repo, _pull(82, "First attempt", "Closes #72", state="closed"))
     assert t3.status == "fixing"  # 83 is still open
     await sync.link_pull(ctx, db, repo, _pull(83, "Second attempt", "Closes #72", state="closed"))
-    assert t3.status == "accepted"
+    # back to where it was before any PR moved it (it was new: triaging), not a guessed accepted (XE-0634)
+    assert t3.status == "triaging"
+    # a stranger's open "fixes" PR holds nothing: the maintainer PR's unmerged close still returns the ticket
+    t5, _ = await sync.upsert_issue(ctx, db, repo, _issue(73, "Stale peer list"))
+    await sync.link_pull(ctx, db, repo, _pull(85, "Prune peers", "Fixes #73"))
+    assert t5.status == "fixing"
+    await sync.link_pull(ctx, db, repo, _pull(86, "junk", "fixes #73", login="rando", association="NONE"))
+    assert t5.status == "fixing"
+    await sync.link_pull(ctx, db, repo, _pull(85, "Prune peers", "Fixes #73", state="closed"))
+    assert t5.status == "triaging"
     # past patched, GitHub never moves a ticket
     team = await _team(ctx, db, roles=("reviewer", "treasurer"))
+    t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
     await tsvc.set_award(ctx, db, team, t, 1_000_000, approve=True)
     await tsvc.set_status(ctx, db, team, t, "awarded")
     await sync.link_pull(ctx, db, repo, _pull(84, "Follow-up", "Fixes #70", state="closed", merged=True))
@@ -1030,6 +1150,7 @@ async def test_approved_awards_whose_ticket_has_not_caught_up_are_listed(ctx, db
     for st in ("triaging", "accepted", "patched"):
         await tsvc.set_status(ctx, db, team, t, st)
     assert await tsvc.awards_approved_unawarded(db, ctx.config, team) == []
+    t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
     await tsvc.set_award(ctx, db, team, t, 2_000_000, approve=True)
     rows = await tsvc.awards_approved_unawarded(db, ctx.config, team)
     assert [x.id for x in rows] == [t.id]
@@ -1283,14 +1404,24 @@ async def test_payout_binding_needs_matching_key(ctx, db):
     # the payout export lists tickets at awarded with the bound address, and nothing before that
     team = await _team(ctx, db)
     await tsvc.set_status(ctx, db, team, t, "triaging")
-    t.award_xe, t.award_approved_at = 5_000_000, utcnow()
+    t.assessed_tier, t.award_xe, t.award_approved_at = "minor", 5_000_000, utcnow()
     await db.flush()
     assert await rsvc.payout_rows(db) == []  # approved while triaging is not payable (XE-0300)
     for st in ("accepted", "patched", "awarded"):
         await tsvc.set_status(ctx, db, team, t, st)
     rows = await rsvc.payout_rows(db)
-    assert rows and rows[0][0] == t.id and rows[0][2] == "awarded" and rows[0][4] == 5
-    assert rows[0][-1] == kp.address
+    assert rows and rows[0]["ticket"] == t.id and rows[0]["status"] == "awarded"
+    assert rows[0]["award_xe"] == 5_000_000 and rows[0]["xe_address"] == kp.address
+    assert rows[0]["stamped_address"] == kp.address and not rows[0]["address_changed"]
+    # a rebind after the award refreshes the stamp: one address in both treasurer views (XE-0711)
+    kp2 = KeyPair.generate()
+    v = await verify_signed(db, _signed(kp2, DOMAIN_PAYOUT, {"address": kp2.address}), DOMAIN_PAYOUT)
+    assert (await rsvc.bind_payout(ctx, db, r, v))["tickets_updated"] == 1
+    rows = await rsvc.payout_rows(db)
+    assert rows[0]["xe_address"] == kp2.address == rows[0]["stamped_address"] == t.payout_address
+    # reporter-written cells never start a formula in the treasurer's spreadsheet (XE-0714)
+    assert rsvc.csv_cell("=HYPERLINK(1)") == "'=HYPERLINK(1)" and rsvc.csv_cell("plain") == "plain"
+    assert rsvc.csv_cell("-1") == "'-1" and rsvc.csv_cell(5) == "5" and rsvc.csv_cell(None) == ""
 
 
 async def test_xe_login_and_identity_merge(ctx, db):
@@ -1349,6 +1480,7 @@ async def test_disclosing_by_any_route_unseals_and_publishes(ctx, db):
         await tsvc.set_status(ctx, db, team, t, st)
     await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref="9", kind="pr")
     # the leaderboard never shows a private award (XE-0310)
+    t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
     await tsvc.set_award(ctx, db, team, t, 5_000_000, approve=True)
     await tsvc.set_status(ctx, db, team, t, "awarded", force=True)
     assert await tsvc.leaderboard(db) == []
@@ -1376,13 +1508,24 @@ async def test_payout_file_lists_only_awarded_tickets(ctx, db):
     for t in (live, closed, paid):
         for st in ("triaging", "accepted", "patched"):
             await tsvc.set_status(ctx, db, team, t, st)
+        t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
         await tsvc.set_award(ctx, db, team, t, 1_000_000, approve=True)
         await tsvc.set_status(ctx, db, team, t, "awarded")
     await tsvc.set_status(ctx, db, team, closed, "closed", closed_reason="invalid", force=True)
     paid.paid_ref = "tx"
     await tsvc.set_status(ctx, db, team, paid, "paid")
     rows = await rsvc.payout_rows(db)
-    assert [r[0] for r in rows] == [live.id] and rows[0][2] == "awarded"
+    assert [r["ticket"] for r in rows] == [live.id] and rows[0]["status"] == "awarded"
+    # paid is recorded through mark_paid, treasurer only, awarded only; the record does not walk back
+    live.assessed_tier = "minor"
+    with pytest.raises(HTTPException) as e:
+        await tsvc.mark_paid(ctx, db, team, closed, "tx2")
+    assert e.value.status_code == 409
+    await tsvc.mark_paid(ctx, db, team, live, " tx-abc ")
+    assert live.status == "paid" and live.paid_ref == "tx-abc" and await rsvc.payout_rows(db) == []
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_status(ctx, db, team, live, "awarded")  # XE-0789
+    assert e.value.status_code == 409
 
 
 async def test_tokens_stop_when_the_owner_leaves_the_team(ctx, db):
@@ -1567,9 +1710,91 @@ async def test_close_convert_rename_from_the_channel_and_state_push(ctx, db):
 
 async def test_discord_identity_links_to_a_web_account(ctx, db):
     t = await channels.open_from_channel(ctx, db, _post())
+    shell = await channels.by_platform(db, "discord", "1001")
     web = await rsvc.from_email(ctx, db, "ada@example.org", link_to=None)
     merged = await channels.from_platform(ctx, db, "discord", "1001", name="Ada", link_to=web)
     assert merged.id == web.id and merged.platform_ids["discord"] == "1001"
     await db.refresh(t)
     assert t.reporter_id == web.id
     assert [x.id for x in await rsvc.my_tickets(db, web)] == [t.id]
+    # the merged-away row keeps no platform id, so the next Discord message keys to the live account
+    # (XE-0473), and no session or link of the shell survives the merge (XE-0710)
+    await db.refresh(shell)
+    assert shell.platform_ids == {} and (await channels.by_platform(db, "discord", "1001")).id == web.id
+    t2 = await channels.open_from_channel(ctx, db, _post(thread_ref="556"))
+    assert t2.reporter_id == web.id
+
+
+async def test_identities_come_off_an_account_and_other_sessions_end(ctx, db):
+    kp = KeyPair.generate()
+    v = await verify_signed(db, _signed(kp, DOMAIN_LOGIN, {"host": "bounty.test"}), DOMAIN_LOGIN)
+    r = await rsvc.from_xe(ctx, db, v, link_to=None)
+    with pytest.raises(HTTPException) as e:
+        await rsvc.unlink(ctx, db, r, "xe", kp.address)  # the only way in stays
+    assert e.value.status_code == 409
+    r = await rsvc.from_email(ctx, db, "pat@example.org", link_to=r)
+    assert rsvc.ways_in(r) == 2
+    assert (await rsvc.unlink(ctx, db, r, "xe", kp.address))["ways_in"] == 1
+    assert r.xe_login_addresses == [] and await rsvc.by_login_address(db, kp.address) is None
+    with pytest.raises(HTTPException):
+        await rsvc.unlink(ctx, db, r, "xe", kp.address)
+    # sessions: this one stays, the others go, and so do outstanding links
+    s1, _ = await auth.create_reporter_session(db, r, "email")
+    s2, _ = await auth.create_reporter_session(db, r, "email")
+    await auth.create_reporter_link(db, "pat@example.org", r.id, "/my")
+    assert await rsvc.end_other_sessions(db, r, keep=s1.id) == 1
+    from desk.models import ReporterLink, ReporterSession
+
+    left = (await db.execute(select(ReporterSession.id).where(ReporterSession.reporter_id == r.id))).scalars()
+    assert list(left) == [s1.id] and s2.id != s1.id
+    links = (await db.execute(select(ReporterLink).where(ReporterLink.reporter_id == r.id))).scalars().all()
+    assert links == []
+
+
+async def test_one_time_links_are_claimed_once_and_burn_their_siblings(ctx, db):
+    # a reporter link: the first consumer wins, the second gets nothing, and the other outstanding links
+    # for the address die with it (XE-0709, XE-0782)
+    a = await auth.create_reporter_link(db, "sam@example.org", None, "/my")
+    b = await auth.create_reporter_link(db, "sam@example.org", None, "/my")
+    assert (await auth.consume_reporter_link(db, a)) is not None
+    assert await auth.consume_reporter_link(db, a) is None
+    assert await auth.consume_reporter_link(db, b) is None
+    # signed out, a link for a known address is a plain sign-in, not one bound to the account (XE-0363)
+    r = await rsvc.from_email(ctx, db, "sam@example.org", link_to=None)
+    c = await auth.create_reporter_link(db, "sam@example.org", None, "/my")
+    link = await auth.consume_reporter_link(db, c)
+    assert link.reporter_id is None
+    assert (await rsvc.from_email(ctx, db, link.email, link_to=None)).id == r.id
+    # team invites: the same rule (XE-0837)
+    team = await _team(ctx, db)
+    i1 = await auth.create_invite(db, team.user)
+    i2 = await auth.create_invite(db, team.user, purpose="magic-link")
+    assert (await auth.consume_invite(db, i1)) is not None
+    assert await auth.consume_invite(db, i1) is None and await auth.consume_invite(db, i2) is None
+    # a deactivated member's sessions are gone, not merely refused (XE-0838)
+    s, _ = await auth.create_session(db, team.user)
+    await users.set_active(ctx, db, "test", team.user, False)
+    from desk.models import Session
+
+    assert (await db.execute(select(Session).where(Session.user_id == team.user.id))).scalars().all() == []
+    # lookups with a NUL or a lone surrogate match nothing and raise nothing (XE-0827)
+    assert await users.by_email(db, "lead@xe\x00.network") is None
+    assert await rsvc.by_email(db, "a\udc80@example.org") is None
+    assert auth.safe_next(ctx.settings, "/my\\evil") == "/my" and auth.safe_next(ctx.settings, "/my") == "/my"
+    assert auth.safe_next(ctx.settings, "/\\evil.com") == "/my"  # XE-1092
+
+
+async def test_first_sign_ins_converge_on_one_row_and_names_fit(ctx, db):
+    # a provider-verified email lands on the row that already holds it (XE-1012)
+    r = await rsvc.from_email(ctx, db, "kim@example.org", link_to=None)
+    gh_user = {"id": 77, "login": "kim", "name": "K" * 300}
+    g = await rsvc.from_github(ctx, db, gh_user, "KIM@example.org", link_to=None)
+    assert g.id == r.id and g.github_id == 77 and len(g.display_name) <= 128
+    d = await channels.from_platform(ctx, db, "discord", "9001", name="Kim", email="kim@example.org")
+    assert d.id == r.id and d.platform_ids["discord"] == "9001"
+    # a long GitHub name or local part is cut, not a 500 (XE-1085)
+    long_local = "l" * 200 + "@example.org"
+    e = await rsvc.from_email(ctx, db, long_local, link_to=None)
+    assert len(e.display_name) == 128
+    h = await rsvc.from_github(ctx, db, {"id": 78, "login": "x", "name": "N" * 200}, "", link_to=None)
+    assert len(h.display_name) == 128

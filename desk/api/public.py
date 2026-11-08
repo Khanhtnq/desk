@@ -14,9 +14,9 @@ from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
 from .. import __version__
-from ..authz import can
+from ..authz import can, can_see
 from ..db import session
-from ..log import REPORTER_KINDS, EventLog, event_to_dict, is_admin_kind
+from ..log import REPORTER_KINDS, EventLog, event_to_dict
 from ..models import HealthCheck, SeenDelivery
 from ..services import github as gh
 from ..services import proposals as psvc
@@ -157,13 +157,17 @@ async def get_ticket(ctx: Ctx, db: Db, who: Who, tid: str):
     if t.visibility == "private":
         await ctx.events.append(db, "ticket.read", p.actor, {"ticket": t.id}, ref=t.id, public=False)
         await db.commit()
+    if t.duplicate_of and not can(p, "read:private"):
+        dup = await tsvc.get(db, t.duplicate_of)
+        if dup is not None and not can_see(p, dup):
+            d["duplicate_of"] = None  # a private canonical is not named to one who cannot open it (XE-0799)
     d["patch_refs"] = [_patch(pr) for pr in await thread.patches_for(db, t)]
     d["thread"] = [_message(ctx, t, m) for m in await thread.messages_for(db, t)]
     if can(p, "read:notes", t):
         d["notes"] = [_note(n) for n in await thread.notes_for(db, t)]
         d["proposals"] = [psvc.to_dict(pr) for pr in await psvc.pending_for(db, t)]
     if p.is_team:
-        d["replies"] = [_reply(r) for r in await thread.replies_for(db, t)]
+        d["replies"] = [_reply(ctx, r) for r in await thread.replies_for(db, t)]
     return d
 
 
@@ -174,6 +178,11 @@ async def get_similar(ctx: Ctx, db: Db, who: Who, tid: str, limit: int = Query(1
     p = who.principal
     t = await tsvc.get_for(db, p, tid)
     body = tsvc.body_for(ctx, t) if t.visibility == "public" or can(p, "read:private", t) else ""
+    if t.visibility == "private" and body:
+        # the sealed body is opened to match on: "who has seen this" includes this route (XE-0734)
+        payload = {"ticket": t.id, "what": "similar"}
+        await ctx.events.append(db, "ticket.read", p.actor, payload, ref=t.id, public=False)
+        await db.commit()
     rows = await tsvc.similar(db, ctx.config, p, t, body=body, limit=limit)
     return {"ticket": t.id, "similar": [tsvc.similar_dict(ctx, s, p, t) for s in rows]}
 
@@ -265,8 +274,7 @@ async def log_verify(ctx: Ctx, db: Db):
 @router.get("/log/{index}")
 async def log_entry(db: Db, who: Who, index: int):
     ev = await EventLog.get(db, index)
-    hidden = not ev.public or is_admin_kind(ev.kind) if ev else True
-    if ev is None or (hidden and not can(who.principal, "read:private")):
+    if ev is None or not (can(who.principal, "read:private") or await EventLog.served_public(db, ev)):
         raise HTTPException(404, "no such entry")
     return _ev(ev, who)
 
@@ -334,14 +342,20 @@ async def events_stream(ctx: Ctx, request: Request, who: Who, since: int | None 
 # ---- health -----------------------------------------------------------------------------------------
 
 
+HEALTH_MAX_AGE_NS = 15 * 60 * 1_000_000_000  # three missed five-minute checks
+
+
 @router.get("/health")
 async def health(ctx: Ctx, db: Db):
     head = await EventLog.head(db)
     last = (
         await db.execute(select(HealthCheck).order_by(HealthCheck.ts.desc()).limit(1))
     ).scalar_one_or_none()
+    # the verdict is the worker's last word, and only while it is fresh: a dead worker is not ok (XE-1443)
+    fresh = last is not None and time.time_ns() - last.ts < HEALTH_MAX_AGE_NS
     return {
-        "ok": True,
+        "ok": bool(fresh and last.ok),
+        "worker_fresh": fresh,
         "version": __version__,
         "git_commit": ctx.settings.git_commit,
         "network_id": ctx.node.network_id,
@@ -419,12 +433,12 @@ def _note(n) -> dict:
     }
 
 
-def _reply(r) -> dict:
+def _reply(ctx, r) -> dict:
     return {
         "id": r.id,
         "author_id": r.author_id,
         "author_name": r.author_name,
-        "body": r.body,
+        "body": thread.reply_body(ctx, r),
         "mirror": r.mirror,
         "mirror_ref": r.mirror_ref,
         "mirror_error": r.mirror_error,

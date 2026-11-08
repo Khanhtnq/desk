@@ -103,7 +103,8 @@ class DeskBot(discord.Client):
     def __init__(self, ctx: Context):
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(intents=intents)
+        # nothing the bot relays rings @everyone, a role or a user unless a send says so (XE-1115)
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.ctx = ctx
         self.s = ctx.settings
         self.tree = app_commands.CommandTree(self)
@@ -205,12 +206,20 @@ class DeskBot(discord.Client):
             await thread_.edit(name=f"{t.id} · {title}"[:100])
         except discord.HTTPException:
             pass
-        role = f"<@&{self.s.discord_support_role_id}> " if self.s.discord_support_role_id else ""
+        role_id = self.s.discord_support_role_id
+        role = f"<@&{role_id}> " if role_id else ""
         head = f"{role}{interaction.user.mention} asks, under **{self.ctx.config.topics.get(topic, topic)}**:"
         body = f"**{title}**" + (f"\n{details}" if details else "")
+        # only the asker and the support role ring; the member's own text pings nobody (XE-1115)
+        allowed = discord.AllowedMentions(
+            everyone=False,
+            users=[interaction.user],
+            roles=[discord.Object(id=int(role_id))] if role_id else False,
+            replied_user=False,
+        )
         for part in _chunks(f"{head}\n{body}"):
-            await thread_.send(part, allowed_mentions=discord.AllowedMentions(users=True, roles=True))
-        await thread_.send(f"{created}\n{opened}".strip())
+            await thread_.send(part, allowed_mentions=allowed)
+        await thread_.send(f"{created}\n{opened}".strip(), allowed_mentions=discord.AllowedMentions.none())
         return thread_
 
     # ---- messages in threads ---------------------------------------------------------------

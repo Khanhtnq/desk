@@ -23,10 +23,9 @@ MATRIX: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("read:public", "read:private", "write:notes", "write:proposals", "write:patch-refs"),
     ),
     "read:private": (("*",), ("read:private",)),
-    "read:notes": (
-        ("*",),
-        ("read:public", "read:private", "write:notes", "write:proposals", "write:patch-refs"),
-    ),
+    # the working layer (notes, proposals, the assessment as it changes) is for tokens that read or take
+    # part in it; a token that only links patches does not see it (XE-0696)
+    "read:notes": (("*",), ("read:public", "read:private", "write:notes", "write:proposals")),
     "read:payout_address": (("*",), ()),
     "write:notes": (("*",), ("write:notes",)),
     "write:proposals": ((), ("write:proposals",)),
@@ -79,10 +78,11 @@ class Principal:
 
     @property
     def name(self) -> str:
+        """How the principal is named on what it writes; fits the 128-char author columns (XE-1028)."""
         if self.kind == "user" and self.user:
-            return self.user.name or self.user.email
+            return (self.user.name or self.user.email)[:128]
         if self.kind == "token" and self.token:
-            return f"{self.token.model_id} ({self.token.label or self.token.prefix})"
+            return f"{self.token.model_id} ({self.token.label or self.token.prefix})"[:128]
         return self.kind
 
     @property

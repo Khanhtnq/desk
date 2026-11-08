@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from xe.keys import verify_hex_signature
 
 from .canonical import DOMAIN_EVENT, DOMAIN_EVENT_V2, digest
-from .models import Event, LogHead
+from .models import Event, LogHead, Ticket
 from .signer import Signer, SignerError
 
 ZERO = "0" * 64
@@ -159,21 +159,36 @@ class EventLog:
             q = q.where(Event.ref == ref)
         q = (
             q.order_by(Event.index.desc() if descending else Event.index.asc())
-            .offset(offset)
-            .limit(min(limit, 1000))
+            .offset(_clamp(offset, 0, 10**9))
+            .limit(_clamp(limit, 1, 1000))
         )
         return list((await db.execute(q)).scalars().all())
 
     @staticmethod
     async def since(db: AsyncSession, after: int, limit: int = 200, public_only: bool = True) -> list[Event]:
-        q = select(Event).where(Event.index > after)
+        q = select(Event).where(Event.index > _clamp(after, -1, 10**12))
         if public_only:
             q = _public_rows(q)
-        return list((await db.execute(q.order_by(Event.index.asc()).limit(min(limit, 1000)))).scalars().all())
+        q = q.order_by(Event.index.asc()).limit(_clamp(limit, 1, 1000))
+        return list((await db.execute(q)).scalars().all())
 
     @staticmethod
     async def get(db: AsyncSession, index: int) -> Event | None:
         return (await db.execute(select(Event).where(Event.index == index))).scalar_one_or_none()
+
+    @staticmethod
+    async def served_public(db: AsyncSession, ev: Event) -> bool:
+        """Whether one row is served outside the team: the stored flag, the admin-kind rule, and the
+        ticket's visibility now (XE-0350): a ticket's history goes with it when it is made private, and
+        comes back when it is disclosed. `ticket.sealed` is the one event that stays, so the public log
+        says why the rest is gone."""
+        if not ev.public or is_admin_kind(ev.kind):
+            return False
+        if ev.ref and ev.kind != "ticket.sealed":
+            q = select(Ticket.visibility).where(Ticket.id == ev.ref)
+            if (await db.execute(q)).scalar_one_or_none() == "private":
+                return False
+        return True
 
     @staticmethod
     async def iter_all(db: AsyncSession, batch: int = 1000) -> AsyncIterator[Event]:
@@ -198,12 +213,17 @@ class EventLog:
     async def verify(db: AsyncSession, expected_signer: str = "") -> dict:
         """Replay the chain. Returns {ok, count, head, first_error}. With `expected_signer` (the
         deployment's published log key) every event must carry a signature by that key: a stripped
-        signature or a re-signed chain fails, which is the point of publishing the key."""
+        signature or a re-signed chain fails, which is the point of publishing the key. The head is read
+        first and the replay runs to that index, so events appended while the replay runs are not a
+        disagreement (XE-1277)."""
+        head = await EventLog.head(db)
         prev = ZERO
         expected_index = 0
         count = 0
         last_hash = ZERO
         async for ev in EventLog.iter_all(db):
+            if ev.index > head.index:
+                break
             if ev.index != expected_index:
                 return {
                     "ok": False,
@@ -250,7 +270,6 @@ class EventLog:
             last_hash = h
             expected_index += 1
             count += 1
-        head = await EventLog.head(db)
         ok = head.hash == last_hash and head.index == count - 1
         return {
             "ok": ok,
@@ -277,6 +296,10 @@ HELD_PAYLOAD_KEYS = {
     "ticket.facts": frozenset({"reason"}),
     "ticket.status": frozenset({"reason"}),
     "proposal.created": frozenset({"value"}),
+    "proposal.adopted": frozenset({"reason"}),
+    "proposal.rejected": frozenset({"reason"}),
+    "ticket.internal_predates": frozenset({"internal_ref"}),
+    "ticket.award": frozenset({"tier"}),
 }
 
 # What a reporter is shown of their own private ticket's log: the record of what happened to it, not the
@@ -288,6 +311,7 @@ REPORTER_KINDS = (
     "ticket.renamed",
     "ticket.kind",
     "ticket.award",
+    "ticket.sealed",
     "reply.sent",
     "reply.mirrored",
     "attachment.added",
@@ -301,9 +325,20 @@ def is_admin_kind(kind: str) -> bool:
     return kind.startswith(ADMIN_KINDS)
 
 
+def _clamp(v, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(int(v), hi))
+    except (TypeError, ValueError, OverflowError):
+        return lo
+
+
 def _public_rows(q):
     hidden = or_(*[Event.kind.like(f"{prefix}%") for prefix in ADMIN_KINDS])
-    return q.where(Event.public.is_(True), ~hidden)
+    # events on a ticket that is private now are not served, whatever they were when written (XE-0350);
+    # the `ticket.sealed` row that marks the change is
+    private_now = select(Ticket.id).where(Ticket.visibility == "private")
+    sealed = or_(Event.ref == "", Event.kind == "ticket.sealed", ~Event.ref.in_(private_now))
+    return q.where(Event.public.is_(True), ~hidden, sealed)
 
 
 def public_payload(kind: str, payload: Any) -> Any:
@@ -320,6 +355,8 @@ def public_payload(kind: str, payload: Any) -> Any:
         out["changes"] = kept
         if held:
             out["held"] = held  # which facts changed, not what they became
+    if isinstance(out.get("via"), str) and out["via"].startswith("internal:"):
+        out["via"] = "internal"  # the tracker, not its ticket number (XE-0612)
     return out
 
 
