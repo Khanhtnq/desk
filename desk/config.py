@@ -181,6 +181,12 @@ class Config:
         return {k: str(v) for k, v in (self.copy_public.get("reply_templates") or {}).items()}
 
     @property
+    def plain_phrases(self) -> list[str]:
+        """Stock sentences a plain acknowledgement may carry even where the word rules would otherwise
+        hold it for review (`thread.review_reason`): the programme's own recurring lines."""
+        return [str(x) for x in (self.copy_public.get("plain_phrases") or []) if str(x).strip()]
+
+    @property
     def triage_agent(self) -> dict:
         return self.desk.get("triage_agent") or {"model_id": "triage", "label": "triage import"}
 

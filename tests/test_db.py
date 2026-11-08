@@ -502,6 +502,20 @@ async def test_plain_acknowledgements_send_on_adopt_and_the_rest_wait(ctx, db):
     assert rr(ctx, "Thanks. See https://example.com/x.", plain) == "has a link"
     assert rr(ctx, "Thanks. Fixed in 2 days.", plain) == "has a number"
     assert rr(ctx, "Thanks. The award follows the fix.", plain) == "mentions payment"
+    # the programme's stock lines pass whatever words they carry; the rest is still checked
+    stock = (
+        "Thanks for the report. We have read it against the code and it is being handled alongside"
+        " related multisig work. This ticket is updated when the fix lands, and the assessment and any"
+        " award follow the fix."
+    )
+    assert ctx.config.plain_phrases and rr(ctx, stock, plain) is None
+    assert rr(ctx, stock + " The award will be 500 XE.", plain) == "has a number"
+    assert rr(ctx, stock + " We will pay it on Friday.", plain) == "mentions payment"
+    design = (
+        "Thanks for the report. We read it against the code: the behaviour is as designed today, and"
+        " the design question it raises is with the team. This ticket is updated when there is a decision."
+    )
+    assert rr(ctx, design, plain) is None
     assert rr(ctx, "Thanks. Closing as invalid.", plain) == "explains a closure"
     assert rr(ctx, "Thanks. The gap is in `VerifyMultisig`.", plain) == "names code or a path"
     assert rr(ctx, "Thanks. The gap is in net/sync.", plain) == "names code or a path"

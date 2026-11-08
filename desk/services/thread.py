@@ -227,8 +227,8 @@ def review_reason(ctx: Context, text: str, t: Ticket) -> str | None:
     """Why a filled reply draft needs a person's read before it goes out, or None when it is a plain
     acknowledgement the desk can send as it stands. Plain means: short, names nothing but this ticket, no
     number (a tier, an amount, a date), no link but the ticket's own, no code or path, no word about
-    money or closing. The rule is deliberately narrow; everything it does not recognise waits in the
-    editor."""
+    money or closing, except inside the programme's stock lines (`plain_phrases` in the public copy).
+    The rule is deliberately narrow; everything it does not recognise waits in the editor."""
     from .tickets import ticket_url
 
     body = (text or "").strip()
@@ -238,6 +238,11 @@ def review_reason(ctx: Context, text: str, t: Ticket) -> str | None:
         return f"over {PLAIN_LIMIT} characters"
     own = ticket_url(ctx, t)
     rest = body.replace(own, " ").replace(t.id, " ")
+    # the programme's stock lines pass whatever words they carry; the rest of the text is still checked
+    folded = re.sub(r"\s+", " ", rest)
+    for phrase in ctx.config.plain_phrases:
+        folded = re.sub(re.escape(re.sub(r"\s+", " ", phrase.strip())), " ", folded, flags=re.I)
+    rest = folded
     if _URL.search(rest):
         return "has a link"
     if _TICKET_ID.search(rest):

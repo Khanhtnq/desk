@@ -174,6 +174,20 @@ notices:
     Never post a proof of concept into Discord or Telegram. Use the private filing form; the thread
     is for the conversation, not the exploit.
 
+# Stock lines the programme says over and over. A reply draft adopted from the triage page is sent as
+# it stands only when it is a plain acknowledgement (short, nothing named but the ticket, no number,
+# link, code, tier, money or closing word); these sentences are allowed through that check even where
+# they would otherwise trip it. Matched case-insensitively, whitespace folded. Add a line here when a
+# phrasing has become routine; keep each one free of anything a reporter could read as a promise.
+plain_phrases:
+  - This ticket is updated when the fix lands, and the assessment and any award follow the fix.
+  - the assessment and any award follow the fix
+  - the tier and award follow the fix
+  - "We read it against the code: the behaviour is as designed today, and the design question it raises is with the team."
+  - the behaviour you describe is as designed today
+  - This ticket is updated when there is a decision.
+  - We will update this ticket when a decision is made.
+
 reply_templates:
   patched: |-
     Thanks for the report. This is fixed in {patch_refs}. The desk entry is {ticket_url}. If you can,
