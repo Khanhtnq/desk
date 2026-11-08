@@ -5,7 +5,7 @@
 <h1>{{ me.display_name or me.github_login or me.email or "Reporter " ~ me.id }}</h1>
 {% set bounty = site == "bounty" %}
 {% set has_discord = me.platform_ids.get("discord") %}
-<p class="sub">{{ n_tickets }} {{ ("report" if n_tickets == 1 else "reports") if bounty else ("question" if n_tickets == 1 else "questions") }} under this account. The ways you can sign in, where replies reach you{% if bounty %}, and where an award would be paid{% endif %}.</p>
+<p class="sub">{{ n_tickets|n }} {{ ("report" if n_tickets == 1 else "reports") if bounty else ("question" if n_tickets == 1 else "questions") }} under this account. The ways you can sign in, where replies reach you{% if bounty %}, and where an award would be paid{% endif %}.</p>
 
 <div class="grid">
 <div class="card">

@@ -22,13 +22,13 @@
 
 <div class="counts">
   <div class="group"><h4>Currently</h4><div class="nums">
-    <div><b>{{ counts.open }}</b>{{ copy.labels.open }}</div>
-    {% for s in ("new", "triaging", "needs-info", "accepted", "fixing") if counts[s] %}<div><b>{{ counts[s] }}</b>{{ copy.labels.get(s, s) }}</div>{% endfor %}
+    <div><b>{{ counts.open|n }}</b>{{ copy.labels.open }}</div>
+    {% for s in ("new", "triaging", "needs-info", "accepted", "fixing") if counts[s] %}<div><b>{{ counts[s]|n }}</b>{{ copy.labels.get(s, s) }}</div>{% endfor %}
   </div></div>
   <div class="group"><h4>All time</h4><div class="nums">
-    <div><b>{{ counts.fixed }}</b>{{ copy.labels.patched }}</div>
-    <div><b>{{ counts.awarded_all }}</b>{{ copy.labels.awarded }}</div>
-    <div><b>{{ counts.closed }}</b>{{ copy.labels.closed }}</div>
+    <div><b>{{ counts.fixed|n }}</b>{{ copy.labels.patched }}</div>
+    <div><b>{{ counts.awarded_all|n }}</b>{{ copy.labels.awarded }}</div>
+    <div><b>{{ counts.closed|n }}</b>{{ copy.labels.closed }}</div>
   </div></div>
   {% if team and pend %}<div class="group"><h4>For the team</h4><div class="nums">
     <div><b>{{ pend.values()|sum }}</b>pending proposals</div>
@@ -90,6 +90,6 @@
 {% endfor %}
 </tbody>
 </table>
-<p class="k">{{ tickets|length }} shown. {% if kind == "bounty" %}{% if team %}Tiers are the team's assessment where one has been made, the reporter's claim otherwise. The gate says whether a fix lands before mainnet. {% else %}Tiers are the reporter's claim until a fix has shipped; from then on they are the team's assessment. {% endif %}{% endif %}Append <code>.md</code> to this page for markdown.</p>
+<p class="k">{{ tickets|length|n }} shown. {% if kind == "bounty" %}{% if team %}Tiers are the team's assessment where one has been made, the reporter's claim otherwise. The gate says whether a fix lands before mainnet. {% else %}Tiers are the reporter's claim until a fix has shipped; from then on they are the team's assessment. {% endif %}{% endif %}Append <code>.md</code> to this page for markdown.</p>
 {% endif %}
 {% endblock %}

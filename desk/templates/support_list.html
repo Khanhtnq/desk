@@ -32,8 +32,8 @@
 <p class="notice"><b>{{ site_copy.safety_lead }}</b> {{ site_copy.safety }}</p>
 
 <div class="counts">
-  <div><b>{{ counts.open }}</b>{{ copy.labels.open }}</div>
-  <div><b>{{ counts.closed }}</b>{{ copy.labels.answered }}</div>
+  <div><b>{{ counts.open|n }}</b>{{ copy.labels.open }}</div>
+  <div><b>{{ counts.closed|n }}</b>{{ copy.labels.answered }}</div>
   {% if team and pend %}<div><b>{{ pend.values()|sum }}</b>pending proposals</div>{% endif %}
 </div>
 
@@ -75,7 +75,7 @@
 {% endfor %}
 </tbody>
 </table>
-<p class="k">{{ tickets|length }} shown. Append <code>.md</code> to this page for markdown.</p>
+<p class="k">{{ tickets|length|n }} shown. Append <code>.md</code> to this page for markdown.</p>
 {% endif %}
 
 {% if split %}{% set parts = site_copy.crosslink.split("{bounty_url}") %}<p class="sub k" style="margin-top:36px">{{ parts[0] }}<a href="{{ bounty_url }}" target="_blank" rel="noopener">{{ bounty_url.replace("https://", "") }}</a>{{ parts[1] if parts|length > 1 }}</p>{% endif %}

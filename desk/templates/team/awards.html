@@ -15,7 +15,7 @@
 </div>
 {% if not can_award %}<p class="msg err" style="display:block">You can read this page but setting an award needs the treasurer role.</p>{% endif %}
 {% if can_award and pending %}
-<div class="row" style="margin:16px 0"><button class="mini" id="adopt-all-awards" type="button">Adopt every proposed amount ({{ pending|length }})</button><span class="k" style="margin-left:12px">Sets the newest proposal on each ticket. Nothing is approved.</span></div>
+<div class="row" style="margin:16px 0"><button class="mini" id="adopt-all-awards" type="button">Adopt every proposed amount ({{ pending|length|n }})</button><span class="k" style="margin-left:12px">Sets the newest proposal on each ticket. Nothing is approved.</span></div>
 {% endif %}
 <div id="awards-msg" class="msg" style="display:none"></div>
 <table class="tickets">

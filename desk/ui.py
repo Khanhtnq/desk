@@ -72,6 +72,7 @@ templates.env.filters["dt"] = _fmt_dt
 templates.env.filters["day"] = lambda d: _fmt_dt(d, False)
 templates.env.filters["short"] = _short
 templates.env.filters["xe"] = _xe
+templates.env.filters["n"] = lambda v: f"{int(v or 0):,}"  # 2,069 not 2069: every count a page shows
 templates.env.filters["md"] = _render_md
 templates.env.filters["md_note"] = lambda text: Markup(
     _md_notes.render(text or "").replace("<a href=", '<a rel="nofollow noopener" target="_blank" href=')

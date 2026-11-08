@@ -54,12 +54,13 @@
     });
   }
   const tell = (title, body) => ask({ title, body, ok: "OK", cancel: null }).then(() => undefined);
+  const num = (n) => Number(n).toLocaleString("en-GB");  // 2,069 not 2069, everywhere a count is shown
   // a bulk decision answers {decided, skipped}; the skipped ones are shown with the desk's reason
   const reportSkipped = async (r, head) => {
     const sk = (r && r.skipped) || [];
     if (!sk.length) return;
     const lines = sk.map(s => `${s.ticket || ""}${s.field ? " · " + s.field : ""}${s.proposal ? " #" + s.proposal : ""}: ${s.why}`).join("\n");
-    await tell(head || `${sk.length} left as they were`, lines);
+    await tell(head || `${num(sk.length)} left as they were`, lines);
   };
   window.desk = Object.assign(window.desk || {}, { ask, tell });
 
@@ -371,17 +372,17 @@
     }));
     if ($("#close-family")) $("#close-family").addEventListener("click", async () => {
       const n = $("#close-family").dataset.count;
-      if (!await ask({ title: `Close ${n} tickets as duplicates of ${tid}?`, body: "Each is marked duplicate_of this ticket, closed, and sent the programme's duplicate reply under your name. The log records every step against you.", ok: `Close ${n}` })) return;
+      if (!await ask({ title: `Close ${num(n)} tickets as duplicates of ${tid}?`, body: "Each is marked duplicate_of this ticket, closed, and sent the programme's duplicate reply under your name. The log records every step against you.", ok: `Close ${num(n)}` })) return;
       try {
         const r = await api("POST", `/v1/team/tickets/${tid}/duplicates/close`, {});
         const sk = (r.skipped || []).map(s => `${s.ticket}: ${s.why}`).join("\n");
-        await tell(`Closed ${(r.closed || []).length} of ${n}`, sk ? `Left as they were:\n${sk}` : "All of them.");
+        await tell(`Closed ${num((r.closed || []).length)} of ${num(n)}`, sk ? `Left as they were:\n${sk}` : "All of them.");
         reload();
       } catch (e) { tell("Could not close the family", e.message); }
     });
     if ($("#adopt-all")) $("#adopt-all").addEventListener("click", async () => {
       const ids = $$("[data-adopt]:not([disabled])").filter(b => b.closest(".proposal").dataset.field !== "reply_draft").map(b => parseInt(b.dataset.adopt, 10));
-      if (!ids.length || !await ask({ title: `Adopt ${ids.length} proposals?`, body: "Reply drafts are left for you to use one at a time.", ok: "Adopt all" })) return;
+      if (!ids.length || !await ask({ title: `Adopt ${num(ids.length)} proposals?`, body: "Reply drafts are left for you to use one at a time.", ok: "Adopt all" })) return;
       try { const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); await reportSkipped(r); reload(); } catch (e) { tell("Could not adopt", e.message); }
     });
   }
@@ -404,7 +405,7 @@
       const sent = d.filter(x => x.sent).length;
       const held = d.filter(x => x.field === "reply_draft" && !x.sent).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
       const parts = [];
-      if (sent) parts.push(`Sent ${sent} ${sent === 1 ? "reply" : "replies"} to reporters.`);
+      if (sent) parts.push(`Sent ${num(sent)} ${sent === 1 ? "reply" : "replies"} to reporters.`);
       if (held.length) parts.push(held.join(" · "));
       return parts.join(" ");
     };
@@ -435,25 +436,25 @@
       const ids = rows.flatMap(tr => idsOf(tr, "ids").filter(id => !$(`.chip[data-pid="${id}"].gone`, tr)));
       if (!ids.length) return;
       const sends = rows.reduce((n, tr) => n + $$(".chip.sends:not(.gone)", tr).length, 0);
-      const replyNote = sends ? ` ${sends} plain ${sends === 1 ? "acknowledgement is" : "acknowledgements are"} sent to reporters under your name; other reply drafts wait on their tickets.` : " Reply drafts wait on their tickets.";
-      if (!await ask({ title: `Adopt ${ids.length} proposals on ${rows.length} tickets?`, body: `Each is written under your name through the same path as the ticket page: closures close, duplicates are marked, tiers and verdicts are set, awards are set but not approved.${replyNote} Anything the desk refuses is listed afterwards.`, ok: `Adopt ${ids.length}` })) return;
+      const replyNote = sends ? ` ${num(sends)} plain ${sends === 1 ? "acknowledgement is" : "acknowledgements are"} sent to reporters under your name; other reply drafts wait on their tickets.` : " Reply drafts wait on their tickets.";
+      if (!await ask({ title: `Adopt ${num(ids.length)} proposals on ${num(rows.length)} tickets?`, body: `Each is written under your name through the same path as the ticket page: closures close, duplicates are marked, tiers and verdicts are set, awards are set but not approved.${replyNote} Anything the desk refuses is listed afterwards.`, ok: `Adopt ${num(ids.length)}` })) return;
       try {
         const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids, send_plain: true });
         rows.forEach(tr => settle(tr, r));
         const line = sentLine(r);
         if (line) say(tmsg, line, true);
-        await reportSkipped(r, `Adopted ${(r.decided || []).length} of ${ids.length}.`);
+        await reportSkipped(r, `Adopted ${num((r.decided || []).length)} of ${num(ids.length)}.`);
       } catch (e) { say(tmsg, e.message, false); }
     });
     $$("[data-close-family]").forEach(b => b.addEventListener("click", async () => {
       const canon = b.dataset.closeFamily, n = b.dataset.count, members = JSON.parse(b.dataset.members || "[]");
-      if (!await ask({ title: `Close ${n} tickets as duplicates of ${canon}?`, body: "Each is marked duplicate_of this ticket, closed, and sent the programme's duplicate reply under your name.", ok: `Close ${n}` })) return;
+      if (!await ask({ title: `Close ${num(n)} tickets as duplicates of ${canon}?`, body: "Each is marked duplicate_of this ticket, closed, and sent the programme's duplicate reply under your name.", ok: `Close ${num(n)}` })) return;
       try {
         const r = await api("POST", `/v1/team/tickets/${canon}/duplicates/close`, { tickets: members });
         const closed = new Set((r.closed || []).map(c => c.ticket));
         $$("tr.trow").forEach(tr => { if (closed.has(tr.dataset.ticket)) { $$(".chip", tr).forEach(c => c.classList.add("gone")); tr.classList.add("done"); } });
         const sk = (r.skipped || []).map(s => `${s.ticket}: ${s.why}`).join("\n");
-        await tell(`Closed ${closed.size} of ${n}`, sk ? `Left as they were:\n${sk}` : "All of them.");
+        await tell(`Closed ${num(closed.size)} of ${num(n)}`, sk ? `Left as they were:\n${sk}` : "All of them.");
       } catch (e) { say(tmsg, e.message, false); }
     }));
   }
@@ -483,7 +484,7 @@
     }));
     if ($("#adopt-all-awards")) $("#adopt-all-awards").addEventListener("click", async () => {
       const ids = $$("[data-adopt-award]:not([disabled])").map(b => parseInt(b.dataset.adoptAward, 10));
-      if (!ids.length || !await ask({ title: `Set ${ids.length} awards from the proposed amounts?`, body: "Each amount is recorded against you in the log as set, not approved. Approve them one by one on the tickets when you have read the reasons.", ok: "Set all" })) return;
+      if (!ids.length || !await ask({ title: `Set ${num(ids.length)} awards from the proposed amounts?`, body: "Each amount is recorded against you in the log as set, not approved. Approve them one by one on the tickets when you have read the reasons.", ok: "Set all" })) return;
       try { const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); await reportSkipped(r); reload(); } catch (e) { tell("Could not adopt", e.message); }
     });
   }

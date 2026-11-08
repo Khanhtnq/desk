@@ -7,12 +7,12 @@
 <h1>What stands between the testnet and mainnet.</h1>
 <p class="sub">Every ticket gated <b>before</b> or <b>decide</b>, by area, most severe first. Hours are the sum of the effort bands on tickets not yet patched: engineer first, then the agent-assisted figure.</p>
 <div class="counts">
-  <div><b>{{ groups.values()|map("length")|sum }}</b>tickets</div>
-  <div><b>{{ "%.0f"|format(total[0]) }} h</b>engineer, open</div>
-  <div><b>{{ "%.0f"|format(total[1]) }} h</b>agent-assisted, open</div>
+  <div><b>{{ groups.values()|map("length")|sum|n }}</b>tickets</div>
+  <div><b>{{ total[0]|round|n }} h</b>engineer, open</div>
+  <div><b>{{ total[1]|round|n }} h</b>agent-assisted, open</div>
 </div>
 {% for area, ts in groups.items() %}
-<h2>{{ cfg.areas.get(area, area) }} <span class="k">{{ ts|length }} · {{ "%.0f"|format(hours[area][0]) }} h / {{ "%.1f"|format(hours[area][1]) }} h</span></h2>
+<h2>{{ cfg.areas.get(area, area) }} <span class="k">{{ ts|length|n }} · {{ hours[area][0]|round|n }} h / {{ "%.1f"|format(hours[area][1]) }} h</span></h2>
 <table class="tickets">
 <thead><tr><th>#</th><th>Finding</th><th>Status</th><th>Tier</th><th>Gate</th><th>Eng.</th><th>Internal</th><th>PR</th><th>Assignee</th></tr></thead>
 <tbody>
