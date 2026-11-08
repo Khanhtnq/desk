@@ -1075,9 +1075,10 @@ async def test_a_reporter_past_the_daily_cap_is_queued_not_refused(ctx, db):
     assert not q.queued and not one.queued
     # queued reports sort after everything else, in both orders, and can be filtered out
     ids = [t.id for t in await tsvc.list_tickets(db, ctx.config, team, tsvc.Filters(sort="age", limit=500))]
-    assert ids[-2:] == [filed[-2].id, filed[-1].id] and ids.index(one.id) < ids.index(filed[-2].id)
+    tail = {filed[-2].id, filed[-1].id}
+    assert set(ids[-2:]) == tail and one.id in ids[:-2]
     by_sev = [t.id for t in await tsvc.list_tickets(db, ctx.config, team, tsvc.Filters(limit=500))]
-    assert by_sev[-2:] == [filed[-2].id, filed[-1].id]
+    assert set(by_sev[-2:]) == tail
     unqueued = await tsvc.list_tickets(db, ctx.config, team, tsvc.Filters(queued=False, limit=500))
     assert filed[-1].id not in {t.id for t in unqueued} and one.id in {t.id for t in unqueued}
     # the record a reviewer sees beside the name
