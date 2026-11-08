@@ -15,6 +15,7 @@
     {% if reporter %}<span class="k">by {{ reporter.display_name or reporter.github_login or "a reporter" }}</span>{% endif %}
   </div>
   {% if t.visibility == "private" %}<p class="notice" style="margin-top:18px">{{ copy.notices.private_ticket }}</p>{% endif %}
+  {% if t.queued and (team or mine) %}<p class="notice" style="margin-top:18px"><span class="pill queued">{{ copy.labels.queued }}</span> {{ copy.notices.queued.replace("{cap}", cfg.daily_cap|string) }}</p>{% endif %}
 </div>
 
 <aside class="facts" id="facts">
@@ -45,7 +46,7 @@
     <dt>Tracked</dt><dd>{% if t.internal_ref %}<span class="pill accepted">internally</span>{% else %}—{% endif %}</dd>
     {% endif %}
     {% if team %}
-    <dt>Reporter</dt><dd>{% if reporter %}{{ reporter.display_name or reporter.github_login or reporter.email or ("reporter " ~ reporter.id) }}{% if reporter.email %} <span class="k">{{ reporter.email }}</span>{% elif reporter.github_login %} <span class="k">@{{ reporter.github_login }}</span>{% endif %}{% else %}<span class="k">none: awards and payouts need one</span>{% endif %}</dd>
+    <dt>Reporter</dt><dd>{% if reporter %}{{ reporter.display_name or reporter.github_login or reporter.email or ("reporter " ~ reporter.id) }}{% if reporter.email %} <span class="k">{{ reporter.email }}</span>{% elif reporter.github_login %} <span class="k">@{{ reporter.github_login }}</span>{% endif %}{% if record %}<div class="k record" style="margin-top:4px">{{ m.record(record, reporter.id) }}</div>{% endif %}{% else %}<span class="k">none: awards and payouts need one</span>{% endif %}</dd>
     <dt>Assignee</dt><dd><span class="show">{% for u in team_users if u.id == t.assignee_id %}{{ u.name or u.email }}{% else %}—{% endfor %}</span>
       <select class="edit" name="assignee_id"><option value="">—</option>{% for u in team_users %}<option value="{{ u.id }}" {{ "selected" if t.assignee_id == u.id }}>{{ u.name or u.email }}</option>{% endfor %}</select></dd>
     {% endif %}

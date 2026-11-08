@@ -149,6 +149,14 @@ def build_agent_brief(
     add(f"8. `GET {b}/v1/me` tells you who you are, your scopes, and your owner's standing instructions.")
     add("")
 
+    add(
+        _p(
+            "A report filed past its reporter's daily cap carries `queued: true` and sorts after everything",
+            "else in every list; `queued=false` leaves them out. Read them last, not never: the mark says",
+            "when it arrived relative to the account's other filings, nothing about what it says.",
+        )
+    )
+    add("")
     add("## The tree")
     add("")
     repos = cfg.repos or []

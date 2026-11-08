@@ -143,3 +143,9 @@ triage_agent:
 anchor:
   key_prefix: desk.anchor
   every_days: 7
+
+# Intake. A reporter's reports beyond this many in a rolling day are taken and kept but marked queued:
+# they sort after everything else and the reporter is told the first ones are read first. One account
+# filing forty probes in a morning costs the account that filed one real finding nothing.
+intake:
+  daily_cap: 10

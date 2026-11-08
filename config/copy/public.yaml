@@ -103,6 +103,7 @@ labels:
   disclosed: Disclosed
   awarded: Awarded
   paid: Paid
+  queued: Queued
   answered: Answered
   signin: Sign in
   report: Report a bug
@@ -165,6 +166,10 @@ notices:
     file it like anything else.
   assessment_held: >-
     published when the fix ships
+  queued: >-
+    This is one of several reports from your account in the last day. The first {cap} are read first;
+    this one queues behind them and is read in turn. It loses nothing by waiting: the time of filing
+    is what counts for a duplicate.
   no_poc_in_channels: >-
     Never post a proof of concept into Discord or Telegram. Use the private filing form; the thread
     is for the conversation, not the exploit.

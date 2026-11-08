@@ -17,10 +17,11 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from xe.keys import KeyError_, derive_address
@@ -325,9 +326,45 @@ async def file_ticket(ctx: Context, db: AsyncSession, r: Reporter, f: Filing) ->
     )
     if f.kind == "bounty" and r.xe_address:
         t.payout_address = r.xe_address
+    if f.kind == "bounty":
+        await queue_past_cap(ctx, db, r, t)
     for up in f.files:
         await save_attachment(ctx, db, t, up, actor=f"reporter:{r.id}")
     return t
+
+
+async def filed_today(db: AsyncSession, r: Reporter, *, before: Ticket | None = None) -> int:
+    """How many bounty reports this reporter filed in the last rolling day, not counting `before`."""
+    cut = utcnow() - timedelta(hours=24)
+    q = select(func.count()).select_from(Ticket).where(
+        Ticket.reporter_id == r.id, Ticket.kind == "bounty", Ticket.created_at >= cut
+    )
+    if before is not None:
+        q = q.where(Ticket.id != before.id)
+    return int((await db.execute(q)).scalar_one())
+
+
+async def queue_past_cap(ctx: Context, db: AsyncSession, r: Reporter, t: Ticket) -> bool:
+    """Mark `t` queued when the reporter has already filed `intake.daily_cap` reports in the last day.
+    The report is kept whole; it sorts after everything else and the reporter is told the earlier ones
+    are read first. A scanner filing forty probes in a morning stops costing the queue; one account
+    filing its tenth real finding of the day is not refused anything."""
+    cap = ctx.config.daily_cap
+    if not cap:
+        return False
+    n = await filed_today(db, r, before=t)
+    if n < cap:
+        return False
+    t.queued = True
+    await ctx.events.append(
+        db,
+        "ticket.queued",
+        f"reporter:{r.id}",
+        {"ticket": t.id, "filed_today": n + 1, "cap": cap},
+        ref=t.id,
+        public=False,
+    )
+    return True
 
 
 # ---- attachments ------------------------------------------------------------------------------------
@@ -492,6 +529,41 @@ async def reply(ctx: Context, db: AsyncSession, r: Reporter, t: Ticket, body: st
         )
     t.updated_at = utcnow()
     return m
+
+
+async def records(db: AsyncSession, ids: set[int]) -> dict[int, dict]:
+    """What the desk knows about each reporter's filings, for the ticket page and the triage row: how many
+    filed, how many ruled real or duplicate or noise, how many awarded, how many still unread, how many
+    in the last day. A reviewer reads a tenth report from an account differently from a first."""
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    real = Ticket.verdict.in_(("valid", "likely-valid"))
+    noise = Ticket.verdict.in_(("invalid", "notice", "support", "out-of-scope"))
+    cut = utcnow() - timedelta(hours=24)
+    one = lambda cond: func.sum(case((cond, 1), else_=0))  # noqa: E731
+    q = (
+        select(
+            Ticket.reporter_id,
+            func.count(),
+            one(real),
+            one(Ticket.verdict == "duplicate"),
+            one(noise),
+            one(Ticket.status.in_(("awarded", "paid"))),
+            one(Ticket.status == "new"),
+            one(Ticket.created_at >= cut),
+            one(Ticket.queued.is_(True)),
+        )
+        .where(Ticket.reporter_id.in_(ids), Ticket.kind == "bounty")
+        .group_by(Ticket.reporter_id)
+    )
+    out: dict[int, dict] = {}
+    for rid, n, real_n, dup, noise_n, awarded, unread, day, queued in (await db.execute(q)).all():
+        out[rid] = {
+            "filed": int(n), "real": int(real_n), "duplicate": int(dup), "noise": int(noise_n),
+            "awarded": int(awarded), "unread": int(unread), "today": int(day), "queued": int(queued),
+        }
+    return out
 
 
 def to_dict(r: Reporter) -> dict:

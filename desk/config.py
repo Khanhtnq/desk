@@ -57,6 +57,11 @@ class Config:
             return "—"
         return str((self.tiers.get(tier) or {}).get("label") or tier)
 
+    @property
+    def daily_cap(self) -> int:
+        """Reports one reporter may file in a rolling day before the rest are queued; 0 disables."""
+        return int((self.desk.get("intake") or {}).get("daily_cap") or 0)
+
     def ceiling_micro(self, tier: str | None) -> int:
         xe = (self.tiers.get(tier or "") or {}).get("ceiling_xe") or 0
         return int(xe) * 1_000_000

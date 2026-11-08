@@ -268,6 +268,7 @@ class Filters:
     pending: bool | None = None  # has pending proposals
     q: str | None = None
     reporter: int | None = None  # team and agents: everything one reporter has filed
+    queued: bool | None = None  # past the reporter's daily cap when filed
     sort: str = "severity"  # severity | age | updated
     offset: int = 0
     limit: int = 100
@@ -322,6 +323,8 @@ def _filtered(cfg: Config, p: Principal, f: Filters):
         q = q.where(match)
     if f.reporter is not None and full:
         q = q.where(Ticket.reporter_id == f.reporter)
+    if f.queued is not None and full:
+        q = q.where(Ticket.queued.is_(f.queued))
     return q
 
 
@@ -334,12 +337,15 @@ async def count_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters)
 async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) -> list[Ticket]:
     q = _filtered(cfg, p, f)
     full = sees_assessment(p)
+    # queued reports (past their reporter's daily cap) come after everything else in every order but
+    # "updated"; a scanner's fortieth probe never sits above another account's first report
     if f.sort == "age":
-        q = q.order_by(func.coalesce(Ticket.source_created_at, Ticket.created_at).asc())
+        q = q.order_by(Ticket.queued.asc(), func.coalesce(Ticket.source_created_at, Ticket.created_at).asc())
     elif f.sort == "updated":
         q = q.order_by(Ticket.updated_at.desc())
     else:
         q = q.order_by(
+            Ticket.queued.asc(),
             _rank(cfg, Ticket.assessed_tier if full else _shown_tier_col()),
             _rank(cfg, Ticket.claimed_tier),
             func.coalesce(Ticket.source_created_at, Ticket.created_at).asc(),
@@ -727,6 +733,7 @@ async def set_status(
     t.status = status
     t.closed_reason = closed_reason if status == "closed" else None
     t.status_changed_at = utcnow()
+    t.queued = False  # a person (or the tracker) has reached it; the queue mark has done its job
     if status == "disclosed" and t.disclosed_at is None:
         t.disclosed_at = utcnow()
     if status == "disclosed" and t.visibility == "private":
@@ -950,6 +957,8 @@ def to_dict(ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False) -
         "status_changed_at": _iso(t.status_changed_at),
         "url": ticket_url(ctx, t),
     }
+    if full or (p.reporter_id and p.reporter_id == t.reporter_id):
+        d["queued"] = t.queued  # the account's own pace is between it and the desk
     if full:
         d["draft"] = t.draft
         d["mainnet_gate"] = t.mainnet_gate

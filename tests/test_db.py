@@ -1055,6 +1055,47 @@ async def test_critical_claim_forces_private(ctx, db):
     assert t.visibility == "private"
 
 
+async def test_a_reporter_past_the_daily_cap_is_queued_not_refused(ctx, db):
+    cap = ctx.config.daily_cap
+    assert cap >= 2
+    r = await rsvc.from_email(ctx, db, "flood@example.org", link_to=None)
+    other = await rsvc.from_email(ctx, db, "once@example.org", link_to=None)
+    team = await _team(ctx, db)
+    body = "What I did, what happened, what I expected; enough words to pass the body check."
+    filed = []
+    for i in range(cap + 2):
+        f = rsvc.Filing(kind="bounty", title=f"probe number {i} abcdef", body=body, claimed_tier="medium")
+        filed.append(await rsvc.file_ticket(ctx, db, r, f))
+    assert [t.queued for t in filed] == [False] * cap + [True, True], "the first `cap` are read first"
+    # support questions are not capped, and one account's flood does not touch another's first report
+    ask = rsvc.Filing(kind="support", title="how do I run a node", body=body)
+    q = await rsvc.file_ticket(ctx, db, r, ask)
+    first = rsvc.Filing(kind="bounty", title="a real finding", body=body)
+    one = await rsvc.file_ticket(ctx, db, other, first)
+    assert not q.queued and not one.queued
+    # queued reports sort after everything else, in both orders, and can be filtered out
+    ids = [t.id for t in await tsvc.list_tickets(db, ctx.config, team, tsvc.Filters(sort="age", limit=500))]
+    assert ids[-2:] == [filed[-2].id, filed[-1].id] and ids.index(one.id) < ids.index(filed[-2].id)
+    by_sev = [t.id for t in await tsvc.list_tickets(db, ctx.config, team, tsvc.Filters(limit=500))]
+    assert by_sev[-2:] == [filed[-2].id, filed[-1].id]
+    unqueued = await tsvc.list_tickets(db, ctx.config, team, tsvc.Filters(queued=False, limit=500))
+    assert filed[-1].id not in {t.id for t in unqueued} and one.id in {t.id for t in unqueued}
+    # the record a reviewer sees beside the name
+    rec = (await rsvc.records(db, {r.id, other.id}))
+    assert rec[r.id]["filed"] == cap + 2 and rec[r.id]["queued"] == 2 and rec[r.id]["today"] == cap + 2
+    assert rec[other.id] == {
+        "filed": 1, "real": 0, "duplicate": 0, "noise": 0, "awarded": 0, "unread": 1, "today": 1, "queued": 0
+    }
+    # a person reaching the ticket clears the mark; the reporter sees it was read in turn
+    await tsvc.set_status(ctx, db, team, filed[-1], "triaging")
+    assert filed[-1].queued is False
+    assert tsvc.to_dict(ctx, filed[-2], team)["queued"] is True
+    assert "queued" not in tsvc.to_dict(ctx, filed[-2], authz.ANON), "an account's pace is not public"
+    as_r = authz.Principal(kind="reporter", reporter_id=r.id)
+    assert tsvc.to_dict(ctx, filed[-2], as_r)["queued"] is True
+    assert any(e.kind == "ticket.queued" for e in await EventLog.page(db, 0, 50, ref=filed[-2].id))
+
+
 async def test_reporter_withdraws_and_replies(ctx, db):
     r = await rsvc.from_email(ctx, db, "carol@example.org", link_to=None)
     team = await _team(ctx, db)

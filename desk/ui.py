@@ -213,6 +213,8 @@ async def home(
     tier: str | None = None,
     verdict: str | None = None,
     pending: bool | None = None,
+    reporter: int | None = None,
+    queued: bool | None = None,
     q: str | None = None,
     sort: str | None = None,
 ):
@@ -233,6 +235,8 @@ async def home(
             tier=tier,
             verdict=verdict,
             pending=pending,
+            reporter=reporter if p.is_team else None,  # who filed what is the team's view, not the room's
+            queued=queued if p.is_team else None,
             q=q,
             sort=sort,
             limit=300,
@@ -604,6 +608,7 @@ async def triage(request: Request):
             r.id: r
             for r in (await db.execute(select(Reporter).where(Reporter.id.in_(rids)))).scalars().all()
         } if rids else {}
+        records = await rsvc.records(db, rids) if rids else {}
     families: dict[str, list] = {}
     if view == "duplicates":
         for r in rows:
@@ -643,6 +648,7 @@ async def triage(request: Request):
             "reporter": reporter,
             "owners": owners,
             "reporters": reporters,
+            "records": records,
             "can_tier": can_tier,
             "can_award": can_award,
             "adoptable": adoptable,
@@ -701,6 +707,10 @@ async def ticket_page(request: Request, tid: str):
             if t.reporter_id
             else None
         )
+        # the reporter's record beside their name: a tenth report in a day reads differently from a first
+        record = None
+        if reporter and p.is_team:
+            record = (await rsvc.records(db, {t.reporter_id})).get(t.reporter_id)
         me = getattr(request.state, "reporter", None)
         mine = rsvc.owns(me, t)
         attachments = await rsvc.attachments_for(db, t) if (p.is_team or mine) else []
@@ -744,6 +754,7 @@ async def ticket_page(request: Request, tid: str):
             "team_users": team_users,
             "owners": owners,
             "reporter": reporter,
+            "record": record,
             "reporters": reporters,
             "mine": mine,
             "attachments": attachments,

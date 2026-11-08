@@ -122,6 +122,7 @@ def test_agent_brief_carries_every_vocabulary(config):
     assert "## Suggesting an award" in txt and "**Award:**" in txt and "### `award_xe`" in txt
     assert "`award_xe`" in txt.split("## Proposals")[1]
     assert "never appears in a reply draft" in txt
+    assert "`queued: true`" in txt and "`queued=false`" in txt  # read them last, not never
     # the amount is a step of the ceiling, the same rule for every reporter, with the figures worked out
     award = txt.split("## Suggesting an award")[1].split("## ")[0]
     for k in config.award_steps:

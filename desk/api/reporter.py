@@ -405,7 +405,7 @@ async def file_ticket(
             notify = await _email_link(ctx, db, who, rsvc.clean_email(notify_email), _safe_next(ctx, url))
         except HTTPException:
             notify = False  # a bad address never costs the filing
-    return {"ticket": t.id, "url": url, "visibility": t.visibility, "notify_sent": notify}
+    return {"ticket": t.id, "url": url, "visibility": t.visibility, "notify_sent": notify, "queued": t.queued}
 
 
 class TextIn(BaseModel):

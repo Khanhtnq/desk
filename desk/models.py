@@ -370,6 +370,9 @@ class Ticket(Base):
     # The reply the team is composing: an adopted agent draft waits here until a reply is sent, so a
     # refresh or a second reviewer finds it in the editor. Team-only; never shown outside the full view.
     draft: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Past the reporter's daily cap when filed: kept, read after everything else, cleared when a person
+    # moves it. The reporter sees it; it is not a judgement on the report.
+    queued: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     told_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )  # status told publicly
