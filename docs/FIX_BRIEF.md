@@ -4,6 +4,8 @@ How a bounty report becomes a fix. For whoever picks up the engineering ticket, 
 
 The desk serves this at `https://bounty.xe.network/fix` (markdown at `/v1/agent/fix.md`), and it is linked from `/llms.txt` and the agent brief. The engineering repos point at it from `AGENTS.md` and the bounty-fix issue template; the files to drop in are in [`repo-kit/`](repo-kit/).
 
+It binds every part of the platform: the node (`core`), the DAO harness, the SDK, the sites, and this desk. Where a repository lands changes without pull requests, the commit message carries the three lines of §2 and the sweep result of §5. A fix that skips them is not deployed, whoever or whatever wrote it. The day the desk fixed sixty-seven reports in one commit without a sweep, the next morning's intake carried a dozen follow-ups on those fixes; the sweep is cheaper than that.
+
 ## 1. The one rule
 
 A report names a path. The bug is a rule the code broke, and the path is one place it broke it. The fix closes the rule, not the path. `patched` means there is nothing left in that class for the next report to find.
