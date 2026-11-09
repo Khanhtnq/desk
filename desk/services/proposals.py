@@ -440,7 +440,7 @@ def proposed_tier(t: Ticket, prs: list[Proposal]) -> str | None:
 
 
 class TriageRow:
-    __slots__ = ("ticket", "proposals", "views", "tier", "note", "canonical", "mine", "klass")
+    __slots__ = ("ticket", "proposals", "views", "tier", "note", "canonical", "mine", "klass", "reply")
 
     def __init__(self, t: Ticket, prs: list[Proposal]):
         self.ticket = t
@@ -451,6 +451,7 @@ class TriageRow:
         self.canonical: Ticket | None = None
         self.mine: list[int] = []  # the proposal ids the viewer's roles let them adopt; set by the page
         self.klass: list[Ticket] = []  # the other reports on the same engineering ticket
+        self.reply: str | None = None  # "sends" | "review" | None: what adopting does with its reply draft
 
     @property
     def duplicate_of(self) -> str | None:

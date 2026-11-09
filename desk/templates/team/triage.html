@@ -24,7 +24,7 @@
 {% set t = r.ticket %}
 {% set ids = r.proposals|map(attribute="id")|list %}
 {% set mine = r.mine %}
-<tr class="trow" data-ticket="{{ t.id }}" data-ids='{{ mine|tojson }}' data-all='{{ ids|tojson }}'>
+<tr class="trow" data-ticket="{{ t.id }}" data-ids='{{ mine|tojson }}' data-all='{{ ids|tojson }}' data-reply="{{ r.reply or '' }}">
   <td class="n">{{ m.tlink(t) }}{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}<div class="k" style="margin-top:4px">{{ m.status(t) }}</div></td>
   <td class="title">
     <a href="/{{ t.id }}">{{ t.title }}</a>
@@ -72,8 +72,8 @@
 {% if rows %}
 <div class="row" style="margin:0 0 16px">
   <button class="mini" id="adopt-shown" type="button">Adopt everything shown ({{ rows|length|n }} tickets)</button>
-  {% if reply != 'sends' and reply_counts.sends %}<a class="button mini ghost" href="{{ flt('reply', 'sends') }}">Only the {{ reply_counts.sends|n }} whose reply sends</a>{% elif reply == 'sends' %}<a class="button mini ghost" href="{{ flt('reply', 'sends') }}">Show all again</a>{% endif %}
-  <span class="k">Writes every unlocked proposal on this page; plain acknowledgements are sent, reply drafts marked review wait on their tickets. Skipped ones are listed afterwards.</span>
+  {% if reply != 'sends' and reply_counts.sends %}<button class="ghost mini" id="adopt-sending" type="button">Adopt the {{ reply_counts.sends|n }} whose reply sends</button>{% elif reply == 'sends' %}<a class="button mini ghost" href="{{ flt('reply', 'sends') }}">Show all again</a>{% endif %}
+  <span class="k">Adopt everything writes every unlocked proposal on this page; plain acknowledgements are sent, reply drafts marked review wait on their tickets. The second button takes only the rows whose reply goes out, so every reporter in that set is told. Skipped ones are listed afterwards.</span>
 </div>
 {% endif %}
 <div id="triage-msg" class="msg" style="display:none"></div>

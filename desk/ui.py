@@ -658,6 +658,7 @@ async def triage(request: Request):
             families = {k: v for k, v in families.items() if v}
     for r in rows:
         r.mine = [pr.id for pr in r.proposals if adoptable(pr)]
+        r.reply = reply_kind(r)
     total_xe = sum(
         int(pr.value.get("value") or 0) for r in rows for pr in r.proposals if pr.field == "award_xe"
     )
