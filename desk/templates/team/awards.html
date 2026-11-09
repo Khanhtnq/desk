@@ -42,9 +42,12 @@
 </table>
 
 <h2 style="margin-top:40px">Needs a number</h2>
-<p class="sub">Valid reports without an amount, and amounts set on tickets whose fix has not landed yet.</p>
+<p class="sub">Valid reports without an amount, and amounts set on tickets whose fix has not landed yet. An award is a step of the tier's ceiling ({% for k, st in steps.items() %}{{ st.label|lower }} {{ (st.share * 100)|int }}%{{ ", " if not loop.last }}{% endfor %}); the agents propose on the same steps.</p>
+{% if can_award and unset_ids %}
+<div class="row" style="margin:16px 0"><button class="mini" id="fill-awards" type="button" data-tickets='{{ unset_ids|tojson }}'>Fill the {{ unset_ids|length|n }} missing {{ "amount" if unset_ids|length == 1 else "amounts" }}</button><label class="k" style="margin-left:12px">at the <select id="fill-step">{% for k, st in steps.items() %}<option value="{{ k }}" {{ "selected" if k == "standard" }}>{{ st.label|lower }}</option>{% endfor %}</select> step where no agent has proposed one.</label><span class="k" style="margin-left:12px">A proposed amount is adopted as it stands; the rest take the step of their tier. Nothing is approved; change any row after.</span></div>
+{% endif %}
 {% if can_award and pending %}
-<div class="row" style="margin:16px 0"><button class="mini" id="adopt-all-awards" type="button">Adopt every proposed amount ({{ pending|length|n }})</button><span class="k" style="margin-left:12px">Sets the newest proposal on each ticket. Nothing is approved.</span></div>
+<div class="row" style="margin:16px 0"><button class="mini ghost" id="adopt-all-awards" type="button">Adopt every proposed amount ({{ pending|length|n }})</button><span class="k" style="margin-left:12px">Sets the newest proposal on each ticket, including on rows that already have a number. Nothing is approved.</span></div>
 {% endif %}
 <table class="tickets">
 <thead><tr><th>#</th><th>Finding</th><th>Status</th><th>Tier · ceiling</th><th>Reporter</th><th>Proposed</th><th>Award</th></tr></thead>
@@ -66,7 +69,7 @@
   </td>
   <td class="mono">
     {% if t.award_xe is not none %}<b>{{ t.award_xe|xe }} XE</b> {% if t.award_approved_at %}<span class="pill paid">approved</span>{% else %}<span class="pill pending">set</span>{% endif %}
-    {% elif can_award %}<div class="row"><input type="number" min="0" step="1" placeholder="XE" data-award-input="{{ t.id }}" style="max-width:110px"><button type="button" class="ghost mini" data-set-award="{{ t.id }}">Set</button></div>
+    {% elif can_award %}<div class="row"><input type="number" min="0" step="1" placeholder="XE" data-award-input="{{ t.id }}" style="max-width:110px"><button type="button" class="ghost mini" data-set-award="{{ t.id }}">Set</button></div>{% if t.assessed_tier and cfg.ceiling_micro(t.assessed_tier) %}<span class="k">{% for k, st in steps.items() %}{{ st.label|lower }} {{ "{:,}".format(cfg.award_xe(t.assessed_tier, k, t.area)) }}{{ " · " if not loop.last }}{% endfor %}</span>{% endif %}
     {% else %}—{% endif %}
   </td>
 </tr>

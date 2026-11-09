@@ -1031,10 +1031,18 @@ def award_approvable(t: Ticket) -> str | None:
 
 
 async def set_award(
-    ctx: Context, db: AsyncSession, p: Principal, t: Ticket, award_xe: int | None, *, approve: bool | None = None
+    ctx: Context,
+    db: AsyncSession,
+    p: Principal,
+    t: Ticket,
+    award_xe: int | None,
+    *,
+    approve: bool | None = None,
+    step: str | None = None,
 ) -> None:
     """Set the amount, approve it, or take approval back. `approve` None leaves approval as it is; True
-    needs a set amount on a patched or disclosed ticket; False clears it (the amount stays)."""
+    needs a set amount on a patched or disclosed ticket; False clears it (the amount stays). `step` names
+    the award step the amount was taken from, when it was, so the log reads as a rule applied."""
     await lock(db, t)
     if award_xe is not None:
         if award_xe < 0:
@@ -1068,6 +1076,7 @@ async def set_award(
             "award_xe": t.award_xe,
             "approved": bool(t.award_approved_at),
             "tier": t.assessed_tier,
+            **({"step": step} if step else {}),
         },
         ref=t.id,
         public=t.visibility == "public",

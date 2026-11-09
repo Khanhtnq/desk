@@ -515,6 +515,17 @@
         flash(settleLine(r)); reload();
       } catch (e) { say(amsg, e.message, false); }
     });
+    if ($("#fill-awards")) $("#fill-awards").addEventListener("click", async () => {
+      const ids = JSON.parse($("#fill-awards").dataset.tickets || "[]"), step = $("#fill-step").value;
+      if (!ids.length || !await ask({ title: `Fill ${num(ids.length)} missing ${ids.length === 1 ? "amount" : "amounts"}?`, body: `Where an agent has proposed an amount it is adopted as it stands; the rest are set at the ${step} step of their tier's ceiling. Each is recorded against you as set, not approved; a ticket without a tier is left blank and listed afterwards.`, ok: `Fill ${num(ids.length)}` })) return;
+      try {
+        const r = await api("POST", "/v1/team/awards/fill", { tickets: ids, step });
+        const n = (r.filled || []).length, from = (r.filled || []).filter(f => f.from.startsWith("proposal")).length;
+        const line = n ? `Set ${num(n)} ${n === 1 ? "amount" : "amounts"}${from ? ` (${num(from)} from proposals)` : ""}; none approved.` : "Nothing set.";
+        await reportSkipped(r, line);
+        flash(line); reload();
+      } catch (e) { say(amsg, e.message, false); }
+    });
     if ($("#adopt-all-awards")) $("#adopt-all-awards").addEventListener("click", async () => {
       const ids = $$("[data-adopt-award]:not([disabled])").map(b => parseInt(b.dataset.adoptAward, 10));
       if (!ids.length || !await ask({ title: `Set ${num(ids.length)} awards from the proposed amounts?`, body: "Each amount is recorded against you in the log as set, not approved. Approve them one by one on the tickets when you have read the reasons.", ok: "Set all" })) return;

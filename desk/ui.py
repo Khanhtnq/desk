@@ -575,6 +575,8 @@ async def awards(request: Request):
             "total_proposed": total_proposed,
             "total_set": total_set,
             "unset": sum(1 for t in rows if t.award_xe is None),
+            "unset_ids": [t.id for t in rows if t.award_xe is None],
+            "steps": c.config.award_steps,
             "unapproved": sum(1 for t in rows if t.award_xe is not None and not t.award_approved_at),
             "approved": [(t, *tsvc.award_next_step(t)) for t in approved],
             "can_status": can(p, "status"),

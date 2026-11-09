@@ -18,7 +18,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..authz import Principal, can, require, require_field
+from ..authz import Principal, can, can_see, require, require_field
 from ..config import Config
 from ..context import Context
 from ..models import PROPOSAL_FIELDS, AgentToken, Note, Proposal, Ticket
@@ -100,6 +100,52 @@ async def pending_field_for(db: AsyncSession, ticket_ids: list[str], field: str)
     for pr in (await db.execute(q)).scalars().all():
         out.setdefault(pr.ticket_id, []).append(pr)
     return out
+
+
+async def fill_awards(ctx: Context, db: AsyncSession, p: Principal, ids: list[str], step: str) -> dict:
+    """Give every listed ticket that has no amount one, from the awards page in one click. Where an agent
+    has proposed an amount the newest pending proposal is adopted through `decide`, so the log shows the
+    adoption and the agent's reason; where none has, the amount is the named step of the tier's ceiling
+    from `award_steps` in config, the same figure the agents are told to propose. Nothing is approved.
+    Each ticket is its own savepoint: one the desk refuses is reported under `skipped` and left as it
+    was. A ticket that already has an amount is left alone; this fills blanks, it does not revise."""
+    if step not in ctx.config.award_steps:
+        raise HTTPException(400, f"step must be one of {list(ctx.config.award_steps)}")
+    filled: list[dict] = []
+    skipped: list[dict] = []
+    pending = await pending_field_for(db, ids, "award_xe")
+    # ids read up front: a savepoint rollback later in the loop may expire a row (XE-0862)
+    newest = {tid: (prs[0], prs[0].id) for tid, prs in pending.items() if prs}
+    for tid in ids:
+        t = await tsvc.get(db, tid)
+        if t is None or not can_see(p, t):
+            skipped.append({"ticket": tid, "why": "no such ticket"})
+            continue
+        if t.award_xe is not None:
+            skipped.append({"ticket": tid, "why": "already has an amount"})
+            continue
+        try:
+            async with db.begin_nested():
+                if tid in newest:
+                    pr, pid = newest[tid]
+                    out = await decide(ctx, db, p, pr, True)
+                    filled.append({"ticket": tid, "award_xe": out["award_xe"], "from": f"proposal #{pid}"})
+                    continue
+                require(p, "award", t)
+                if not ctx.config.ceiling_micro(t.assessed_tier):
+                    raise HTTPException(
+                        409, "an award needs an assessed tier first; set the tier, then the amount"
+                    )
+                xe = ctx.config.award_xe(t.assessed_tier, step, t.area)
+                if not xe:
+                    raise HTTPException(
+                        409, f"the {step} step of {t.assessed_tier} rounds to nothing; set it by hand"
+                    )
+                await tsvc.set_award(ctx, db, p, t, xe * 1_000_000, step=step)
+                filled.append({"ticket": tid, "award_xe": xe * 1_000_000, "from": f"{step} step"})
+        except HTTPException as e:
+            skipped.append({"ticket": tid, "why": str(e.detail)})
+    return {"filled": filled, "skipped": skipped}
 
 
 async def pending_for(db: AsyncSession, t: Ticket) -> list[Proposal]:

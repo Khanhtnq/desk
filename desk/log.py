@@ -304,7 +304,7 @@ HELD_PAYLOAD_KEYS = {
     "proposal.adopted": frozenset({"reason"}),
     "proposal.rejected": frozenset({"reason"}),
     "ticket.internal_predates": frozenset({"internal_ref"}),
-    "ticket.award": frozenset({"tier"}),
+    "ticket.award": frozenset({"tier", "step"}),  # a step and an amount give the tier away
 }
 
 # What a reporter is shown of their own private ticket's log: the record of what happened to it, not the

@@ -195,6 +195,20 @@ class SettleIn(BaseModel):
     tickets: list[str] = Field(min_length=1, max_length=500)
 
 
+class FillIn(SettleIn):
+    step: str = Field(default="standard", max_length=16)
+
+
+@router.post("/awards/fill")
+async def fill_awards(ctx: Ctx, db: Db, who: Who, request: Request, body: FillIn):
+    """Give every listed ticket without an amount one: its newest pending award proposal, adopted, or
+    the named step of its tier's ceiling. Nothing is approved. Refused ones are listed under `skipped`."""
+    _team(who, request)
+    out = await psvc.fill_awards(ctx, db, who.principal, body.tickets, body.step)
+    await db.commit()
+    return out
+
+
 @router.post("/tickets/{tid}/settle")
 async def settle(ctx: Ctx, db: Db, who: Who, request: Request, tid: str):
     """Approve the award, disclose a private report, mark it awarded: the three clicks after `patched`,

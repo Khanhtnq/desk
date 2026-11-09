@@ -32,7 +32,7 @@ from desk.canonical import DOMAIN_LOGIN, DOMAIN_PAYOUT
 from desk.config import load_config
 from desk.context import Context, NodeIdentity
 from desk.db import Base
-from desk.log import EventLog
+from desk.log import EventLog, public_payload
 from desk.models import AgentToken, Event, Note, Proposal, Reply, Ticket, User
 from desk.services import proposals as psvc
 from desk.services import channels
@@ -1746,6 +1746,69 @@ async def test_settling_walks_a_patched_report_to_awarded_through_the_same_paths
     # settled once, there is nothing to settle again
     with pytest.raises(HTTPException):
         await tsvc.settle(ctx, db, team, pub)
+
+
+async def test_filling_missing_awards_adopts_a_proposal_or_takes_the_step(ctx, db):
+    # the rule: a blank amount is filled from the agent's proposal where there is one, else from the
+    # named step of the tier's ceiling; an amount already set is never touched; nothing is approved
+    team = await _team(ctx, db)
+    reviewer = await _team(ctx, db, roles=("reviewer",), email="rev2@xe.network")
+    agent = await _agent(ctx, db, team.user)
+
+    async def mk(title, tier="medium", area=None, visibility="public"):
+        spec = tsvc.NewTicket(kind="bounty", title=title, body="b", visibility=visibility, source="web")
+        t = await tsvc.create(ctx, db, team.actor, spec)
+        for st in ("triaging", "accepted", "patched"):
+            await tsvc.set_status(ctx, db, team, t, st)
+        t.assessed_tier = tier
+        t.area = area
+        return t
+
+    proposed = await mk("agent proposed")
+    why_500 = "reduced: the team found the root cause"
+    pr = await psvc.propose(ctx, db, agent, proposed, "award_xe", 500, why_500)
+    bare = await mk("no proposal")
+    other = await mk("desk finding", tier="minor", area="other")  # a quarter of the step, 50-grain
+    notier = await mk("no tier", tier=None)
+    taken = await mk("already set")
+    await tsvc.set_award(ctx, db, team, taken, 1_000_000)
+    hidden = await mk("private, unseen by a reviewer", visibility="private")
+    await db.commit()
+
+    standard = ctx.config.award_xe("medium", "standard")
+    assert standard == 850 and ctx.config.award_xe("minor", "standard", "other") == 50
+    with pytest.raises(HTTPException):
+        await psvc.fill_awards(ctx, db, team, [bare.id], "generous")
+    # a reviewer has no award role: nothing is filled, each is reported, none raised
+    out = await psvc.fill_awards(ctx, db, reviewer, [bare.id, proposed.id], "standard")
+    assert out["filled"] == [] and len(out["skipped"]) == 2
+
+    ids = [proposed.id, bare.id, other.id, notier.id, taken.id, hidden.id]
+    out = await psvc.fill_awards(ctx, db, team, ids + ["XE-9999"], "standard")
+    got = {f["ticket"]: (f["award_xe"], f["from"]) for f in out["filled"]}
+    assert got == {
+        proposed.id: (500_000_000, f"proposal #{pr.id}"),
+        bare.id: (standard * 1_000_000, "standard step"),
+        other.id: (50_000_000, "standard step"),
+        hidden.id: (standard * 1_000_000, "standard step"),
+    }
+    why = {s["ticket"]: s["why"] for s in out["skipped"]}
+    assert "assessed tier" in why[notier.id] and why[taken.id] == "already has an amount"
+    assert why["XE-9999"] == "no such ticket"
+    for t in (proposed, bare, other, notier, taken, hidden):
+        await db.refresh(t)
+    assert (taken.award_xe, notier.award_xe) == (1_000_000, None)
+    assert all(t.award_approved_at is None for t in (proposed, bare, other, taken, hidden))
+    await db.refresh(pr)
+    assert pr.state == "adopted"
+    # the step is on the record for the team and held from the public log with the tier
+    evs = [e for e in await EventLog.page(db, 0, 20, ref=bare.id) if e.kind == "ticket.award"]
+    assert evs and evs[0].payload["step"] == "standard"
+    assert "step" not in public_payload("ticket.award", evs[0].payload)
+    # a second pass finds nothing blank
+    again = await psvc.fill_awards(ctx, db, team, ids, "standard")
+    assert again["filled"] == [] and all(s["why"] == "already has an amount" for s in again["skipped"]
+                                         if s["ticket"] != notier.id)
 
 
 async def test_payout_file_lists_only_awarded_tickets(ctx, db):
