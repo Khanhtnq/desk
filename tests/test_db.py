@@ -13,7 +13,9 @@ docs/DEPLOY.md):
     app sh -c "pip install -q pytest pytest-asyncio && pytest -q tests/test_db.py"
 """
 
+import asyncio
 import hashlib
+import json
 import os
 import time
 from collections import Counter
@@ -419,6 +421,62 @@ async def test_private_history_leaves_the_public_log_and_replies_seal(ctx, db):
     assert await EventLog.served_public(db, created) is True
     # the chain still verifies: nothing was rewritten
     assert (await EventLog.verify(db))["ok"]
+
+
+async def test_the_live_stream_serves_only_what_the_log_read_path_serves(ctx, db, monkeypatch):
+    """The rule: an event reaches a reader outside the team only through the log's one read path (stored
+    flag, admin kinds, the ticket's visibility now). The SSE stream used to trust the stored flag on the
+    live branch (XE-1884, XE-1641, XE-1645); now replay and live both read back through `since`."""
+    from contextlib import asynccontextmanager
+
+    from desk.api import public as pub
+
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def _session():
+        async with sm() as s:
+            yield s
+
+    monkeypatch.setattr(pub, "session", _session)
+    monkeypatch.setattr(pub, "STREAM_IDLE_S", 0.1)
+    team = await _team(ctx, db)
+    t, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(81, "goes private live", body="b"))
+    await db.commit()
+    head = (await EventLog.head(db)).index
+
+    calls = {"n": 0}
+
+    class Req:
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            calls["n"] += 1
+            return calls["n"] > 2  # one read before the wait, one after the wake-up, then gone
+
+    who = type("W", (), {"principal": authz.ANON})()
+    resp = await pub.events_stream(ctx, Req(), who, since=None)
+    gen = resp.body_iterator
+    got: list[dict] = []
+
+    async def consume():
+        async for item in gen:
+            got.append(item)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.05)  # the stream is now waiting on its wake-up
+    # three live events: a public row on a ticket that is private now, an admin row, and ticket.sealed
+    await tsvc.set_facts(ctx, db, team, t, {"visibility": "private"})
+    await users.create_user(ctx, db, "test", "late@xe.network", "Late", ["reviewer"])
+    await db.commit()
+    await asyncio.wait_for(task, 5)
+    served = [json.loads(i["data"]) for i in got if i.get("event") == "entry"]
+    assert all(e["index"] > head for e in served)
+    assert [e["kind"] for e in served] == ["ticket.sealed"]
+    assert all(not e["kind"].startswith(("user.", "team.", "token.")) for e in served)
+    # the same rows through the other public read paths agree
+    assert [e.kind for e in await EventLog.since(db, head, 100)] == ["ticket.sealed"]
+    assert pub._event_id("--") is None and pub._event_id("²") is None and pub._event_id("7") == 7
 
 
 async def test_held_facts_stay_out_of_public_payloads(ctx, db):

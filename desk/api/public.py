@@ -285,6 +285,9 @@ async def events_since(db: Db, who: Who, since: int = -1, limit: int = Query(200
     return {"events": [_ev(e, who) for e in rows], "next": rows[-1].index if rows else since}
 
 
+STREAM_IDLE_S = 15  # a ping, and a re-read of the log, at least this often
+
+
 @router.get("/events/stream")
 async def events_stream(ctx: Ctx, request: Request, who: Who, since: int | None = None):
     """Server-sent events, one `entry` per log event. `since` (or Last-Event-ID) replays from an index."""
@@ -292,51 +295,53 @@ async def events_stream(ctx: Ctx, request: Request, who: Who, since: int | None 
     full = who.principal.is_team
     start = since
     if start is None:
-        hdr = request.headers.get("last-event-id")
-        start = int(hdr) if hdr and hdr.lstrip("-").isdigit() else None
+        start = _event_id(request.headers.get("last-event-id"))
 
     async def gen():
+        # Every row this stream serves is read back from the log through `EventLog.since`, replay and live
+        # alike, so the one read path (stored flag, admin kinds, the ticket's visibility now) is the only
+        # one. The in-process queue is a wake-up, not the data: a pushed row is not yet committed and
+        # carries none of the read rules (XE-0350 on the live branch).
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         last = start
-        async with session() as db:
-            if last is not None:
-                for ev in await EventLog.since(db, last, 1000, public_only=not private_ok):
-                    d = event_to_dict(ev, full=full)
-                    yield {"event": "entry", "id": str(ev.index), "data": json.dumps(d)}
-                    last = ev.index
-            else:
+        if last is None:
+            async with session() as db:
                 last = (await EventLog.head(db)).index
         ctx.events.subscribe(queue)
         try:
             while True:
                 if await request.is_disconnected():
                     return
+                async with session() as db:
+                    rows = await EventLog.since(db, last, 1000, public_only=not private_ok)
+                for ev in rows:
+                    last = ev.index
+                    yield {
+                        "event": "entry",
+                        "id": str(ev.index),
+                        "data": json.dumps(event_to_dict(ev, full=full)),
+                    }
+                if len(rows) == 1000:
+                    continue  # more to drain before waiting
                 try:
-                    ev = await asyncio.wait_for(queue.get(), timeout=15)
+                    await asyncio.wait_for(queue.get(), timeout=STREAM_IDLE_S)
+                    while not queue.empty():
+                        queue.get_nowait()
+                    await asyncio.sleep(0.2)  # the writer commits after it publishes
                 except asyncio.TimeoutError:
-                    # the worker writes to the same log from another process; catch up on its entries
-                    if last is not None:
-                        async with session() as db:
-                            for ev in await EventLog.since(db, last, 200, public_only=not private_ok):
-                                last = ev.index
-                                yield {
-                                    "event": "entry",
-                                    "id": str(ev.index),
-                                    "data": json.dumps(event_to_dict(ev, full=full)),
-                                }
                     yield {"event": "ping", "data": str(int(time.time()))}
-                    continue
-                d = ev if isinstance(ev, dict) else event_to_dict(ev, full=full)
-                if last is not None and d["index"] <= last:
-                    continue
-                if not d.get("public", True) and not private_ok:
-                    continue
-                last = d["index"]
-                yield {"event": "entry", "id": str(d["index"]), "data": json.dumps(d)}
         finally:
             ctx.events.unsubscribe(queue)
 
     return EventSourceResponse(gen())
+
+
+def _event_id(raw: str | None) -> int | None:
+    """A Last-Event-ID is a log index or nothing; anything else is nothing, not a 500."""
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 # ---- health -----------------------------------------------------------------------------------------
