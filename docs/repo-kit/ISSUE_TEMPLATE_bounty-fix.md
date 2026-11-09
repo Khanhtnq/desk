@@ -26,4 +26,4 @@ The brief: https://bounty.xe.network/fix
 
 **Sweep.** Before `patched`: who swept the tree with the rule in hand, at which commit, what they found. Findings that are gaps go into this ticket, not into a new public issue.
 
-**Fix.** One sentence; the pull request when it exists (`fixes xe#NN` in its description moves the reports).
+**Fix.** One sentence; the pull request when it exists. The PR says `Closes #NNN` (this ticket): the merge closes it, and the closed ticket moves the reports to `patched`. `fixes xe#NN` in a `core` PR does nothing; the desk reads `core` issues, not `core` PRs.
