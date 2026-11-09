@@ -391,10 +391,11 @@ async def me(ctx: Ctx, db: Db, who: Who):
     if who.reporter is None:
         return {"reporter": None}
     mine = await rsvc.my_tickets(db, who.reporter)
+    hidden = await tsvc.hidden_targets(db, who.principal, mine)
     return {
         "reporter": rsvc.to_dict(who.reporter),
         "csrf": who.csrf,
-        "tickets": [tsvc.to_dict(ctx, t, who.principal) for t in mine],
+        "tickets": [tsvc.to_dict(ctx, t, who.principal, hidden=hidden) for t in mine],
         "github_sign_in": bool(ctx.settings.github_oauth_client_id),
         "discord_sign_in": ctx.settings.discord_sign_in,
         "mail": bool(ctx.settings.smtp_host),

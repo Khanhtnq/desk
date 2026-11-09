@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
 from .. import __version__
-from ..authz import can, can_see
+from ..authz import can
 from ..db import session
 from ..log import REPORTER_KINDS, EventLog, event_to_dict
 from ..models import HealthCheck, SeenDelivery
@@ -133,9 +133,10 @@ async def list_tickets(
     ids = [t.id for t in rows]
     prs = await tsvc.patch_counts(db, ids)
     pend = await tsvc.pending_counts(db, ids) if who.principal.is_team or who.principal.is_agent else {}
+    hidden = await tsvc.hidden_targets(db, who.principal, rows)
     out = []
     for t in rows:
-        d = tsvc.to_dict(ctx, t, who.principal)
+        d = tsvc.to_dict(ctx, t, who.principal, hidden=hidden)
         d["patch_refs"] = prs.get(t.id, 0)
         if pend:
             d["pending_proposals"] = pend.get(t.id, 0)
@@ -153,14 +154,10 @@ async def ticket_counts(db: Db, who: Who, kind: str = "bounty"):
 async def get_ticket(ctx: Ctx, db: Db, who: Who, tid: str):
     p = who.principal
     t = await tsvc.get_for(db, p, tid)
-    d = tsvc.to_dict(ctx, t, p, with_body=True)
+    d = tsvc.to_dict(ctx, t, p, with_body=True, hidden=await tsvc.hidden_targets(db, p, [t]))
     if t.visibility == "private":
         await ctx.events.append(db, "ticket.read", p.actor, {"ticket": t.id}, ref=t.id, public=False)
         await db.commit()
-    if t.duplicate_of and not can(p, "read:private"):
-        dup = await tsvc.get(db, t.duplicate_of)
-        if dup is not None and not can_see(p, dup):
-            d["duplicate_of"] = None  # a private canonical is not named to one who cannot open it (XE-0799)
     d["patch_refs"] = [_patch(pr) for pr in await thread.patches_for(db, t)]
     d["thread"] = [_message(ctx, t, m) for m in await thread.messages_for(db, t)]
     if can(p, "read:notes", t):
@@ -184,7 +181,8 @@ async def get_similar(ctx: Ctx, db: Db, who: Who, tid: str, limit: int = Query(1
         await ctx.events.append(db, "ticket.read", p.actor, payload, ref=t.id, public=False)
         await db.commit()
     rows = await tsvc.similar(db, ctx.config, p, t, body=body, limit=limit)
-    return {"ticket": t.id, "similar": [tsvc.similar_dict(ctx, s, p, t) for s in rows]}
+    hidden = await tsvc.hidden_targets(db, p, [s.ticket for s in rows])
+    return {"ticket": t.id, "similar": [tsvc.similar_dict(ctx, s, p, t, hidden) for s in rows]}
 
 
 @router.get("/tickets/{tid}/thread")

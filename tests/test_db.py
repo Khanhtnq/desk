@@ -325,6 +325,19 @@ async def test_a_report_is_read_across_the_desk(ctx, db):
     with pytest.raises(HTTPException) as e:  # a public caller is refused the axis, not given the unfiltered set (XE-1560)
         await tsvc.list_tickets(db, ctx.config, authz.ANON, hers)
     assert e.value.status_code == 403
+    # a duplicate of a private ticket is not named to a reader who cannot open the target, on every
+    # serializer that carries duplicate_of (XE-0799): one helper decides, list, get and similar consult it
+    await tsvc.set_facts(ctx, db, p, c, {"duplicate_of": e.id})
+    rows_c = [c, b]
+    hidden = await tsvc.hidden_targets(db, authz.ANON, rows_c)
+    assert hidden == {e.id}
+    assert tsvc.to_dict(ctx, c, authz.ANON, hidden=hidden)["duplicate_of"] is None
+    assert tsvc.to_dict(ctx, b, authz.ANON, hidden=hidden)["duplicate_of"] == a.id  # a public target is named
+    sim_c = {s.ticket.id: s for s in await tsvc.similar(db, ctx.config, p, a)}
+    assert tsvc.similar_dict(ctx, sim_c[c.id], authz.ANON, a, hidden)["duplicate_of"] is None
+    assert await tsvc.hidden_targets(db, p, rows_c) == frozenset()  # the team is told
+    own = authz.Principal(kind="reporter", reporter_id=r2.id)
+    assert await tsvc.hidden_targets(db, own, rows_c) == frozenset()  # r2 filed e, and may know it
     # a page knows the size of the whole selection
     f = tsvc.Filters(status="all", limit=2)
     assert len(await tsvc.list_tickets(db, ctx.config, p, f)) == 2

@@ -75,7 +75,7 @@
 <tr>
   <td class="n">{{ m.tlink(t) }}{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}</td>
   <td class="title"><a href="/{{ 'bounty' if t.kind == 'bounty' else 'support' }}/{{ t.id }}">{{ t.title }}</a>
-    <span class="k">{% if t.verdict and shown %}{{ cfg.verdicts.get(t.verdict, t.verdict) }}{% endif %}{% if t.duplicate_of %} · dup of {{ t.duplicate_of }}{% endif %}{% if team and pend.get(t.id) %} · <span class="pill pending">{{ pend[t.id] }} pending</span>{% endif %}</span></td>
+    <span class="k">{% if t.verdict and shown %}{{ cfg.verdicts.get(t.verdict, t.verdict) }}{% endif %}{% if t.duplicate_of and t.duplicate_of not in hidden %} · dup of {{ t.duplicate_of }}{% endif %}{% if team and pend.get(t.id) %} · <span class="pill pending">{{ pend[t.id] }} pending</span>{% endif %}</span></td>
   <td>{{ m.status(t) }}{% if t.queued and team %} <span class="pill queued">{{ copy.labels.queued }}</span>{% endif %}</td>
   {% if kind == "bounty" %}
   <td>{% if t.assessed_tier and shown %}{{ m.tier(t.assessed_tier) }}{% elif t.claimed_tier %}<span class="k">claimed</span> {{ m.tier(t.claimed_tier) }}{% else %}—{% endif %}</td>

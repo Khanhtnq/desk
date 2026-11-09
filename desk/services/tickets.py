@@ -493,7 +493,24 @@ async def same_class(db: AsyncSession, p: Principal, refs: set[str]) -> dict[str
     return out
 
 
-def similar_dict(ctx: Context, s: Similar, p: Principal, t: Ticket) -> dict:
+async def hidden_targets(db: AsyncSession, p: Principal, tickets: list[Ticket]) -> frozenset[str]:
+    """The `duplicate_of` targets among these tickets that this reader may not be told exist: private
+    tickets the reader cannot open (XE-0799). One query for a whole list; every serializer and page that
+    names a duplicate target consults it, so no list can name what the ticket page would not."""
+    if can(p, "read:private"):
+        return frozenset()
+    refs = {t.duplicate_of for t in tickets if t.duplicate_of}
+    if not refs:
+        return frozenset()
+    q = select(Ticket.id).where(Ticket.id.in_(refs), Ticket.visibility == "private")
+    if p.reporter_id:
+        q = q.where(Ticket.reporter_id != p.reporter_id)  # a reporter may know their own
+    return frozenset((await db.execute(q)).scalars().all())
+
+
+def similar_dict(
+    ctx: Context, s: Similar, p: Principal, t: Ticket, hidden: frozenset[str] = frozenset()
+) -> dict:
     """A row of the similar list: enough to decide whether to open it, under the usual holding rules."""
     o = s.ticket
     d = {
@@ -503,7 +520,7 @@ def similar_dict(ctx: Context, s: Similar, p: Principal, t: Ticket) -> dict:
         "closed_reason": o.closed_reason,
         "area": o.area,
         "claimed_tier": o.claimed_tier,
-        "duplicate_of": o.duplicate_of,
+        "duplicate_of": o.duplicate_of if o.duplicate_of not in hidden else None,
         "created_at": _iso(o.created_at),
         "same_reporter": bool(t.reporter_id and o.reporter_id == t.reporter_id),
         "score": round(s.score, 3),
@@ -1012,7 +1029,11 @@ def ticket_url(ctx: Context, t: Ticket) -> str:
     return f"{base}/{t.id}"
 
 
-def to_dict(ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False) -> dict:
+def to_dict(
+    ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False, hidden: frozenset[str] = frozenset()
+) -> dict:
+    """`hidden` is `hidden_targets(...)` for the rows being serialised; a duplicate target in it is not
+    named (XE-0799)."""
     cfg = ctx.config
     full = sees_assessment(p)
     shown = full or not assessment_held(t)
@@ -1030,7 +1051,7 @@ def to_dict(ctx: Context, t: Ticket, p: Principal, *, with_body: bool = False) -
         "claimed_tier": t.claimed_tier,
         "assessed_tier": t.assessed_tier if shown else None,
         "verdict": t.verdict if shown else None,
-        "duplicate_of": t.duplicate_of,
+        "duplicate_of": t.duplicate_of if t.duplicate_of not in hidden else None,
         "tracked": bool(t.internal_ref),
         "internal_ref": t.internal_ref if shown else "",
         "internal_url": ctx.settings.internal_url(t.internal_ref) if shown else None,

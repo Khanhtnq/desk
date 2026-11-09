@@ -246,6 +246,7 @@ async def home(
         ids = [t.id for t in rows]
         prs = await tsvc.patch_counts(db, ids)
         pend = await tsvc.pending_counts(db, ids) if p.is_team else {}
+        hidden = await tsvc.hidden_targets(db, p, rows)
         counts = await tsvc.counts(db, p, kind)
         head = await EventLog.head(db)
     return render(
@@ -257,6 +258,7 @@ async def home(
             "tickets": rows,
             "prs": prs,
             "pend": pend,
+            "hidden": hidden,
             "counts": counts,
             "f": f,
             "kind": kind,
@@ -727,7 +729,11 @@ async def ticket_page(request: Request, tid: str):
         dup = await tsvc.get(db, t.duplicate_of) if t.duplicate_of else None
         if dup is not None and not can_see(p, dup):
             dup = None  # a private canonical is not named to a reader who cannot open it (XE-0799)
-        events = await EventLog.page(db, 0, 50, ref=t.id, **log_scope(p, t))
+        # the same view of each payload as the API: the team's layer held for everyone else
+        events = [
+            event_to_dict(e, full=p.is_team)
+            for e in await EventLog.page(db, 0, 50, ref=t.id, **log_scope(p, t))
+        ]
         team_users = await users.list_users(db) if p.is_team else []
         owners = await users.token_owners(db) if (notes or proposals or family) else {}
         reporters = await rsvc.list_for_picker(db) if p.is_team else []
