@@ -1721,13 +1721,16 @@ async def test_settling_walks_a_patched_report_to_awarded_through_the_same_paths
     assert await tsvc.settle(ctx, db, reviewer, approved) == ["awarded"]
     assert approved.status == "awarded"
 
-    out = await tsvc.settle_many(ctx, db, team, [pub.id, prv.id, nopatch.id, unset.id, early.id, "XE-9999"])
+    # ids read before the batch: a savepoint rollback expires the refused rows, and a lazy load of an
+    # expired attribute here is the MissingGreenlet of XE-0862
+    pub_id, prv_id, np_id, un_id, ea_id = pub.id, prv.id, nopatch.id, unset.id, early.id
+    out = await tsvc.settle_many(ctx, db, team, [pub_id, prv_id, np_id, un_id, ea_id, "XE-9999"])
     done = {d["ticket"]: d["steps"] for d in out["settled"]}
-    assert done == {pub.id: ["approve", "awarded"], prv.id: ["approve", "disclose", "awarded"]}
+    assert done == {pub_id: ["approve", "awarded"], prv_id: ["approve", "disclose", "awarded"]}
     why = {s["ticket"]: s["why"] for s in out["skipped"]}
-    assert set(why) == {nopatch.id, unset.id, early.id, "XE-9999"}
-    assert "linked patch" in why[nopatch.id] and "nothing to approve" in why[unset.id]
-    assert "accepted" in why[early.id] and why["XE-9999"] == "no such ticket"
+    assert set(why) == {np_id, un_id, ea_id, "XE-9999"}
+    assert "linked patch" in why[np_id] and "nothing to approve" in why[un_id]
+    assert "accepted" in why[ea_id] and why["XE-9999"] == "no such ticket"
     for t in (pub, prv, nopatch, unset, early):
         await db.refresh(t)
     assert (pub.status, prv.status, prv.visibility) == ("awarded", "awarded", "public")
