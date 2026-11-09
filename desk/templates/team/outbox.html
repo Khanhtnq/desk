@@ -8,7 +8,7 @@
 <p class="sub">Questions moved to needs-info or closed without a word to the person who asked since. Open each and write the answer; it posts back to where the question came from and the ticket leaves this list.</p>
 {% else %}
 <h1>Reporters who haven't heard back.</h1>
-<p class="sub">Tickets whose status moved past triage but whose reporter has not heard since. Open each, pick a template, send the reply; the worker mirrors it to GitHub and the ticket leaves this list.</p>
+<p class="sub">Tickets whose status moved past triage but whose reporter has not heard since. Open each, pick a template, send the reply; the worker mirrors it to GitHub and the ticket leaves this list. A maintainer's comment on the GitHub issue after the move counts as telling them too.</p>
 {% endif %}
 {% if not tickets %}
 <p class="mute">Empty. Everyone has been {{ "answered" if site == "support" else "told" }}.</p>

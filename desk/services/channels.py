@@ -176,6 +176,8 @@ async def incoming(
     )
     if m is None:
         return None
+    if is_team:
+        thread.mark_told(t)  # the team's own words in the thread tell the asker, as a desk reply does
     via = f"{t.source}:{user_id}"
     if is_team and t.status == "new":
         await tsvc.set_status(ctx, db, SYSTEM, t, "triaging", reason="team replied in the thread", via=via)

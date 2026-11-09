@@ -71,7 +71,7 @@ new → triaging → accepted → fixing → patched → awarded → paid
 Two other views matter:
 
 - **`/team/release`**: every `before` and `decide` ticket grouped by area, severity order inside each. This is the mainnet list. If it's on here, it blocks launch or needs a decision before launch.
-- **`/team/outbox`**: every ticket whose status moved past triage but whose reporter hasn't been told since. Fixed-but-silent is the failure mode the programme had before the desk; this view exists so it can't happen quietly. Aim to keep it empty.
+- **`/team/outbox`**: every ticket whose status moved past triage but whose reporter hasn't been told since. Told means the team's own words reached the ticket's thread after the move: a reply sent from the desk, a comment on the GitHub issue by a maintainer of the repo (owner, member or collaborator, as GitHub reports it; never the reporter's own account), or a team member's message in the Discord or Telegram thread. A label change or a closed issue tells nobody. Fixed-but-silent is the failure mode the programme had before the desk; this view exists so it can't happen quietly. Aim to keep it empty.
 
 Priority, in words: a `before`-gated Critical or Severe beats everything; then `before` High; then anything in the outbox (a reply costs minutes and is owed); then `decide` tickets, which need a design call from whoever owns that area; then the rest of `before` by severity; `later` tickets are worked when the above is clear, Minor last.
 

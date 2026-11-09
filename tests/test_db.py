@@ -1298,6 +1298,61 @@ async def test_a_strangers_fork_pull_links_but_moves_nothing_until_merged(ctx, d
     assert t2.status == "fixing"
 
 
+async def test_the_teams_own_words_on_the_thread_tell_the_reporter(ctx, db):
+    # the rule: a reporter is told when the team writes on the ticket's own thread: a desk reply, a
+    # maintainer's comment on the issue, a team member's message in the chat thread. Who maintains the
+    # repo is GitHub's word (or the bot's login), never the reporter's own account, and a comment tells
+    # from when it was written, so one from before a status move leaves the move untold
+    repo = "xeprotocol/xe"
+    team = await _team(ctx, db)
+    ctx.settings.github_bot_login = "xe-desk-bot"
+    t, _ = await sync.upsert_issue(ctx, db, repo, _issue(96, "Told on the issue", login="ada"))
+    t2, _ = await sync.upsert_issue(ctx, db, repo, _issue(97, "Told by the bot", login="ada"))
+    for moved in (t, t2):
+        for st in ("triaging", "accepted"):
+            await tsvc.set_status(ctx, db, team, moved, st)
+
+    async def owed():
+        return {x.id for x in await tsvc.outbox(db, ctx.config, team)}
+
+    def said(n, login, association, at="2099-01-01T00:00:00Z", uid=None):
+        user = {"login": login, "id": 1000 + n if uid is None else uid}
+        return {"id": n, "user": user, "body": f"comment {n}", "created_at": at,
+                "author_association": association}
+
+    assert await owed() == {t.id, t2.id}
+    await sync.upsert_comment(ctx, db, t, said(1, "mallory", "NONE"))
+    await sync.upsert_comment(ctx, db, t, said(2, "eve", "CONTRIBUTOR"))
+    await sync.upsert_comment(ctx, db, t, said(3, "Ada", "MEMBER", uid=7))  # the reporter herself
+    assert t.told_at is None
+    await sync.upsert_comment(ctx, db, t, said(4, "grace", "MEMBER", at="2020-01-01T00:00:00Z"))
+    assert t.told_at.year == 2020 and await owed() == {t.id, t2.id}  # said before the move
+    await sync.upsert_comment(ctx, db, t, said(5, "grace", "COLLABORATOR"))
+    assert t.told_at.year == 2099 and await owed() == {t2.id}
+    # an older comment seen later takes nothing back, and a comment with no date tells nothing
+    await sync.upsert_comment(ctx, db, t, said(6, "grace", "OWNER", at="2021-01-01T00:00:00Z"))
+    assert t.told_at.year == 2099
+    await sync.upsert_comment(ctx, db, t2, {"id": 7, "user": {"login": "grace"}, "body": "undated",
+                                            "author_association": "OWNER"})
+    assert t2.told_at is None
+    await sync.upsert_comment(ctx, db, t2, said(8, "xe-desk-bot", "NONE"))
+    assert await owed() == set()
+    # the badge on a message is still the bot's alone (XE-0200)
+    assert [m.author_is_team for m in await thread.messages_for(db, t)] == [False] * 6
+    assert [m.author_is_team for m in await thread.messages_for(db, t2)] == [False, True]
+    # the chat thread: a team member's message tells, a stranger's does not
+    q = await channels.open_from_channel(ctx, db, _post())
+    q2 = await channels.open_from_channel(ctx, db, _post(thread_ref="778", title="Another question here"))
+    assert q.told_at is None
+    await channels.incoming(
+        ctx, db, q, message_ref="m1", user_id="9", user_name="Bea", body="Looking.", is_team=True
+    )
+    await channels.incoming(
+        ctx, db, q2, message_ref="m2", user_id="2002", user_name="x", body="me", is_team=False
+    )
+    assert q.told_at is not None and q2.told_at is None
+
+
 async def test_a_blocked_login_is_neither_linked_nor_mirrored(ctx, db):
     # XE-0128: an account that opened a patch two hours after someone else's report and posted its own
     # payout addresses in the thread. Blocked, its PRs do not link, its comments do not land, and what

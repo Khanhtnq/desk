@@ -172,7 +172,32 @@ async def upsert_comment(
         is_team=is_team,
         update=update,
     )
+    wrote = _dt(comment.get("created_at"))
+    if wrote is not None and await comment_is_teams(ctx, db, t, comment):
+        # told from when it was said: a comment from before a status move leaves the move untold
+        thread.mark_told(t, wrote)
     return m is not None
+
+
+async def comment_is_teams(ctx: Context, db: AsyncSession, t: Ticket, comment: dict) -> bool:
+    """Is this comment the team writing to the reporter? GitHub's word for who maintains the repo, as
+    for a PR (`pull_is_maintainers`), or the desk's own bot; never the ticket's own reporter, so a team
+    member who filed the report is not told by their own follow-up. It decides `told_at` and nothing
+    else: the team badge on a thread message stays the bot's alone (XE-0200)."""
+    user = comment.get("user") or {}
+    login = user.get("login") or ""
+    bot = ctx.settings.github_bot_login
+    maintainer = (comment.get("author_association") or "").upper() in MAINTAINER_ASSOCIATIONS
+    if not login or not (maintainer or (bool(bot) and login == bot)):
+        return False
+    if t.reporter_id:
+        r = (await db.execute(select(Reporter).where(Reporter.id == t.reporter_id))).scalar_one_or_none()
+        if r is not None and (
+            (r.github_login or "").lower() == login.lower()
+            or (r.github_id is not None and r.github_id == user.get("id"))
+        ):
+            return False
+    return True
 
 
 # Anyone can open a PR against a public repo, so a PR's *existence* proves nothing; only a maintainer's

@@ -165,6 +165,16 @@ def message_body(ctx: Context, t: Ticket, m: Message) -> str:
 # ---- replies ----------------------------------------------------------------------------------------
 
 
+def mark_told(t: Ticket, when=None) -> None:
+    """The team wrote to the reporter on the ticket's own thread at `when` (now, by default): a reply
+    from the desk, a maintainer's comment on the GitHub issue, a team member's message in the chat
+    thread. The one place `told_at` moves, and it only moves forward; the outbox is every ticket whose
+    status has moved since (`tickets.outbox`)."""
+    when = when or utcnow()
+    if t.told_at is None or when > t.told_at:
+        t.told_at = when
+
+
 async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str) -> Reply:
     body = clean_text(body).strip()
     if not body:
@@ -182,7 +192,7 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
         r.body, r.body_sealed = "", ctx.vault.seal_text(body)
     db.add(r)
     t.last_public_at = utcnow()
-    t.told_at = utcnow()
+    mark_told(t)
     t.draft = ""
     await db.flush()
     # a reply is part of the public thread. When it is mirrored, the worker adds the GitHub comment
