@@ -405,7 +405,7 @@ class DeskBot(discord.Client):
             self.need_team(interaction)
             async with session() as db:
                 t = await self.ticket_here(interaction, db)
-                body = thsvc.render_template(self.ctx, which.value, t, answer=text or "(see above)")
+                body = await thsvc.render_template(self.ctx, db, which.value, t, answer=text or "(see above)")
                 line = f"**{interaction.user.display_name}** · XE team\n{body}"
                 await interaction.response.send_message(line, suppress_embeds=True)
                 sent = await interaction.original_response()

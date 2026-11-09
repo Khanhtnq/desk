@@ -219,16 +219,40 @@ async def replies_for(db: AsyncSession, t: Ticket) -> list[Reply]:
     )
 
 
-def render_template(ctx: Context, name: str, t: Ticket, **extra: str) -> str:
+UNNAMED_DUPLICATE = "an earlier report that is not public"
+
+
+async def render_template(ctx: Context, db: AsyncSession, name: str, t: Ticket, **extra: str) -> str:
     """A reply template from the public register, with the ticket's facts filled in. The result is a draft
     in the editor, never a sent reply."""
-    return fill(ctx, ctx.config.reply_templates.get(name, ""), t, **extra)
+    return await fill_for(ctx, db, ctx.config.reply_templates.get(name, ""), t, **extra)
+
+
+async def fill_for(ctx: Context, db: AsyncSession, tpl: str, t: Ticket, **extra: str) -> str:
+    """`fill`, with `{duplicate_url}` resolved for the text's audience. A reply on a public ticket is read
+    by everyone; on a private one by its reporter, who may know their own tickets. A duplicate target the
+    audience may not be told about (`tickets.hidden_targets`, XE-0799) is named as `UNNAMED_DUPLICATE`."""
+    from ..authz import ANON
+    from .tickets import hidden_targets, ticket_url
+
+    if "duplicate_url" not in extra:
+        url = UNNAMED_DUPLICATE
+        if t.duplicate_of:
+            audience = ANON
+            if t.visibility == "private":
+                audience = Principal(kind="reporter", reporter_id=t.reporter_id)
+            if t.duplicate_of not in await hidden_targets(db, audience, [t]):
+                url = ticket_url(ctx, t).rsplit("/", 1)[0] + "/" + t.duplicate_of
+        extra["duplicate_url"] = url
+    return fill(ctx, tpl, t, **extra)
 
 
 def fill(ctx: Context, tpl: str, t: Ticket, **extra: str) -> str:
-    """`{ticket_url}`, `{tier}`, `{duplicate_url}` and the rest filled in from the ticket. Used for the
-    public templates and for an agent's reply draft alike, so a draft can name the ticket without knowing
-    its front door. Text that is not a template (a stray brace) comes back as it was."""
+    """`{ticket_url}`, `{tier}` and the rest filled in from the ticket. Used for the public templates and
+    for an agent's reply draft alike, so a draft can name the ticket without knowing its front door. Text
+    that is not a template (a stray brace) comes back as it was. `{duplicate_url}` is filled only when
+    given (see `fill_for`): without a reader in mind the desk does not know whether it may be named, and
+    an unfilled placeholder keeps a draft in the editor (`review_reason`)."""
     from .tickets import ticket_url
 
     from .tickets import assessment_held
@@ -237,7 +261,6 @@ def fill(ctx: Context, tpl: str, t: Ticket, **extra: str) -> str:
         "ticket_url": ticket_url(ctx, t),
         # the tier is held until the fix ships; a draft that names it early names nothing (XE-0733)
         "tier": "" if assessment_held(t) else ctx.config.tier_label(t.assessed_tier),
-        "duplicate_url": ticket_url(ctx, t).rsplit("/", 1)[0] + "/" + (t.duplicate_of or ""),
         "patch_refs": extra.pop("patch_refs", "the linked PR"),
         "what": extra.pop("what", "a reproduction"),
         "reason": extra.pop("reason", ""),

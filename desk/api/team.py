@@ -167,7 +167,7 @@ async def reply_template(ctx: Ctx, db: Db, who: Who, request: Request, tid: str,
         ", ".join(f"{p.repo}#{p.ref}" if p.kind == "pr" else f"{p.repo}@{p.ref[:10]}" for p in prs)
         or "the linked PR"
     )
-    return {"name": name, "body": thread.render_template(ctx, name, t, patch_refs=refs)}
+    return {"name": name, "body": await thread.render_template(ctx, db, name, t, patch_refs=refs)}
 
 
 @router.post("/tickets/{tid}/reporter")

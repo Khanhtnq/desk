@@ -338,13 +338,25 @@ async def test_a_report_is_read_across_the_desk(ctx, db):
     assert await tsvc.hidden_targets(db, p, rows_c) == frozenset()  # the team is told
     own = authz.Principal(kind="reporter", reporter_id=r2.id)
     assert await tsvc.hidden_targets(db, own, rows_c) == frozenset()  # r2 filed e, and may know it
+    # the text the desk writes to the reporter follows the same helper (XE-1990): on a public ticket the
+    # audience is everyone, so a private target goes unnamed; a public target is linked; on a private
+    # ticket the reporter may be told about their own private target
+    tpl = "Same as {duplicate_url}."
+    assert e.id not in await thread.render_template(ctx, db, "duplicate", c)
+    assert thread.UNNAMED_DUPLICATE in await thread.fill_for(ctx, db, tpl, c)
+    assert await thread.fill_for(ctx, db, tpl, b) == f"Same as {tsvc.ticket_url(ctx, a)}."
+    f_own = await mk("Private: same again", "", r2, "consensus", visibility="private")
+    await tsvc.set_facts(ctx, db, p, f_own, {"duplicate_of": e.id})
+    assert await thread.fill_for(ctx, db, tpl, f_own) == f"Same as {tsvc.ticket_url(ctx, e)}."
+    assert thread.fill(ctx, tpl, c) == tpl  # without an audience the placeholder stays, and a draft waits
+    assert thread.review_reason(ctx, thread.fill(ctx, tpl, c), c) == "has an unfilled placeholder"
     # a page knows the size of the whole selection
     f = tsvc.Filters(status="all", limit=2)
     assert len(await tsvc.list_tickets(db, ctx.config, p, f)) == 2
-    assert await tsvc.count_tickets(db, ctx.config, p, f) == 5
+    assert await tsvc.count_tickets(db, ctx.config, p, f) == 6
     # the export reads every page, not the first
-    assert len(await triage.all_tickets(db, ctx.config, p, page=2)) == 5
-    assert "5 tickets." in await triage.export_markdown(ctx, db, p)
+    assert len(await triage.all_tickets(db, ctx.config, p, page=2)) == 6
+    assert "6 tickets." in await triage.export_markdown(ctx, db, p)
 
 
 async def test_a_note_says_what_it_checked(ctx, db):
@@ -501,6 +513,13 @@ async def test_held_facts_stay_out_of_public_payloads(ctx, db):
     assert public_payload("ticket.status", {"via": "internal:xeprotocol/core#12", "reason": "x"}) == {
         "via": "internal",
     }  # XE-0612
+    # a duplicate mark and a family ruling never name the canonical in the public log: it may be private
+    # and the log's read path cannot tell (XE-0799, XE-1987)
+    marked = public_payload(
+        "ticket.facts", {"ticket": "x", "changes": {"duplicate_of": {"from": None, "to": "XE-0002"}}}
+    )
+    assert marked["changes"] == {} and marked["held"] == ["duplicate_of"]
+    assert public_payload("ticket.status", {"via": "family:XE-0002"}) == {"via": "family"}
     predates = public_payload("ticket.internal_predates", {"ticket": "x", "internal_ref": "#9"})
     assert "internal_ref" not in predates
     adopted = public_payload("proposal.adopted", {"ticket": "x", "reason": "it is High"})

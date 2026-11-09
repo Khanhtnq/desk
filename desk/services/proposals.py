@@ -173,7 +173,7 @@ async def decide(
         if pr.field == "reply_draft":
             from . import thread
 
-            text = thread.fill(ctx, str(value), t)
+            text = await thread.fill_for(ctx, db, str(value), t)
             why = send_review(ctx, await pending_for(db, t), pr, t) if send_plain else None
             if send_plain and why is None:
                 require(p, "reply", t)
@@ -252,7 +252,7 @@ async def tell_duplicate(ctx: Context, db: AsyncSession, p: Principal, t: Ticket
         if d.state == "pending" and d.field == "reply_draft":
             await decide(ctx, db, p, d, True, reason=reason)  # sets t.draft; the reply below clears it
             folded.append(d.id)
-    text = thread.render_template(ctx, "duplicate", t)
+    text = await thread.render_template(ctx, db, "duplicate", t)
     r = await thread.add_reply(ctx, db, p, t, text)
     return {"sent": r.id, "reply_text": text, "folded": folded}
 

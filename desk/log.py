@@ -291,7 +291,12 @@ ADMIN_ID_KEYS = frozenset({"user", "token", "owner"})
 # The team's working layer inside an otherwise public event: the assessment as it changes (`changes` on
 # ticket.facts for these fields), the free text a reviewer wrote with a change, and what an agent proposed.
 # The ticket page publishes the assessment once the fix has shipped; the log does not pre-announce it.
-HELD_FACT_KEYS = frozenset({"assessed_tier", "verdict", "mainnet_gate", "effort_eng", "internal_ref"})
+# `duplicate_of` is held too: the target may be a private ticket, and the log's read path has no row to
+# check that against, so the public log says a duplicate was marked and the ticket page says of what
+# (`tickets.hidden_targets`, XE-0799).
+HELD_FACT_KEYS = frozenset(
+    {"assessed_tier", "verdict", "mainnet_gate", "effort_eng", "internal_ref", "duplicate_of"}
+)
 HELD_PAYLOAD_KEYS = {
     "ticket.facts": frozenset({"reason"}),
     "ticket.status": frozenset({"reason"}),
@@ -355,8 +360,11 @@ def public_payload(kind: str, payload: Any) -> Any:
         out["changes"] = kept
         if held:
             out["held"] = held  # which facts changed, not what they became
-    if isinstance(out.get("via"), str) and out["via"].startswith("internal:"):
-        out["via"] = "internal"  # the tracker, not its ticket number (XE-0612)
+    if isinstance(out.get("via"), str):
+        if out["via"].startswith("internal:"):
+            out["via"] = "internal"  # the tracker, not its ticket number (XE-0612)
+        elif out["via"].startswith("family:"):
+            out["via"] = "family"  # a family ruling, not its canonical, which may be private (XE-0799)
     return out
 
 
