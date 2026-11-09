@@ -322,9 +322,9 @@ async def test_a_report_is_read_across_the_desk(ctx, db):
     # one reporter's filings, for the team only
     hers = tsvc.Filters(status="all", reporter=r1.id)
     assert {t.id for t in await tsvc.list_tickets(db, ctx.config, p, hers)} == {a.id, c.id}
-    with pytest.raises(HTTPException) as e:  # a public caller is refused the axis, not given the unfiltered set (XE-1560)
+    with pytest.raises(HTTPException) as refused:  # a public caller is refused the axis (XE-1560)
         await tsvc.list_tickets(db, ctx.config, authz.ANON, hers)
-    assert e.value.status_code == 403
+    assert refused.value.status_code == 403
     # a duplicate of a private ticket is not named to a reader who cannot open the target, on every
     # serializer that carries duplicate_of (XE-0799): one helper decides, list, get and similar consult it
     await tsvc.set_facts(ctx, db, p, c, {"duplicate_of": e.id})
