@@ -191,6 +191,30 @@ async def award(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: Aw
     return tsvc.to_dict(ctx, t, who.principal)
 
 
+class SettleIn(BaseModel):
+    tickets: list[str] = Field(min_length=1, max_length=500)
+
+
+@router.post("/tickets/{tid}/settle")
+async def settle(ctx: Ctx, db: Db, who: Who, request: Request, tid: str):
+    """Approve the award, disclose a private report, mark it awarded: the three clicks after `patched`,
+    in one, each through its own path and its own log entry. Refused as a whole if any step is."""
+    _team(who, request)
+    t = await tsvc.get_for(db, who.principal, tid)
+    steps = await tsvc.settle(ctx, db, who.principal, t)
+    await db.commit()
+    return {"ticket": t.id, "steps": steps, "status": t.status}
+
+
+@router.post("/awards/settle")
+async def settle_many(ctx: Ctx, db: Db, who: Who, request: Request, body: SettleIn):
+    """`settle` for many tickets, each its own savepoint; the refused are listed under `skipped`."""
+    _team(who, request)
+    out = await tsvc.settle_many(ctx, db, who.principal, body.tickets)
+    await db.commit()
+    return out
+
+
 class PaidIn(BaseModel):
     paid_ref: str = Field(min_length=1, max_length=64)
 

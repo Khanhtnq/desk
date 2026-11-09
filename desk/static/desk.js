@@ -469,6 +469,7 @@
   // ---- awards page ---------------------------------------------------------------------------
   if ($(".awards")) {
     const amsg = $("#awards-msg");
+    showFlash(amsg);
     $$("[data-adopt-award]").forEach(b => b.addEventListener("click", async () => {
       try { await api("POST", `/v1/team/proposals/${b.dataset.adoptAward}/adopt`, {}); reload(); }
       catch (e) { say(amsg, e.message, false); }
@@ -489,6 +490,28 @@
       try { await api("POST", `/v1/team/tickets/${tid}/status`, { status }); reload(); }
       catch (e) { say(amsg, `${tid}: ${e.message}`, false); }
     }));
+    // settle: approve, disclose where private, mark awarded, through the same paths as the ticket page
+    const settleLine = (r) => {
+      const n = (r.settled || []).length;
+      const words = n ? `Settled ${num(n)} ${n === 1 ? "ticket" : "tickets"}; each now waits in the outbox until the reporter is told.` : "Nothing settled.";
+      return words;
+    };
+    $$("[data-settle]").forEach(b => b.addEventListener("click", async () => {
+      const tid = b.dataset.settle, tr = b.closest("tr");
+      const steps = tr ? $$("td:last-child", tr)[0].textContent.replace("Settle", "").trim() : "";
+      if (!await ask({ title: `Settle ${tid}?`, body: `Runs ${steps || "the remaining steps"} under your name. Awarded publishes the amount and lists the reporter on the leaderboard.`, ok: "Settle" })) return;
+      try { await api("POST", `/v1/team/tickets/${tid}/settle`, {}); flash(`${tid} settled; tell the reporter from the outbox.`); reload(); }
+      catch (e) { say(amsg, `${tid}: ${e.message}`, false); }
+    }));
+    if ($("#settle-all")) $("#settle-all").addEventListener("click", async () => {
+      const ids = JSON.parse($("#settle-all").dataset.tickets || "[]");
+      if (!ids.length || !await ask({ title: `Settle ${num(ids.length)} tickets?`, body: "For each: approve the amount if it is not, disclose it if private, mark it awarded. Every step is logged under your name. A ticket the desk refuses is left as it was and listed afterwards.", ok: `Settle ${num(ids.length)}` })) return;
+      try {
+        const r = await api("POST", "/v1/team/awards/settle", { tickets: ids });
+        await reportSkipped(r, settleLine(r));
+        flash(settleLine(r)); reload();
+      } catch (e) { say(amsg, e.message, false); }
+    });
     if ($("#adopt-all-awards")) $("#adopt-all-awards").addEventListener("click", async () => {
       const ids = $$("[data-adopt-award]:not([disabled])").map(b => parseInt(b.dataset.adoptAward, 10));
       if (!ids.length || !await ask({ title: `Set ${num(ids.length)} awards from the proposed amounts?`, body: "Each amount is recorded against you in the log as set, not approved. Approve them one by one on the tickets when you have read the reasons.", ok: "Set all" })) return;

@@ -547,11 +547,14 @@ async def awards(request: Request):
         p, csrf = await principal(db, request)
         if not p.is_team:
             return RedirectResponse("/team/login?next=/team/awards", status_code=302)
-        rows = await tsvc.awards_due(db, c.config, p)
-        approved = await tsvc.awards_approved_unawarded(db, c.config, p)
+        ready = await tsvc.awards_ready(db, c.config, p)
+        ready_ids = {t.id for t in ready}
+        # the ready list carries everything patched with an amount; the other two lists keep the rest
+        rows = [t for t in await tsvc.awards_due(db, c.config, p) if t.id not in ready_ids]
+        approved = [t for t in await tsvc.awards_approved_unawarded(db, c.config, p) if t.id not in ready_ids]
         pending = await psvc.pending_field_for(db, [t.id for t in rows], "award_xe")
         owners = await users.token_owners(db) if pending else {}
-        rids = [t.reporter_id for t in rows + approved if t.reporter_id]
+        rids = [t.reporter_id for t in ready + rows + approved if t.reporter_id]
         reporters = {
             r.id: r
             for r in (await db.execute(select(Reporter).where(Reporter.id.in_(rids)))).scalars().all()
@@ -575,6 +578,10 @@ async def awards(request: Request):
             "unapproved": sum(1 for t in rows if t.award_xe is not None and not t.award_approved_at),
             "approved": [(t, *tsvc.award_next_step(t)) for t in approved],
             "can_status": can(p, "status"),
+            "ready": [(t, tsvc.settle_steps(t)) for t in ready],
+            "ready_xe": sum((t.award_xe or 0) for t in ready) // 1_000_000,
+            "can_settle": can(p, "award") and can(p, "status"),
+            "vault_ok": c.vault.available,
         },
     )
 

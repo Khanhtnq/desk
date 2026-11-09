@@ -1678,6 +1678,73 @@ async def test_disclosing_by_any_route_unseals_and_publishes(ctx, db):
         )
 
 
+async def test_settling_walks_a_patched_report_to_awarded_through_the_same_paths(ctx, db):
+    # the rule: settle does only what the ticket page's three buttons do, with their checks, and a
+    # refused ticket in a batch is left exactly as it was
+    team = await _team(ctx, db)
+    reviewer = await _team(ctx, db, roles=("reviewer",), email="rev@xe.network")
+
+    async def mk(title, visibility="public", amount=5_000_000, patch=True, upto="patched"):
+        spec = tsvc.NewTicket(kind="bounty", title=title, body="b", visibility=visibility, source="web")
+        t = await tsvc.create(ctx, db, team.actor, spec)
+        for st in ("triaging", "accepted", "patched"):
+            await tsvc.set_status(ctx, db, team, t, st)
+            if st == upto:
+                break
+        if patch:
+            await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref=t.id[-4:], kind="pr")
+        t.assessed_tier = "medium"
+        if amount is not None:
+            await tsvc.set_award(ctx, db, team, t, amount)
+        return t
+
+    pub = await mk("public, set")
+    prv = await mk("private, set", visibility="private")
+    approved = await mk("public, approved")
+    await tsvc.set_award(ctx, db, team, approved, None, approve=True)
+    nopatch = await mk("private, no patch", visibility="private", patch=False)
+    unset = await mk("public, no amount", amount=None)
+    early = await mk("accepted, set", upto="accepted")
+    await db.commit()
+
+    # the view: patched or disclosed with an amount; the unset and the not-yet-patched are elsewhere
+    ready = {t.id for t in await tsvc.awards_ready(db, ctx.config, team)}
+    assert ready == {pub.id, prv.id, approved.id, nopatch.id}
+    assert tsvc.settle_steps(pub) == ["approve", "awarded"]
+    assert tsvc.settle_steps(prv) == ["approve", "disclose", "awarded"]
+    assert tsvc.settle_steps(approved) == ["awarded"]
+
+    # a reviewer may not approve, so cannot settle an unapproved one; a treasurer-less approved one is a
+    # status change, which any team member may make
+    with pytest.raises(HTTPException):
+        await tsvc.settle(ctx, db, reviewer, pub)
+    assert await tsvc.settle(ctx, db, reviewer, approved) == ["awarded"]
+    assert approved.status == "awarded"
+
+    out = await tsvc.settle_many(ctx, db, team, [pub.id, prv.id, nopatch.id, unset.id, early.id, "XE-9999"])
+    done = {d["ticket"]: d["steps"] for d in out["settled"]}
+    assert done == {pub.id: ["approve", "awarded"], prv.id: ["approve", "disclose", "awarded"]}
+    why = {s["ticket"]: s["why"] for s in out["skipped"]}
+    assert set(why) == {nopatch.id, unset.id, early.id, "XE-9999"}
+    assert "linked patch" in why[nopatch.id] and "nothing to approve" in why[unset.id]
+    assert "accepted" in why[early.id] and why["XE-9999"] == "no such ticket"
+    for t in (pub, prv, nopatch, unset, early):
+        await db.refresh(t)
+    assert (pub.status, prv.status, prv.visibility) == ("awarded", "awarded", "public")
+    assert pub.award_approved_by == team.user.id and prv.body == "b" and prv.body_sealed is None
+    # the refused private one kept its approval state, status and seal: nothing half-done
+    assert (nopatch.status, nopatch.award_approved_at, nopatch.visibility) == ("patched", None, "private")
+    assert (unset.status, early.status) == ("patched", "accepted")
+    # every hop is in the log under the person, via settle
+    evs = await EventLog.page(db, 0, 50, ref=prv.id)
+    kinds = [(e.kind, e.payload.get("via")) for e in evs]
+    assert ("ticket.status", "settle") in kinds and ("ticket.disclosed", None) in kinds
+    assert all(e.actor == team.actor for e in evs)
+    # settled once, there is nothing to settle again
+    with pytest.raises(HTTPException):
+        await tsvc.settle(ctx, db, team, pub)
+
+
 async def test_payout_file_lists_only_awarded_tickets(ctx, db):
     team = await _team(ctx, db)
     async def mk(n):

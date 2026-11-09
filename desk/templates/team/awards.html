@@ -5,7 +5,7 @@
 <div class="release awards">
 <div class="tag"><span>Awards</span></div>
 <h1>Every valid report that still needs a number.</h1>
-<p class="sub">Accepted, fixing, patched and disclosed bounty tickets with no award, and awarded ones not yet approved, most severe first. Agents propose an amount with a reason; adopting sets it. Approval is the second, separate click on the ticket, once the fix has landed (patched or disclosed), and only a treasurer can do either.</p>
+<p class="sub">Top: patched reports whose award only needs approving, disclosing and marking, with one button for the three. Below: valid reports that still need an amount (agents propose one with a reason; adopting sets it), and approvals whose ticket cannot be marked yet. Only a treasurer sets or approves.</p>
 <div class="counts">
   <div><b>{{ "{:,}".format(unset) }}</b>without an amount</div>
   <div><b>{{ "{:,}".format(unapproved) }}</b>set, not approved</div>
@@ -14,10 +14,38 @@
   <div><b>{{ "{:,}".format(approved|length) }}</b>approved, not yet awarded</div>
 </div>
 {% if not can_award %}<p class="msg err" style="display:block">You can read this page but setting an award needs the treasurer role.</p>{% endif %}
+<div id="awards-msg" class="msg" style="display:none"></div>
+
+<h2>Ready to award <span class="k">{{ ready|length|n }} · {{ "{:,}".format(ready_xe) }} XE</span></h2>
+<p class="sub">Patched reports with an amount set. What is left is the desk's own three steps: approve the amount, disclose the report if it is private, mark it <code>awarded</code> (which publishes the award and lists the reporter). <b>Settle</b> runs the steps a ticket still needs, each through the same path as its button on the ticket page and each logged under your name; a ticket the desk refuses (ceiling, no linked patch, vault key) is left as it was and listed. An awarded ticket then waits in the outbox until the reporter is told.</p>
+{% if ready and not vault_ok %}<p class="msg err" style="display:block">The vault key is not loaded: private reports cannot be disclosed now, so their rows will be refused.</p>{% endif %}
+{% if can_settle and ready %}
+<div class="row" style="margin:12px 0"><button class="mini" id="settle-all" type="button" data-tickets='{{ ready|map(attribute="0.id")|list|tojson }}'>Settle all {{ ready|length|n }}</button><span class="k" style="margin-left:12px">Approve, disclose where private, mark awarded, for every row below.</span></div>
+{% elif ready and not can_settle %}<p class="k">Settling needs the treasurer role (approval) and a team account (status).</p>{% endif %}
+<table class="tickets">
+<thead><tr><th>#</th><th>Finding</th><th>Status</th><th>Tier · ceiling</th><th>Reporter</th><th>Award</th><th>Steps left</th></tr></thead>
+<tbody>
+{% for t, steps in ready %}
+<tr data-ticket="{{ t.id }}">
+  <td class="n">{{ m.tlink(t) }}{% if t.visibility == "private" %} <span class="pill private">private</span>{% endif %}</td>
+  <td class="title"><a href="/{{ t.id }}">{{ t.title }}</a></td>
+  <td>{{ m.status(t) }}</td>
+  <td class="mono">{{ m.tier(t.assessed_tier) }}{% if t.assessed_tier %} <span class="k">{{ "{:,}".format(cfg.ceiling_micro(t.assessed_tier) // 1000000) }}</span>{% endif %}</td>
+  <td class="k">{% set r = reporters.get(t.reporter_id) %}{% if r %}{{ r.display_name or r.github_login or r.email or ("reporter " ~ r.id) }}{% else %}<span class="pill private">none</span>{% endif %}</td>
+  <td class="mono"><b>{{ t.award_xe|xe }} XE</b> {% if t.award_approved_at %}<span class="pill paid">approved</span>{% else %}<span class="pill pending">set</span>{% endif %}</td>
+  <td class="k">{% if can_settle %}<button type="button" class="mini" data-settle="{{ t.id }}">Settle</button> {% endif %}{{ steps|join(" → ") }}</td>
+</tr>
+{% else %}
+<tr><td colspan="7" class="k">Nothing patched is waiting on its award.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+
+<h2 style="margin-top:40px">Needs a number</h2>
+<p class="sub">Valid reports without an amount, and amounts set on tickets whose fix has not landed yet.</p>
 {% if can_award and pending %}
 <div class="row" style="margin:16px 0"><button class="mini" id="adopt-all-awards" type="button">Adopt every proposed amount ({{ pending|length|n }})</button><span class="k" style="margin-left:12px">Sets the newest proposal on each ticket. Nothing is approved.</span></div>
 {% endif %}
-<div id="awards-msg" class="msg" style="display:none"></div>
 <table class="tickets">
 <thead><tr><th>#</th><th>Finding</th><th>Status</th><th>Tier · ceiling</th><th>Reporter</th><th>Proposed</th><th>Award</th></tr></thead>
 <tbody>

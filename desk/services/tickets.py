@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy import case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..authz import Principal, can, can_see
+from ..authz import Principal, can, can_see, require, require_field
 from ..config import Config
 from ..context import Context
 from ..models import (
@@ -610,6 +610,73 @@ async def awards_approved_unawarded(db: AsyncSession, cfg: Config, p: Principal)
         q = q.where(Ticket.visibility == "public")
     q = q.order_by(Ticket.award_approved_at.asc())
     return list((await db.execute(q)).scalars().all())
+
+
+async def awards_ready(db: AsyncSession, cfg: Config, p: Principal) -> list[Ticket]:
+    """Patched or disclosed bounty tickets with an amount set: everything between them and `awarded` is
+    the desk's own three steps (approve, disclose a private one, mark awarded), which `settle` walks."""
+    q = select(Ticket).where(
+        Ticket.kind == "bounty",
+        Ticket.status.in_(("patched", "disclosed")),
+        Ticket.award_xe.isnot(None),
+    )
+    if not can(p, "read:private"):
+        q = q.where(Ticket.visibility == "public")
+    q = q.order_by(_rank(cfg, Ticket.assessed_tier), Ticket.id.asc())
+    return list((await db.execute(q)).scalars().all())
+
+
+def settle_steps(t: Ticket) -> list[str]:
+    """What `settle` would do to this ticket now, in order; empty when it is awarded already."""
+    steps: list[str] = []
+    if t.status in ("awarded", "paid"):
+        return steps
+    if not t.award_approved_at:
+        steps.append("approve")
+    if t.visibility == "private":
+        steps.append("disclose")
+    steps.append("awarded")
+    return steps
+
+
+async def settle(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> list[str]:
+    """Walk a patched report to `awarded` in one go: approve the award if it is not, disclose a private
+    one, set `awarded`. Each step is the same function the ticket page's button calls, with its checks
+    (amount set, tier ceiling, vault key loaded, linked patch, allowed transition) and its log entry
+    under the person clicking; the first step the desk refuses raises and the caller's savepoint
+    leaves the ticket as it was. Returns the steps taken."""
+    steps = settle_steps(t)
+    if not steps:
+        raise HTTPException(409, f"the ticket is {t.status}; nothing to settle")
+    if "approve" in steps:
+        require(p, "award", t)
+    require_field(p, "status")
+    for step in steps:
+        if step == "approve":
+            await set_award(ctx, db, p, t, None, approve=True)
+        elif step == "disclose":
+            await disclose(ctx, db, p, t)
+        else:
+            await set_status(ctx, db, p, t, "awarded", reason="settled from the awards page", via="settle")
+    return steps
+
+
+async def settle_many(ctx: Context, db: AsyncSession, p: Principal, ids: list[str]) -> dict:
+    """`settle` across tickets, each its own savepoint: one the desk refuses is reported under `skipped`
+    with the reason and left as it was; the rest go through."""
+    settled: list[dict] = []
+    skipped: list[dict] = []
+    for tid in ids:
+        t = await get(db, tid)
+        if t is None or not can_see(p, t):
+            skipped.append({"ticket": tid, "why": "no such ticket"})
+            continue
+        try:
+            async with db.begin_nested():
+                settled.append({"ticket": tid, "steps": await settle(ctx, db, p, t)})
+        except HTTPException as e:
+            skipped.append({"ticket": tid, "why": str(e.detail)})
+    return {"settled": settled, "skipped": skipped}
 
 
 def award_next_step(t: Ticket) -> tuple[str, str | None]:
