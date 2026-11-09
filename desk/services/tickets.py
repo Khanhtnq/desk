@@ -100,6 +100,12 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def xe_amount(micro: int) -> str:
+    """Micro-XE as a reader sees it: 5,000, or 0.05 and never 0.5 for a twentieth (XE-0493)."""
+    whole, frac = divmod(int(micro), 1_000_000)
+    return f"{whole:,}" if frac == 0 else f"{whole:,}.{frac:06d}".rstrip("0")
+
+
 # ---- ids --------------------------------------------------------------------------------------------
 
 
@@ -903,6 +909,26 @@ async def set_status(
         ref=t.id,
         public=t.visibility == "public",
     )
+    if status == "awarded":
+        await _tell_awarded(ctx, db, p, t)
+
+
+async def _tell_awarded(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> None:
+    """A ticket just marked `awarded` tells its reporter: the programme's `awarded` reply, under the
+    person who marked it, on the thread and out through the ticket's own channel (a GitHub comment, the
+    chat thread, a mail once the request has committed: `notify.owe`). Called from `set_status` and
+    nowhere else, so no path to `awarded` goes round it: the ticket page, settle, an adopted proposal.
+    Two moves are left to the outbox instead: one with no person behind it (an import), which has no
+    name to speak under, and an award of nothing, which the stock words do not fit."""
+    tpl = ctx.config.reply_templates.get("awarded", "")
+    if p.user is None or not t.award_xe or not tpl.strip():
+        return
+    from . import notify, thread
+
+    draft = t.draft
+    r = await thread.add_reply(ctx, db, p, t, await thread.fill_for(ctx, db, tpl, t))
+    t.draft = draft  # a reply someone was writing on this ticket is still theirs to finish
+    notify.owe(db, r)
 
 
 # Statuses a walked path may end on but never pass through: each is a decision in its own right.

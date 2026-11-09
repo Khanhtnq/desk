@@ -244,7 +244,7 @@ async def test_ticket_lifecycle(ctx, db):
     assert (
         kinds["ticket.status"] == 4
         and kinds["ticket.facts"] == 2  # the first assessment, then the internal ref and effort
-        and kinds["reply.sent"] == 1
+        and kinds["reply.sent"] == 2  # the one written by hand at patched, the desk's own at awarded
         and kinds["ticket.award"] == 1
     )
 
@@ -1746,6 +1746,99 @@ async def test_settling_walks_a_patched_report_to_awarded_through_the_same_paths
     # settled once, there is nothing to settle again
     with pytest.raises(HTTPException):
         await tsvc.settle(ctx, db, team, pub)
+
+
+async def test_marking_awarded_tells_the_reporter_by_every_path(ctx, db, monkeypatch):
+    # the rule: a person marking a ticket awarded sends the programme's award reply under their name,
+    # whichever path made the move; a move with nobody behind it, or an award of nothing, is left to
+    # the outbox; the mail goes only for a reply that was committed
+    mails: list[tuple[str, str, str]] = []
+
+    async def fake_mail(settings, to, subject, body):
+        mails.append((to, subject, body))
+        return True
+
+    monkeypatch.setattr(auth, "send_mail", fake_mail)
+    ctx.settings.smtp_host = "mail.test"
+    team = await _team(ctx, db)
+    agent = await _agent(ctx, db, team.user)
+    alice = await rsvc.from_email(ctx, db, "alice@example.org", link_to=None)
+    alice_id, team_uid = alice.id, team.user.id
+
+    async def ready(t, amount=5_000_000, approve=True):
+        for st in ("triaging", "accepted", "patched"):
+            await tsvc.set_status(ctx, db, team, t, st)
+        await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref=t.id[-4:], kind="pr")
+        t.assessed_tier = "medium"
+        await tsvc.set_award(ctx, db, team, t, amount, approve=True if approve else None)
+        return t
+
+    async def mk(title, visibility="public", **kw):
+        spec = tsvc.NewTicket(
+            kind="bounty", title=title, body="b", visibility=visibility, source="web", reporter_id=alice_id
+        )
+        return await ready(await tsvc.create(ctx, db, team.actor, spec), **kw)
+
+    async def replies(t):
+        q = select(Reply).where(Reply.ticket_id == t.id).order_by(Reply.id.asc())
+        return list((await db.execute(q)).scalars().all())
+
+    page = await mk("the ticket page")
+    page.draft = "half a thought"
+    settled = await mk("settle, private", visibility="private", approve=False)
+    batch = await mk("settle all", approve=False)
+    proposed = await mk("an adopted proposal")
+    pr = await psvc.propose(ctx, db, agent, proposed, "status", "awarded", "fix merged, award approved")
+    hub, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(90, "From GitHub"))
+    await ready(hub)
+    nobody = await mk("moved by the desk itself")
+    nothing = await mk("an award of nothing", amount=0)
+    batch_id = batch.id
+
+    await tsvc.set_status(ctx, db, team, page, "awarded")
+    assert await tsvc.settle(ctx, db, team, settled) == ["approve", "disclose", "awarded"]
+    out = await tsvc.settle_many(ctx, db, team, [batch_id])
+    assert [d["ticket"] for d in out["settled"]] == [batch_id] and out["skipped"] == []
+    assert (await psvc.decide(ctx, db, team, pr, True))["status"] == "awarded"
+    await tsvc.set_status(ctx, db, team, hub, "awarded")
+    await tsvc.set_status(ctx, db, authz.SYSTEM, nobody, "awarded")
+    await tsvc.set_status(ctx, db, team, nothing, "awarded")
+
+    told_ids: list[int] = []
+    for t in (page, settled, batch, proposed, hub):
+        rs = await replies(t)
+        assert len(rs) == 1 and t.status == "awarded", t.title
+        r = rs[0]
+        body = thread.reply_body(ctx, r)
+        assert "Awarded: 5 XE, assessed as Medium." in body, t.title
+        assert "https://bounty.test/account" in body and f"https://bounty.test/{t.id}" in body
+        assert r.author_id == team_uid and t.told_at >= t.status_changed_at
+        told_ids.append(r.id)
+    # the private one was disclosed first, so its reply is public like the ticket; a GitHub ticket's is
+    # queued for the worker to post as a comment; a reply someone was writing is still on the ticket
+    assert (settled.visibility, (await replies(settled))[0].body_sealed) == ("public", None)
+    assert (await replies(hub))[0].mirror == "queued" and (await replies(page))[0].mirror == "none"
+    assert page.draft == "half a thought"
+    # nobody to speak, or nothing to say: no reply, and the outbox holds exactly those
+    assert await replies(nobody) == [] and await replies(nothing) == []
+    assert {t.id for t in await tsvc.outbox(db, ctx.config, team)} == {nobody.id, nothing.id}
+
+    # the mail: noted on the session as each reply is written, sent only for what was committed
+    undone = await mk("rolled back after the reply")
+    with pytest.raises(HTTPException):
+        async with db.begin_nested():
+            await tsvc.set_status(ctx, db, team, undone, "awarded")
+            raise HTTPException(409, "the request failed after the reply was written")
+    owed = notify.take_owed(db)
+    assert owed[:5] == told_ids and len(owed) == 6 and notify.take_owed(db) == []
+    await db.commit()
+    opener = async_sessionmaker(db.bind, expire_on_commit=False)
+    # four reporters with an address are mailed; the GitHub one is told by the comment, the rolled-back
+    # reply does not exist, and an id that never did is ignored
+    assert await notify.mail_owed(ctx, owed + [10_000_000], opener) == 4
+    assert {to for to, _, _ in mails} == {"alice@example.org"} and len(mails) == 4
+    assert all("Awarded: 5 XE" in text for _, _, text in mails)
+    assert await notify.mail_owed(ctx, [], opener) == 0
 
 
 async def test_filling_missing_awards_adopts_a_proposal_or_takes_the_step(ctx, db):

@@ -489,26 +489,26 @@
     }));
     $$("[data-mark-status]").forEach(b => b.addEventListener("click", async () => {
       const tid = b.dataset.ticketId, status = b.dataset.markStatus;
-      if (!await ask({ title: `Mark ${tid} as ${status}?`, body: "The award becomes public on the ticket and the leaderboard.", ok: "Mark awarded" })) return;
+      if (!await ask({ title: `Mark ${tid} as ${status}?`, body: "The award becomes public on the ticket and the leaderboard, and the reporter is sent the programme's award reply under your name.", ok: "Mark awarded" })) return;
       try { await api("POST", `/v1/team/tickets/${tid}/status`, { status }); reload(); }
       catch (e) { say(amsg, `${tid}: ${e.message}`, false); }
     }));
     // settle: approve, disclose where private, mark awarded, through the same paths as the ticket page
     const settleLine = (r) => {
       const n = (r.settled || []).length;
-      const words = n ? `Settled ${num(n)} ${n === 1 ? "ticket" : "tickets"}; each now waits in the outbox until the reporter is told.` : "Nothing settled.";
+      const words = n ? `Settled ${num(n)} ${n === 1 ? "ticket" : "tickets"}; each reporter has been sent the award reply.` : "Nothing settled.";
       return words;
     };
     $$("[data-settle]").forEach(b => b.addEventListener("click", async () => {
       const tid = b.dataset.settle, tr = b.closest("tr");
       const steps = tr ? $$("td:last-child", tr)[0].textContent.replace("Settle", "").trim() : "";
-      if (!await ask({ title: `Settle ${tid}?`, body: `Runs ${steps || "the remaining steps"} under your name. Awarded publishes the amount and lists the reporter on the leaderboard.`, ok: "Settle" })) return;
-      try { await api("POST", `/v1/team/tickets/${tid}/settle`, {}); flash(`${tid} settled; tell the reporter from the outbox.`); reload(); }
+      if (!await ask({ title: `Settle ${tid}?`, body: `Runs ${steps || "the remaining steps"} under your name. Awarded publishes the amount, lists the reporter on the leaderboard and sends them the programme's award reply.`, ok: "Settle" })) return;
+      try { await api("POST", `/v1/team/tickets/${tid}/settle`, {}); flash(`${tid} settled; the reporter has been sent the award reply.`); reload(); }
       catch (e) { say(amsg, `${tid}: ${e.message}`, false); }
     }));
     if ($("#settle-all")) $("#settle-all").addEventListener("click", async () => {
       const ids = JSON.parse($("#settle-all").dataset.tickets || "[]");
-      if (!ids.length || !await ask({ title: `Settle ${num(ids.length)} tickets?`, body: "For each: approve the amount if it is not, disclose it if private, mark it awarded. Every step is logged under your name. A ticket the desk refuses is left as it was and listed afterwards.", ok: `Settle ${num(ids.length)}` })) return;
+      if (!ids.length || !await ask({ title: `Settle ${num(ids.length)} tickets?`, body: "For each: approve the amount if it is not, disclose it if private, mark it awarded, which sends the reporter the programme's award reply. Every step is logged under your name. A ticket the desk refuses is left as it was and listed afterwards.", ok: `Settle ${num(ids.length)}` })) return;
       try {
         const r = await api("POST", "/v1/team/awards/settle", { tickets: ids });
         await reportSkipped(r, settleLine(r));

@@ -200,6 +200,10 @@ reply_templates:
   accepted: |-
     Read and accepted. It is tracked internally and the fix will land in a public PR; this issue is
     updated when it does, and the tier and award follow the fix. The desk entry is {ticket_url}.
+  awarded: |-
+    Awarded: {award} XE, assessed as {tier}. Awards are paid at mainnet launch to the address bound on
+    your account at {account_url}; if you have not bound one yet, sign in and do that now. The desk
+    entry is {ticket_url}. Thank you for the report.
   needs_info: |-
     Read, but not yet reproducible from what is here. Could you add {what}? The desk entry is {ticket_url}.
   invalid: |-

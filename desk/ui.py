@@ -55,10 +55,7 @@ def _short(h: str | None, n: int = 10) -> str:
 
 
 def _xe(micro) -> str:
-    if micro is None:
-        return "—"
-    whole, frac = divmod(int(micro), 1_000_000)
-    return f"{whole:,}" if frac == 0 else f"{whole:,}.{frac:06d}".rstrip("0")  # 0.05, not 0.5 (XE-0493)
+    return "—" if micro is None else tsvc.xe_amount(micro)
 
 
 def _render_md(text: str | None) -> Markup:

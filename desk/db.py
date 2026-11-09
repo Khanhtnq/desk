@@ -38,7 +38,3 @@ async def session() -> AsyncIterator[AsyncSession]:
     async with sessionmaker()() as s:
         yield s
 
-
-async def get_db() -> AsyncIterator[AsyncSession]:
-    async with sessionmaker()() as s:
-        yield s
