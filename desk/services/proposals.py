@@ -4,6 +4,10 @@ Adopting writes the field through the same code path a human edit uses (so vocab
 checks apply) and records who adopted what, proposed by which token. A `reply_draft` proposal is
 never written to the ticket's facts: adopting it hands the text to the reply editor, or, from the
 triage page, sends it when the desk reads it as a plain acknowledgement (`send_review`).
+
+A duplicate is told. Adopting a close-as-duplicate, by any path (one chip, a row, the shown rows, a
+family), sends the programme's duplicate reply under the person ruling (`tell_duplicate`); an agent's
+reply draft on that ticket is folded into it, never sent, never left in the editor.
 """
 
 from __future__ import annotations
@@ -116,16 +120,23 @@ def _closes(pr: Proposal) -> bool:
     return (v.get("status") if isinstance(v, dict) else v) == "closed"
 
 
+FOLDED = "the programme's duplicate reply goes instead"
+
+
 def send_review(ctx: Context, prs: list[Proposal], pr: Proposal, t: Ticket) -> str | None:
     """Why this reply draft should wait in the editor rather than go out on adoption, or None when the
     desk may send it as it stands. The text rule is `thread.review_reason`; on top of it, a draft that
     rides with a closure or a duplicate ruling, a draft on a closed ticket, and a draft proposed before
-    the reporter was last written to all wait: the person may have said something since."""
+    the reporter was last written to all wait: the person may have said something since. A draft riding
+    with a close-as-duplicate is `FOLDED`: adopting that close sends the programme's reply, not this."""
     from . import thread
 
     if t.status == "closed":
         return "the ticket is closed"
-    if any(_closes(o) for o in prs if o.state == "pending" and o.id != pr.id):
+    others = [o for o in prs if o.state == "pending" and o.id != pr.id]
+    if any(_is_dup_close(o) for o in others):
+        return FOLDED
+    if any(_closes(o) for o in others):
         return "goes with a closure"
     if t.told_at and pr.created_at and t.told_at > pr.created_at:
         return "the reporter has been written to since"
@@ -178,12 +189,18 @@ async def decide(
             status = value if isinstance(value, str) else value.get("status")
             reason_c = None if isinstance(value, str) else value.get("closed_reason")
             require_field(p, "status")
+            dup = _is_dup_close(pr)
+            if dup:
+                require(p, "reply", t)  # a duplicate is told; one who cannot reply does not close it
             # an agent may propose a status several hops away; the desk walks the allowed path, one
             # logged hop at a time, inside this transaction
             out["path"] = await tsvc.set_status_via_path(
                 ctx, db, p, t, status, closed_reason=reason_c, reason=reason, via=f"proposal:{pr.id}"
             )
             out["status"] = t.status
+            if dup:
+                why = reason or f"duplicate of {t.duplicate_of}"
+                out.update(await tell_duplicate(ctx, db, p, t, reason=why))
         elif pr.field == "award_xe":
             # sets the amount only; approval stays a separate, deliberate click
             require(p, "award", t)
@@ -220,6 +237,24 @@ def _is_dup_close(pr: Proposal) -> bool:
         and isinstance(v, dict)
         and (v.get("status"), v.get("closed_reason")) == ("closed", "duplicate")
     )
+
+
+async def tell_duplicate(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, *, reason: str) -> dict:
+    """The reporter of a ticket just closed as a duplicate is told, with the programme's duplicate reply
+    under the person ruling. Any pending reply draft on the ticket is recorded adopted and folded into
+    it: a duplicate gets one reply, the programme's, whatever an agent drafted. Returns `sent` (the
+    reply id), `reply_text` (for the caller to mail) and `folded` (the draft proposal ids)."""
+    from . import thread
+
+    require(p, "reply", t)
+    folded: list[int] = []
+    for d in await pending_for(db, t):
+        if d.state == "pending" and d.field == "reply_draft":
+            await decide(ctx, db, p, d, True, reason=reason)  # sets t.draft; the reply below clears it
+            folded.append(d.id)
+    text = thread.render_template(ctx, "duplicate", t)
+    r = await thread.add_reply(ctx, db, p, t, text)
+    return {"sent": r.id, "reply_text": text, "folded": folded}
 
 
 async def pending_duplicates_of(db: AsyncSession, tid: str) -> list[tuple[Ticket, Proposal | None]]:
@@ -263,12 +298,10 @@ async def close_duplicates(
 ) -> dict:
     """Rule a whole family at once. For every open ticket with a pending `duplicate_of` proposal naming
     `canon` (or already marked so, with the close still pending): adopt the mark, set the verdict, close
-    as duplicate (walking the status path), and send the
-    programme's own duplicate reply under the person ruling. Each ticket is its own savepoint, so one the
-    desk refuses (a transition, a permission) is reported and left as it was while the rest go through.
-    The decision stays a person's: this is one click for a family instead of four per ticket."""
-    from . import thread
-
+    as duplicate (walking the status path), and tell the reporter (`tell_duplicate`). Each ticket is its
+    own savepoint, so one the desk refuses (a transition, a permission) is reported and left as it was
+    while the rest go through. The decision stays a person's: one click for a family instead of four per
+    ticket."""
     if p.user is None or not can(p, "adopt"):
         raise HTTPException(403, "adopting is a reviewer's action")
     require_field(p, "duplicate_of")
@@ -294,17 +327,15 @@ async def close_duplicates(
                     await tsvc.set_facts(ctx, db, p, t, {"verdict": "duplicate"}, reason=why, via=via)
                 s = others.get("status")
                 if s is not None and _is_dup_close(s):
-                    await decide(ctx, db, p, s, True, reason=why)
+                    told = await decide(ctx, db, p, s, True, reason=why)  # closes and tells
                 else:
                     await tsvc.set_status_via_path(
                         ctx, db, p, t, "closed", closed_reason="duplicate", reason=why, via=via
                     )
-                d = others.get("reply_draft")
-                if d is not None:
-                    await decide(ctx, db, p, d, True)  # recorded as adopted; the reply below clears the draft
-                text = thread.render_template(ctx, "duplicate", t)
-                r = await thread.add_reply(ctx, db, p, t, text)
-                closed.append({"ticket": tid, "status": t.status, "reply": r.id, "text": text})
+                    told = await tell_duplicate(ctx, db, p, t, reason=why)
+                closed.append(
+                    {"ticket": tid, "status": t.status, "reply": told["sent"], "text": told["reply_text"]}
+                )
         except HTTPException as e:
             skipped.append({"ticket": tid, "why": str(e.detail)})
     return {"canonical": canon.id, "closed": closed, "skipped": skipped}
@@ -322,16 +353,29 @@ async def decide_many(
     """Many decisions in one request, each its own savepoint: one the desk refuses (a transition the
     state machine will not make, a field the role may not set) is reported in `skipped` and the rest go
     through. A batch that stopped at the first refusal left a reviewer adopting one by one (XE-0872).
-    Reply drafts are decided last, so a closure adopted in the same batch is seen by `send_review`."""
+    Adoptions run marks first, then status changes, then reply drafts, whatever order the ids came in: a
+    close-as-duplicate needs the mark already on the ticket, and a draft needs to see the closure adopted
+    beside it (`send_review`). A draft folded into a duplicate reply is reported under `decided` with
+    `folded`, not under `skipped`."""
     if p.user is None or not can(p, "adopt"):
         raise HTTPException(403, "adopting is a reviewer's action")
     decided: list[dict] = []
     skipped: list[dict] = []
-    todo: list[tuple[int, bool]] = [(i, True) for i in adopt] + [(i, False) for i in reject]
-    if send_plain:
-        found = {pr.id: pr for pr in [await get(db, i) for i in adopt] if pr is not None}
-        todo.sort(key=lambda x: x[1] and found.get(x[0]) is not None and found[x[0]].field == "reply_draft")
+    found = {pr.id: pr for pr in [await get(db, i) for i in adopt] if pr is not None}
+    rank = {"status": 1, "reply_draft": 2}
+
+    def order(x: tuple[int, bool]) -> int:
+        pr = found.get(x[0]) if x[1] else None
+        return rank.get(pr.field, 0) if pr is not None else 0
+
+    todo: list[tuple[int, bool]] = sorted([(i, True) for i in adopt], key=order)
+    todo += [(i, False) for i in reject]
+    folded: dict[int, str] = {}
     for pid, yes in todo:
+        if pid in folded:
+            decided.append({"proposal": pid, "ticket": folded[pid], "field": "reply_draft", "adopted": True,
+                            "folded": True})
+            continue
         pr = await get(db, pid)
         if pr is None or pr.state != "pending":
             skipped.append({"proposal": pid, "why": "not pending" if pr else "no such proposal"})
@@ -339,9 +383,13 @@ async def decide_many(
         tid, field = pr.ticket_id, pr.field  # read before the savepoint (see close_duplicates)
         try:
             async with db.begin_nested():
-                decided.append(await decide(ctx, db, p, pr, yes, send_plain=send_plain))
+                out = await decide(ctx, db, p, pr, yes, send_plain=send_plain)
         except HTTPException as e:
             skipped.append({"proposal": pid, "ticket": tid, "field": field, "why": str(e.detail)})
+            continue
+        decided.append(out)
+        for fid in out.get("folded", []):
+            folded[fid] = tid
     return {"decided": decided, "skipped": skipped}
 
 

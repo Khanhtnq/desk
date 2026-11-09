@@ -635,7 +635,8 @@ async def triage(request: Request):
         drafts = [pr for pr in r.proposals if pr.field == "reply_draft"]
         if not drafts:
             return None
-        return "sends" if all(review(r, pr) is None for pr in drafts) else "review"
+        # a draft folded into the programme's duplicate reply sends, in the sense that the reporter is told
+        return "sends" if all(review(r, pr) in (None, psvc.FOLDED) for pr in drafts) else "review"
 
     # the split is over the rows already filtered, so the chip counts say what this page would show
     reply_counts = {"sends": 0, "review": 0}
@@ -681,6 +682,7 @@ async def triage(request: Request):
             "can_award": can_award,
             "adoptable": adoptable,
             "review": review,
+            "folded": psvc.FOLDED,
             "excerpt": psvc.note_excerpt,
             "total_xe": total_xe,
             "flt": flt,

@@ -778,6 +778,68 @@ async def test_a_family_of_duplicates_closes_in_one_ruling(ctx, db):
     assert all(e.actor == p.actor for e in evs if e.kind.startswith("ticket."))
 
 
+async def test_a_close_as_duplicate_tells_the_reporter_by_every_path(ctx, db):
+    # the rule: adopting a close-as-duplicate sends the programme's duplicate reply, whichever path
+    # adopts it; an agent's draft on that ticket is folded into it, neither sent nor left in the editor
+    p = await _team(ctx, db, roles=("reviewer",))
+    agent = await _agent(ctx, db, p.user)
+    canon = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="first", source="web"))
+    closing = {"status": "closed", "closed_reason": "duplicate"}
+
+    async def filed(title):
+        t = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=title, source="web"))
+        m = await psvc.propose(ctx, db, agent, t, "duplicate_of", canon.id, "same defect, filed later")
+        s = await psvc.propose(ctx, db, agent, t, "status", closing, "dup")
+        d = await psvc.propose(ctx, db, agent, t, "reply_draft", "Same as {duplicate_url}.", "")
+        return t, m, s, d
+
+    async def replies(t):
+        return (await db.execute(select(Reply).where(Reply.ticket_id == t.id))).scalars().all()
+
+    # the row on the triage page: the ids come in the page's order, draft first; the desk runs the mark,
+    # then the close, then the draft, and the draft is folded, reported as decided, not skipped
+    a, am, as_, ad = await filed("a")
+    assert psvc.send_review(ctx, await psvc.pending_for(db, a), ad, a) == psvc.FOLDED
+    out = await psvc.decide_many(ctx, db, p, [ad.id, as_.id, am.id], [], send_plain=True)
+    assert out["skipped"] == []
+    by = {d["proposal"]: d for d in out["decided"]}
+    assert by[as_.id]["sent"] and canon.id in by[as_.id]["reply_text"] and by[as_.id]["folded"] == [ad.id]
+    assert by[ad.id]["folded"] is True and "sent" not in by[ad.id]
+    await db.refresh(a)
+    await db.refresh(ad)
+    assert (a.status, a.closed_reason, a.draft, ad.state) == ("closed", "duplicate", "", "adopted")
+    rs = await replies(a)
+    assert len(rs) == 1 and canon.id in rs[0].body and "Same as" not in rs[0].body
+    assert rs[0].author_id == p.user.id
+
+    # one chip on the ticket page, without send_plain: the close still tells; the mark was adopted first
+    b, bm, bs, bd = await filed("b")
+    await psvc.decide(ctx, db, p, bm, True)
+    out = await psvc.decide(ctx, db, p, bs, True)
+    assert out["sent"] and canon.id in out["reply_text"] and out["folded"] == [bd.id]
+    await db.refresh(b)
+    await db.refresh(bd)
+    assert (b.status, b.draft, bd.state) == ("closed", "", "adopted")
+    assert len(await replies(b)) == 1
+
+    # a status proposal that closes for another reason sends nothing; the draft waits as before
+    c = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="c", source="web"))
+    invalid = {"status": "closed", "closed_reason": "invalid"}
+    cs = await psvc.propose(ctx, db, agent, c, "status", invalid, "x")
+    cd = await psvc.propose(ctx, db, agent, c, "reply_draft", "Thanks, we have read it.", "")
+    out = await psvc.decide_many(ctx, db, p, [cd.id, cs.id], [], send_plain=True)
+    by = {d["proposal"]: d for d in out["decided"]}
+    assert "sent" not in by[cs.id] and by[cd.id]["review"] == "the ticket is closed"
+    assert await replies(c) == []
+
+    # the close without its mark is refused as before, and nothing is sent
+    e = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="e", source="web"))
+    es = await psvc.propose(ctx, db, agent, e, "status", closing, "dup")
+    out = await psvc.decide_many(ctx, db, p, [es.id], [])
+    assert out["decided"] == [] and "duplicate_of" in out["skipped"][0]["why"]
+    assert await replies(e) == []
+
+
 async def test_a_marked_duplicate_with_the_close_still_pending_is_part_of_the_family(ctx, db):
     # the mark was adopted on its own (or set by hand); the status chip is all that is left on the row.
     # It still belongs to the duplicates view and to the family's one-click ruling.

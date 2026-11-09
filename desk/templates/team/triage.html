@@ -5,7 +5,7 @@
 {%- set v = pr.value.value -%}
 {%- set ok = adoptable(pr) -%}
 {%- set why = review(r, pr) if pr.field == "reply_draft" else none -%}
-<span class="chip {{ pr.field }}{% if not ok %} locked{% endif %}{% if pr.field == "reply_draft" and not why %} sends{% endif %}" data-pid="{{ pr.id }}" title="#{{ pr.id }}{% if owners.get(pr.token_id) %} · {{ owners[pr.token_id] }}{% endif %}{% if pr.reason %} · {{ pr.reason|e }}{% endif %}{% if pr.field == "reply_draft" %} · {{ v|e }}{% endif %}">
+<span class="chip {{ pr.field }}{% if not ok %} locked{% endif %}{% if pr.field == "reply_draft" and why in (none, folded) %} sends{% endif %}" data-pid="{{ pr.id }}" title="#{{ pr.id }}{% if owners.get(pr.token_id) %} · {{ owners[pr.token_id] }}{% endif %}{% if pr.reason %} · {{ pr.reason|e }}{% endif %}{% if pr.field == "reply_draft" %} · {{ v|e }}{% endif %}">
   {%- if pr.field == "verdict" %}<i>verdict</i> {{ v }}
   {%- elif pr.field == "assessed_tier" %}<i>tier</i> {{ cfg.tier_label(v) }}{% if not ok %} <small>tier role</small>{% endif %}
   {%- elif pr.field == "mainnet_gate" %}<i>gate</i> {{ cfg.gates.get(v, v) }}
@@ -15,7 +15,7 @@
   {%- elif pr.field == "duplicate_of" %}<i>dup of</i> <a href="/{{ v }}">{{ v }}</a>
   {%- elif pr.field == "status" %}<i>status</i> {% if v is mapping %}{{ v.status }}{% if v.closed_reason %} · {{ v.closed_reason }}{% endif %}{% else %}{{ v }}{% endif %}
   {%- elif pr.field == "award_xe" %}<i>award</i> {{ "{:,}".format(v|int) }} XE{% if not ok %} <small>treasurer</small>{% endif %}
-  {%- elif pr.field == "reply_draft" %}<i>reply</i> {% if why %}draft, {{ v|length|n }} chars <small>review · {{ why }}</small>{% else %}sends on adopt{% endif %}
+  {%- elif pr.field == "reply_draft" %}<i>reply</i> {% if why == folded %}draft, {{ v|length|n }} chars <small>{{ why }}</small>{% elif why %}draft, {{ v|length|n }} chars <small>review · {{ why }}</small>{% else %}sends on adopt{% endif %}
   {%- else %}<i>{{ pr.field }}</i> {{ v }}{% endif %}
   {%- if ok %}<button type="button" class="x" data-reject-one="{{ pr.id }}" title="Reject #{{ pr.id }}">×</button>{% endif -%}
 </span>
@@ -43,7 +43,7 @@
 <div class="release triage">
 <div class="tag"><span>Triage</span></div>
 <h1>What the agents have read, waiting for a ruling.</h1>
-<p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. A reply chip marked <b>sends on adopt</b> is a plain acknowledgement, nothing in it but this ticket, and goes to the reporter under your name when you adopt; one marked <b>review</b> says why it waits on the ticket as a draft instead. A duplicate family closes and replies in one click.</p>
+<p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. A reply chip marked <b>sends on adopt</b> is a plain acknowledgement, nothing in it but this ticket, and goes to the reporter under your name when you adopt; one marked <b>review</b> says why it waits on the ticket as a draft instead. A close as duplicate always tells the reporter: adopting it sends the programme's duplicate reply under your name, and any agent draft on that ticket is folded into it. A duplicate family closes and replies in one click.</p>
 <div class="counts">
   <div><b>{{ counts.all|n }}</b>tickets waiting</div>
   <div><b>{{ counts.proposals|n }}</b>proposals</div>

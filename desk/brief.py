@@ -504,6 +504,8 @@ def build_agent_brief(
             "draft, flagged for a read. `{ticket_url}` and `{tier}` are filled in on adoption. Write in",
             "the programme's voice: plain, specific, no promise of an award, no tier named unless it has",
             "been set, nothing about other reports. On a private ticket say the fact, not the detail.",
+            "On a duplicate, do not draft one: adopting the close as duplicate sends the programme's own",
+            "duplicate reply, and any draft of yours on that ticket is folded into it.",
         )
     )
     add("")

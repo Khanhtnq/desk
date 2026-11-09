@@ -389,7 +389,7 @@
     });
     if ($("#adopt-all")) $("#adopt-all").addEventListener("click", async () => {
       const ids = $$("[data-adopt]:not([disabled])").filter(b => b.closest(".proposal").dataset.field !== "reply_draft").map(b => parseInt(b.dataset.adopt, 10));
-      if (!ids.length || !await ask({ title: `Adopt ${num(ids.length)} proposals?`, body: "Reply drafts are left for you to use one at a time.", ok: "Adopt all" })) return;
+      if (!ids.length || !await ask({ title: `Adopt ${num(ids.length)} proposals?`, body: "Reply drafts are left for you to use one at a time. A close as duplicate sends the programme's duplicate reply under your name.", ok: "Adopt all" })) return;
       try { const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids }); await reportSkipped(r); reload(); } catch (e) { tell("Could not adopt", e.message); }
     });
   }
@@ -410,7 +410,7 @@
     const sentLine = (r) => {
       const d = r.decided || [];
       const sent = d.filter(x => x.sent).length;
-      const held = d.filter(x => x.field === "reply_draft" && !x.sent).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
+      const held = d.filter(x => x.field === "reply_draft" && !x.sent && !x.folded).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
       const parts = [];
       if (sent) parts.push(`Sent ${num(sent)} ${sent === 1 ? "reply" : "replies"} to reporters.`);
       if (held.length) parts.push(held.join(" · "));
@@ -444,7 +444,7 @@
       if (!ids.length) return;
       const sends = rows.reduce((n, tr) => n + $$(".chip.sends:not(.gone)", tr).length, 0);
       const replyNote = sends ? ` ${num(sends)} plain ${sends === 1 ? "acknowledgement is" : "acknowledgements are"} sent to reporters under your name; other reply drafts wait on their tickets.` : " Reply drafts wait on their tickets.";
-      if (!await ask({ title: `Adopt ${num(ids.length)} proposals on ${num(rows.length)} tickets?`, body: `Each is written under your name through the same path as the ticket page: closures close, duplicates are marked, tiers and verdicts are set, awards are set but not approved.${replyNote} Anything the desk refuses is listed afterwards.`, ok: `Adopt ${num(ids.length)}` })) return;
+      if (!await ask({ title: `Adopt ${num(ids.length)} proposals on ${num(rows.length)} tickets?`, body: `Each is written under your name through the same path as the ticket page: closures close, duplicates are marked and closed and their reporters sent the programme's duplicate reply, tiers and verdicts are set, awards are set but not approved.${replyNote} Anything the desk refuses is listed afterwards.`, ok: `Adopt ${num(ids.length)}` })) return;
       try {
         const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids, send_plain: true });
         rows.forEach(tr => settle(tr, r));

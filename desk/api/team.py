@@ -217,6 +217,11 @@ async def adopt(ctx: Ctx, db: Db, who: Who, request: Request, pid: int, body: De
         raise HTTPException(404, "no such proposal")
     out = await psvc.decide(ctx, db, who.principal, pr, True, reason=(body.reason if body else ""))
     await db.commit()
+    text = out.pop("reply_text", None)
+    if out.get("sent") and text:  # a close-as-duplicate told the reporter; the mail follows the commit
+        t = await tsvc.get(db, out["ticket"])
+        if t is not None:
+            out["mailed"] = await notify.reply_to_reporter(ctx, db, t, who.principal.name, text)
     return out
 
 
