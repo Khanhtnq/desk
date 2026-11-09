@@ -37,7 +37,7 @@ from desk.models import AgentToken, Event, Note, Proposal, Reply, Ticket, User
 from desk.services import proposals as psvc
 from desk.services import channels
 from desk.services import reporters as rsvc
-from desk.services import notify, sync, thread, triage, users
+from desk.services import notify, sync, tell, thread, triage, users
 from desk.services import tickets as tsvc
 from desk.services.tickets import utcnow
 from desk.settings import Settings
@@ -1351,6 +1351,99 @@ async def test_the_teams_own_words_on_the_thread_tell_the_reporter(ctx, db):
         ctx, db, q2, message_ref="m2", user_id="2002", user_name="x", body="me", is_team=False
     )
     assert q.told_at is not None and q2.told_at is None
+
+
+async def test_the_desk_tells_a_resting_ticket_nobody_has(ctx, db):
+    # the rule: a bounty ticket resting at accepted or patched, untold past the grace period, is sent the
+    # stock reply for that status, signed by the desk. What a person has in hand (a reply, a draft, an
+    # agent's draft to adopt), a fix the desk may not name, a move back, an import and everything moved
+    # before the sweep first ran are left to the outbox. Only the desk itself sends without a person.
+    repo = "xeprotocol/xe"
+    team = await _team(ctx, db)
+    agent = await _agent(ctx, db, team.user)
+
+    async def mk(title, to="accepted", **kw):
+        t = await tsvc.create(ctx, db, team.actor, tsvc.NewTicket(kind="bounty", title=title, **kw))
+        await tsvc.set_status_via_path(ctx, db, team, t, to)
+        return t
+
+    async def said(t):
+        return [thread.reply_body(ctx, r) for r in await thread.replies_for(db, t)]
+
+    old = await mk("accepted before the desk began telling")
+    assert await tell.tell_resting(ctx, db) == []  # the first run starts the clock and sends nothing
+    plain = await mk("accepted, nobody wrote")
+    sealed = await mk("accepted, private", body="the exploit", visibility="private")
+    answered = await mk("accepted, answered by hand")
+    await thread.add_reply(ctx, db, team, answered, "Accepted; more from us soon.")
+    writing = await mk("accepted, a reply half written")
+    writing.draft = "Thanks, we are"
+    drafted = await mk("accepted, an agent's draft waiting")
+    await psvc.propose(ctx, db, agent, drafted, "reply_draft", "Thanks. See {ticket_url}.", "ack")
+    fixed = await mk("patched, the team linked the fix", to="patched")
+    await thread.add_patch_ref(ctx, db, team, fixed, repo=repo, ref="41", kind="pr")
+    bare = await mk("patched, nothing linked", to="patched")
+    back = await mk("fixing, then the fix was withdrawn", to="fixing")
+    await tsvc.set_status(ctx, db, team, back, "accepted")
+    imported = await mk("accepted by the triage import", to="triaging")
+    await tsvc.set_status(ctx, db, authz.SYSTEM, imported, "accepted", via="triage")
+    merged, _ = await sync.upsert_issue(ctx, db, repo, _issue(120, "Fixed by a merged PR"))
+    await sync.link_pull(ctx, db, repo, _pull(121, "Fix it", "Fixes #120"))
+    await sync.link_pull(ctx, db, repo, _pull(121, "Fix it", "Fixes #120", state="closed", merged=True))
+    stray, _ = await sync.upsert_issue(ctx, db, repo, _issue(122, "A stranger says they fixed it"))
+    theirs = dict(login="rando", association="NONE")
+    await sync.link_pull(ctx, db, repo, _pull(123, "junk", "Fixes #122", **theirs))
+    await tsvc.set_status_via_path(ctx, db, team, stray, "patched")
+    assert merged.status == "patched" and stray.status == "patched"
+    assert [tell.nameable(p) for p in await thread.patches_for(db, stray)] == [False]
+
+    # inside the grace period the words are still a person's to write
+    assert await tell.tell_resting(ctx, db, now=utcnow() + tell.GRACE / 3) == []
+    later = utcnow() + tell.GRACE * 2
+    # without the vault key a private ticket waits; the rest are told
+    full, ctx.vault = ctx.vault, Vault(Signer({"log": KeyPair.generate()}, {"log": {"event.sign"}}))
+    told = await tell.tell_resting(ctx, db, now=later)
+    ctx.vault = full
+    assert {x["ticket"] for x in told} == {plain.id, fixed.id, merged.id}
+    told += await tell.tell_resting(ctx, db, now=later)
+    assert [x["ticket"] for x in told[3:]] == [sealed.id]
+    assert sorted(notify.take_owed(db)) == sorted(x["reply"] for x in told)  # each is mailed after commit
+
+    r = (await thread.replies_for(db, plain))[0]
+    assert r.author_id is None and r.author_name == thread.DESK_NAME == "XE desk" and r.mirror == "none"
+    assert "Read and accepted" in r.body and tsvc.ticket_url(ctx, plain) in r.body
+    assert (await thread.messages_for(db, plain))[-1].author == thread.DESK_NAME
+    sent = [e for e in await EventLog.page(db, 0, 50, ref=plain.id) if e.kind == "reply.sent"]
+    assert [e.actor for e in sent] == ["desk"]
+    r = (await thread.replies_for(db, sealed))[0]
+    assert r.body == "" and r.body_sealed and "Read and accepted" in thread.reply_body(ctx, r)
+    assert len(await said(fixed)) == 1 and f"fixed in {repo}#41." in (await said(fixed))[0]
+    r = (await thread.replies_for(db, merged))[0]
+    assert r.mirror == "queued" and f"fixed in {repo}#121." in r.body  # out to the issue by the worker
+
+    # the rest are as they were, and still the outbox's
+    left = (old, writing, drafted, bare, back, imported, stray)
+    for t in left:
+        assert await said(t) == [], t.title
+    assert await said(answered) == ["Accepted; more from us soon."] and writing.draft == "Thanks, we are"
+    owed = {x.id for x in await tsvc.outbox(db, ctx.config, team)}
+    assert owed == {t.id for t in left}
+    assert await tell.tell_resting(ctx, db, now=later) == []  # and a second run says nothing twice
+
+    # what was missing arrives: a commit linked by a person, the stranger's PR merged by a maintainer
+    await thread.add_patch_ref(ctx, db, team, bare, repo=repo, ref="deadbeefcafe0123", kind="commit")
+    landed = _pull(123, "junk", "Fixes #122", state="closed", merged=True, **theirs)
+    await sync.link_pull(ctx, db, repo, landed)
+    again = await tell.tell_resting(ctx, db, now=later)
+    assert {x["ticket"] for x in again} == {bare.id, stray.id}
+    assert f"fixed in {repo}@deadbeefca." in (await said(bare))[0]
+    assert f"fixed in {repo}#123." in (await said(stray))[0]
+
+    # a reply with no person behind it is the desk's alone: a token and a reporter are still refused
+    for p in (agent, authz.Principal(kind="reporter", reporter_id=1), authz.ANON):
+        with pytest.raises(HTTPException) as e:
+            await thread.add_reply(ctx, db, p, plain, "not a person")
+        assert e.value.status_code == 403
 
 
 async def test_a_blocked_login_is_neither_linked_nor_mirrored(ctx, db):

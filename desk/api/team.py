@@ -162,11 +162,7 @@ async def reply_template(ctx: Ctx, db: Db, who: Who, request: Request, tid: str,
     t = await tsvc.get_for(db, who.principal, tid)
     if name not in ctx.config.reply_templates:
         raise HTTPException(404, "no such template")
-    prs = await thread.patches_for(db, t)
-    refs = (
-        ", ".join(f"{p.repo}#{p.ref}" if p.kind == "pr" else f"{p.repo}@{p.ref[:10]}" for p in prs)
-        or "the linked PR"
-    )
+    refs = thread.patch_refs_text(await thread.patches_for(db, t)) or "the linked PR"
     return {"name": name, "body": await thread.render_template(ctx, db, name, t, patch_refs=refs)}
 
 

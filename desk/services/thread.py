@@ -175,16 +175,22 @@ def mark_told(t: Ticket, when=None) -> None:
         t.told_at = when
 
 
+DESK_NAME = "XE desk"  # how a reply the desk sends itself is signed
+
+
 async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str) -> Reply:
+    """A reply to the reporter: a person's, or the desk's own (`SYSTEM`, signed `DESK_NAME`: only ever
+    a stock template, `tell.tell_resting`). A token never sends one."""
     body = clean_text(body).strip()
     if not body:
         raise HTTPException(400, "empty reply")
-    if p.user is None:
+    if p.user is None and p.kind != "system":
         raise HTTPException(403, "only a person sends a public reply")
+    author_id, author = (p.user.id, p.name) if p.user is not None else (None, DESK_NAME)
     # Mirrored when the source channel can carry it: a GitHub comment, a message in the Discord thread.
     # The worker handles GitHub; each bot handles its own channel.
     mirror = "queued" if t.source in ("github", "discord", "telegram") and t.visibility == "public" else "none"
-    r = Reply(ticket_id=t.id, author_id=p.user.id, author_name=p.name, body=body, mirror=mirror)
+    r = Reply(ticket_id=t.id, author_id=author_id, author_name=author, body=body, mirror=mirror)
     if t.visibility == "private":
         # the reply row follows the body into the vault, like the thread copy (XE-0426)
         if not ctx.vault.available:
@@ -199,7 +205,7 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
     # itself (with the comment id, so the webhook echo is not a second copy); otherwise it goes in now.
     if mirror == "none":
         await add_message(
-            ctx, db, t, source="desk", source_ref=f"reply:{r.id}", author=p.name, body=body, is_team=True
+            ctx, db, t, source="desk", source_ref=f"reply:{r.id}", author=author, body=body, is_team=True
         )
     await ctx.events.append(
         db,
@@ -419,6 +425,12 @@ async def add_patch_ref(
         public=t.visibility == "public",
     )
     return pr
+
+
+def patch_refs_text(prs: list[PatchRef]) -> str:
+    """Linked patches as a reply names them: `owner/repo#5` for a PR, `owner/repo@abcdef0123` for a
+    commit; "" for none."""
+    return ", ".join(f"{p.repo}#{p.ref}" if p.kind == "pr" else f"{p.repo}@{p.ref[:10]}" for p in prs)
 
 
 async def patch_ref(db: AsyncSession, t: Ticket, repo: str, ref: str) -> PatchRef:

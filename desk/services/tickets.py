@@ -699,6 +699,15 @@ def award_next_step(t: Ticket) -> tuple[str, str | None]:
     return "the fix has not landed; awarded follows patched (or disclosed)", None
 
 
+# Untold: nothing has been said on the ticket's thread since its status last moved. One definition, as
+# SQL for the lists and as a check on one row read under its lock (`tell.tell_resting`).
+UNTOLD = Ticket.told_at.is_(None) | (Ticket.told_at < Ticket.status_changed_at)
+
+
+def untold(t: Ticket) -> bool:
+    return t.status_changed_at is not None and (t.told_at is None or t.told_at < t.status_changed_at)
+
+
 async def outbox(db: AsyncSession, cfg: Config, p: Principal, kind: str = "bounty") -> list[Ticket]:
     """Tickets whose status moved past triage but whose thread has not been told since. A reply sets
     told_at; set_status sets status_changed_at. For the bounty that is fixed-but-silent; for support it is
@@ -710,7 +719,7 @@ async def outbox(db: AsyncSession, cfg: Config, p: Principal, kind: str = "bount
     q = q.where((Ticket.closed_reason.is_(None)) | (Ticket.closed_reason != "withdrawn"))
     if not can(p, "read:private"):
         q = q.where(Ticket.visibility == "public")
-    q = q.where((Ticket.told_at.is_(None)) | (Ticket.told_at < Ticket.status_changed_at))
+    q = q.where(UNTOLD)
     q = q.order_by(_rank(cfg, Ticket.assessed_tier), Ticket.status_changed_at.asc())
     return list((await db.execute(q)).scalars().all())
 

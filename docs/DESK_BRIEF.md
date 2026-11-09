@@ -98,7 +98,7 @@ ticket
 
 ticket_event      append-only, signed, hash-chained: who, what, before, after, when   (the audit trail; §14)
 note              internal; author is a human or an agent token; never shown to reporters
-reply             public; human author only; mirrored to the source channel
+reply             public; a person's, or the desk's own stock reply (never a token's); mirrored to the source channel
 proposal          agent-authored change to any ticket field; state pending | adopted | rejected; adopting writes the field and an event
 ```
 

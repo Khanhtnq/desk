@@ -426,12 +426,14 @@ class Note(Base):
 
 
 class Reply(Base):
-    """Public. Human author only. Mirrored to the source channel by the worker."""
+    """Public. Written by a person, or sent by the desk itself (`author_id` null: a stock template for
+    a status nobody told, `services.tell`); never by a token. Mirrored to the source channel by the
+    worker."""
 
     __tablename__ = "replies"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     ticket_id: Mapped[str] = mapped_column(String(16), ForeignKey("tickets.id"), nullable=False, index=True)
-    author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    author_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     author_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     body: Mapped[str] = mapped_column(Text, nullable=False)
     body_sealed: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # private tickets
