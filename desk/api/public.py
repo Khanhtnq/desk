@@ -132,7 +132,8 @@ async def list_tickets(
     total = await tsvc.count_tickets(db, ctx.config, who.principal, f)
     ids = [t.id for t in rows]
     prs = await tsvc.patch_counts(db, ids)
-    pend = await tsvc.pending_counts(db, ids) if who.principal.is_team or who.principal.is_agent else {}
+    # pending proposals are the working layer: held with the assessment (XE-1734)
+    pend = await tsvc.pending_counts(db, ids) if tsvc.sees_assessment(who.principal) else {}
     hidden = await tsvc.hidden_targets(db, who.principal, rows)
     out = []
     for t in rows:
