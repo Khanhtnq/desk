@@ -646,27 +646,28 @@ def csv_cell(v) -> str:
 
 
 async def withdraw(ctx: Context, db: AsyncSession, r: Reporter, t: Ticket, reason: str = "") -> None:
+    """The reporter closes their own open ticket. The status is read under the row lock, and the move
+    is an ordinary one (every status in OPEN_FOR_REPORTER may close), so a ticket the team patched,
+    awarded or paid a moment ago is not closed over the top of that (XE-1960 sweep)."""
     if not owns(r, t):
         raise HTTPException(403, "not your ticket")
+    await tsvc.lock(db, t)
     if t.status not in OPEN_FOR_REPORTER:
         raise HTTPException(409, f"a {t.status} ticket cannot be withdrawn")
     p = Principal(kind="reporter", reporter_id=r.id)
-    if t.kind == "bounty":
-        await tsvc.set_status(
-            ctx, db, p, t, "closed", closed_reason="withdrawn", reason=reason[:500], force=True
-        )
-    else:
-        await tsvc.set_status(
-            ctx, db, p, t, "closed", closed_reason="answered", reason=reason[:500], force=True
-        )
+    closed_reason = "withdrawn" if t.kind == "bounty" else "answered"
+    await tsvc.set_status(ctx, db, p, t, "closed", closed_reason=closed_reason, reason=reason[:500])
 
 
 async def reply(ctx: Context, db: AsyncSession, r: Reporter, t: Ticket, body: str):
     """The reporter's own word on their ticket, from the desk's reply box. A finished ticket (closed or
     paid) takes none: the rule is here, where the message is written, and the ticket page asks the same
-    question of the same property to decide whether to show the box (XE-1960)."""
+    question of the same property to decide whether to show the box (XE-1960). The question is asked
+    of the row as it is now, under its lock, not as this request read it: a reply racing the close
+    lands before it or is refused."""
     if not owns(r, t):
         raise HTTPException(403, "not your ticket")
+    await tsvc.lock(db, t)
     if not t.is_open:
         raise HTTPException(409, f"a {t.status} ticket takes no more messages; file a new one")
     body = (body or "").strip()

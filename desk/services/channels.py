@@ -164,6 +164,10 @@ async def incoming(
         text = (text + "\n\n" if text else "") + "\n".join(f"Attachment: {u}" for u in attachments)
     if not text:
         return None
+    # the two status moves below are decided on the row as it is now (XE-1960 sweep): read stale, a
+    # `needs-info` ticket closed a moment ago would be put back in triage by the answer. Taken before
+    # anything is written, so the order is the ticket row and then the log, as in `set_status`.
+    await tsvc.lock(db, t)
     m = await thread.add_message(
         ctx,
         db,
@@ -202,6 +206,7 @@ async def close_from_channel(ctx: Context, db: AsyncSession, t: Ticket, *, user_
         closed_reason = "stale"
     elif low.startswith("dup"):
         closed_reason = "duplicate"
+    await tsvc.lock(db, t)
     if closed_reason == "duplicate" and not t.duplicate_of:
         closed_reason = "answered"
     if t.kind == "bounty" and t.status not in ("new", "triaging", "needs-info"):

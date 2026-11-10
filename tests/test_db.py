@@ -1869,6 +1869,66 @@ async def test_a_finished_ticket_takes_no_reporter_message(ctx, db):
     assert "{% if not t.is_open %}" in box
 
 
+async def test_a_reporters_write_is_decided_on_the_ticket_as_it_is_now(ctx, db):
+    """The rule (the XE-1960 sweep; XE-0463 at the reporter's side): what a reporter's message, a
+    withdrawal or a thread command does depends on the ticket's status, and that status is read under
+    the row lock, not as the request first read it. Each writer is handed a ticket that another session
+    has since moved and committed."""
+    team = await _team(ctx, db)
+    r = await rsvc.from_email(ctx, db, "nina@example.org", link_to=None)
+    body = "What I did, what happened, what I expected; enough words to pass the body check."
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+
+    async def filed(title):
+        t = await rsvc.file_ticket(ctx, db, r, rsvc.Filing(kind="bounty", title=title, body=body))
+        await db.commit()
+        return t
+
+    async def elsewhere(t, *moves):
+        async with sm() as other:
+            mine = await tsvc.get(other, t.id)
+            for status, reason in moves:
+                await tsvc.set_status(ctx, other, team, mine, status, closed_reason=reason)
+            await other.commit()
+
+    # a reply box open in one tab, the ticket closed from another: the message is refused
+    t = await filed("Explorer shows the wrong tip")
+    before = len(await thread.messages_for(db, t))
+    await db.commit()
+    await elsewhere(t, ("closed", "invalid"))
+    assert t.status == "new"  # as this session read it
+    with pytest.raises(HTTPException) as e:
+        await rsvc.reply(ctx, db, r, t, "one more thing")
+    assert e.value.status_code == 409 and t.status == "closed"
+    assert len(await thread.messages_for(db, t)) == before
+    await db.commit()
+    # a withdrawal racing the fix: the patched ticket is not closed over
+    t = await filed("Faucet pays the same address twice")
+    await elsewhere(t, ("triaging", None), ("accepted", None), ("patched", None))
+    with pytest.raises(HTTPException) as e:
+        await rsvc.withdraw(ctx, db, r, t, "never mind")
+    assert e.value.status_code == 409 and (t.status, t.closed_reason) == ("patched", None)
+    await db.commit()
+    # a thread /close racing the team's acceptance: the accepted report stays open
+    t = await filed("Node accepts a block from the future")
+    await elsewhere(t, ("triaging", None), ("accepted", None))
+    with pytest.raises(HTTPException) as e:
+        await channels.close_from_channel(ctx, db, t, user_id="9", reason="")
+    assert e.value.status_code == 409 and t.status == "accepted"
+    await db.commit()
+    # an answer in the chat thread racing the close: the message is kept, the question stays closed
+    q = await channels.open_from_channel(ctx, db, _post())
+    for status in ("triaging", "needs-info"):
+        await tsvc.set_status(ctx, db, team, q, status)
+    await db.commit()
+    await elsewhere(q, ("closed", "answered"))
+    m = await channels.incoming(
+        ctx, db, q, message_ref="m1", user_id="1001", user_name="Ada", body="thanks", is_team=False
+    )
+    assert m is not None and (q.status, q.closed_reason) == ("closed", "answered")
+    await db.commit()
+
+
 async def test_support_questions_take_topics_not_areas(ctx, db):
     r = await rsvc.from_email(ctx, db, "gail@example.org", link_to=None)
     body = "I wrote the seed down when I made the wallet but the paper is gone. Is there any way back in?"
