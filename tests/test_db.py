@@ -87,6 +87,7 @@ def ctx():
         DESK_BOUNTY_HOST="bounty.test",
         DESK_SUPPORT_HOST="support.test",
         PUBLIC_BASE_URL="https://bounty.test",
+        GITHUB_BLOCKED_LOGINS="",  # the deployment's own list is not the suite's
     )
     c = Context(
         settings=settings,
@@ -1696,16 +1697,42 @@ async def test_a_blocked_login_is_neither_linked_nor_mirrored(ctx, db):
     for n in ("218", "219", "220"):
         assert await tsvc.find_by_source(db, "github", repo, n) is None
     assert (await db.execute(select(Reporter).where(Reporter.github_id == 98))).first() is None
-    # one it opened before the block keeps its ticket and takes no more of its edits; what GitHub
-    # itself says of the issue (closed) still follows
+    assert await sync.reporter_for(ctx, db, other) is None
+    # one it opened before the block keeps its ticket and takes no more from it: not its edits, and
+    # not its closing of the issue, which is as much its own act and which the poll puts no name to
     again, created = await sync.upsert_issue(
         ctx, db, repo, _issue(216, "Send it to 23bd7ef9", body="v2", state="closed", user=farmer)
     )
     assert again is mine and not created
-    assert (mine.title, mine.body, mine.github_state) == ("Mine", "v1", "closed")
+    assert (mine.title, mine.body, mine.github_state) == ("Mine", "v1", "open")
+    # the login is the account's to change, so the list also names it by GitHub's number: renamed,
+    # it is the same account at every site
+    ctx.settings.github_blocked_logins = "ID:99"
+    renamed = {"login": "harvest", "id": 99}
+    assert await sync.upsert_issue(ctx, db, repo, _issue(221, "Pay 23bd7ef9", user=renamed)) == (None, False)
+    await sync.upsert_issue(ctx, db, repo, _issue(216, "Send it", body="v3", state="closed", user=renamed))
+    assert (mine.title, mine.body, mine.github_state) == ("Mine", "v1", "open")
+    assert await sync.reporter_for(ctx, db, renamed) is None
+    assert await sync.upsert_comment(ctx, db, t, {"id": 72, "user": renamed, "body": "pay me"}) is False
+    assert len(await thread.messages_for(db, t)) == 1
+    refarm = {**_pull(301, "fix: page frontiers again", "Fixes #215", association="NONE"), "user": renamed}
+    assert await sync.link_pull(ctx, db, repo, refarm) == 0
+    assert [p.ref for p in await thread.patches_for(db, t)] == ["300"]
+    assert await tsvc.find_by_source(db, "github", repo, "221") is None
+    # every function that reads GitHub's author asks, bar the two reached only once it has been asked
+    reads = {
+        name
+        for name, fn in inspect.getmembers(sync, inspect.isfunction)
+        if fn.__module__ == sync.__name__ and 'get("user")' in inspect.getsource(fn)
+    }
+    asks = {name for name in reads if "account_blocked(" in inspect.getsource(getattr(sync, name))}
+    assert reads - asks == {"comment_is_teams", "pull_is_maintainers"}
     ctx.settings.github_blocked_logins = ""
-    await sync.upsert_issue(ctx, db, repo, _issue(216, "Mine, reworded", body="v2", user=farmer))
-    assert (mine.title, mine.body) == ("Mine, reworded", "v2")  # unblocked, and still the reporter's draft
+    await sync.upsert_issue(
+        ctx, db, repo, _issue(216, "Mine, reworded", body="v2", state="closed", user=farmer)
+    )
+    # unblocked, and still the reporter's draft
+    assert (mine.title, mine.body, mine.github_state) == ("Mine, reworded", "v2", "closed")
 
 
 async def test_approved_awards_whose_ticket_has_not_caught_up_are_listed(ctx, db):
@@ -2369,7 +2396,7 @@ async def test_a_recycled_github_login_cannot_claim_a_bound_row(ctx, db):
         await rsvc.from_github(ctx, db, {"id": 4242, "login": "ghost2"}, "", link_to=victim)
     assert e.value.status_code == 409
     # an imported row (login only) is still claimed on first sign-in
-    imported = await sync.reporter_for(db, {"id": None, "login": "newcomer"})
+    imported = await sync.reporter_for(ctx, db, {"id": None, "login": "newcomer"})
     assert imported.github_id is None
     claimed = await rsvc.from_github(ctx, db, {"id": 5, "login": "newcomer"}, "", link_to=None)
     assert claimed.id == imported.id and claimed.github_id == 5

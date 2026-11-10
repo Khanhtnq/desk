@@ -28,9 +28,11 @@ class Settings(BaseSettings):
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
     github_webhook_secret: str = Field(default="", alias="GITHUB_WEBHOOK_SECRET")
     github_bot_login: str = Field(default="", alias="GITHUB_BOT_LOGIN")  # the account GITHUB_TOKEN belongs to
-    # GitHub logins the desk does not take in: their pull requests are not linked and their comments are
-    # not mirrored (comma-separated). For an account that farms patches against other people's reports
-    # and plants payout addresses in the threads (XE-0128).
+    # GitHub accounts the desk does not take in (comma-separated; a login, or `id:<n>` for the number
+    # GitHub gives the account, which a rename does not change): an issue one opens is not a ticket,
+    # one it opened earlier takes no more from it, its pull requests are not linked and its comments
+    # are not mirrored. For an account that farms patches against other people's reports and plants
+    # payout addresses in the threads (XE-0128, XE-1876).
     github_blocked_logins: str = Field(default="", alias="GITHUB_BLOCKED_LOGINS")
     # Reporter sign-in with GitHub (an OAuth app; callback is {bounty host}/v1/reporter/auth/github/callback)
     github_oauth_client_id: str = Field(default="", alias="GITHUB_OAUTH_CLIENT_ID")

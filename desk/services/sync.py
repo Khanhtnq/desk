@@ -37,13 +37,18 @@ EDITABLE_STATUSES = ("new", "triaging", "needs-info")
 BLOCKED_MARK = "[comment from a blocked account removed]"
 
 
-def login_blocked(ctx: Context, login: str) -> bool:
+def account_blocked(ctx: Context, user: dict | None) -> bool:
     """An account on GITHUB_BLOCKED_LOGINS: nothing it writes on GitHub reaches the desk, so none of it
     reaches a ticket page or a payout decision (XE-0128). Asked wherever GitHub names an author: an
-    issue it opens is not a ticket and gets no reporter row, an issue it opened before the block is
-    not rewritten by its edits (XE-1876), its comments are not mirrored and its pull requests are
-    not linked."""
-    return bool(login) and login.lower() in ctx.settings.blocked_logins
+    issue it opens is not a ticket and gets no reporter row, an issue it opened before the block
+    takes no more from it (XE-1876), its comments are not mirrored and its pull requests are not
+    linked. The list names an account by its login or, as `id:<n>`, by the number GitHub gives it
+    for life: the login is the account's to change, and a block that knows only the name lasts
+    until the rename."""
+    user = user or {}
+    listed = ctx.settings.blocked_logins
+    login, gid = (user.get("login") or "").lower(), user.get("id")
+    return (bool(login) and login in listed) or (gid is not None and f"id:{gid}" in listed)
 
 
 def _dt(s: str | None) -> datetime | None:
@@ -56,7 +61,7 @@ def _dt(s: str | None) -> datetime | None:
 
 
 async def reporter_for(ctx: Context, db: AsyncSession, user: dict | None) -> Reporter | None:
-    if not user or user.get("type") == "Bot" or login_blocked(ctx, user.get("login") or ""):
+    if not user or user.get("type") == "Bot" or account_blocked(ctx, user):
         return None
     gid, login = user.get("id"), user.get("login") or ""
     r = None
@@ -86,8 +91,11 @@ async def upsert_issue(
     """Create or refresh the ticket for a GitHub issue. Returns (ticket, created). Only GitHub-owned
     facts are refreshed: title, body (while editable), github state and labels, source times. An issue
     opened by a blocked account is not a ticket: (None, False). One it opened before it was blocked
-    keeps its ticket, which the team rules on like any other, and takes no more of its edits."""
-    blocked = login_blocked(ctx, (issue.get("user") or {}).get("login") or "")
+    keeps its ticket, which the team rules on like any other, and takes no more from it: not its
+    edits, and not its closing or reopening of the issue, which is as much the author's to do and
+    which GitHub's list of issues does not put a name to. Labels still follow; they are not the
+    author's to set."""
+    blocked = account_blocked(ctx, issue.get("user"))
     number = str(issue["number"])
     t = await tsvc.find_by_source(db, "github", repo, number)
     body = issue.get("body") or ""
@@ -143,7 +151,7 @@ async def upsert_issue(
             await ctx.events.append(
                 db, "ticket.edited", "desk", {"ticket": t.id, "fields": changed, "via": "github"}, ref=t.id
             )
-        if t.github_state != state:
+        if not blocked and t.github_state != state:
             t.github_state = state
             await ctx.events.append(db, "github.state", "desk", {"ticket": t.id, "state": state}, ref=t.id)
             if state == "closed" and t.is_open and t.status in ("new", "triaging", "needs-info"):
@@ -162,7 +170,7 @@ async def upsert_comment(
     user = comment.get("user") or {}
     login = user.get("login") or ""
     body = comment.get("body") or ""
-    if login_blocked(ctx, login):
+    if account_blocked(ctx, user):
         # not mirrored; a copy taken before the block is emptied rather than left to stand
         await thread.remove_message(db, "github", str(comment["id"]), mark=BLOCKED_MARK)
         return False
@@ -236,7 +244,7 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
     fixes = gh.closing_refs(text)
     state = "merged" if pull.get("merged_at") else (pull.get("state") or "open")
     author = (pull.get("user") or {}).get("login") or ""
-    if login_blocked(ctx, author):
+    if account_blocked(ctx, pull.get("user")):
         # the PR is not linked, and a link made before the block comes off; a ref that moved a ticket
         # (only ever a maintainer's) is left so the return hop still has its record
         await db.execute(
