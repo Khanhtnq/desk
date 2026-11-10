@@ -201,7 +201,9 @@ async def test_the_export_writes_each_ticket_it_counts_once(ctx, db):  # noqa: F
         return await tsvc.create(ctx, db, "desk", tsvc.NewTicket(kind=kind, title=title, area=area))
 
     bounty = [await mk(f"Finding in {area}", area) for area in ctx.config.areas]
-    bounty += [await mk("Finding with no area", None), await mk("Finding in a retired area", "retired")]
+    retired = await mk("Finding in a retired area", None)
+    retired.area = "retired"  # a row stored before the area left the configuration; `create` refuses it
+    bounty += [await mk("Finding with no area", None), retired]
     support = [await mk("Question on nodes", "nodes", "support"), await mk("Question", None, "support")]
     assert "other" in ctx.config.areas and len(bounty) == len(ctx.config.areas) + 2
     md = await triage.export_markdown(ctx, db, SYSTEM)

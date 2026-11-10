@@ -229,6 +229,12 @@ async def create(ctx: Context, db: AsyncSession, actor: str, spec: NewTicket) ->
     if spec.kind not in KINDS or spec.visibility not in VISIBILITIES or spec.source not in SOURCES:
         raise HTTPException(400, "bad kind, visibility or source")
     tier = claimed(spec.claimed_tier)
+    # the area is asked what `fact_value` asks of it: this is the other writer of that column, and the
+    # list filter, the triage sections, the release groups and the award factor match it by equality
+    area = spec.area or None
+    vocab = TOPICS if spec.kind == "support" else AREAS
+    if area is not None and area not in vocab:
+        raise HTTPException(400, f"area must be one of {list(vocab)}")
     if spec.kind != "bounty":
         tier = None  # a question claims nothing, so a later conversion has no claim to inherit
     visibility = "private" if born_private(spec, tier) else "public"
@@ -245,7 +251,7 @@ async def create(ctx: Context, db: AsyncSession, actor: str, spec: NewTicket) ->
         source_url=spec.source_url,
         reporter_id=spec.reporter_id,
         title=clean_text(spec.title, one_line=True)[:512],
-        area=(spec.area or None) and spec.area[:32],
+        area=area,
         claimed_tier=tier,
         status="new",
         source_created_at=spec.source_created_at,

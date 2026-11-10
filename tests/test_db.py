@@ -3763,6 +3763,17 @@ async def test_an_internal_ref_has_one_spelling(ctx, db):
         if re.search(r"\.(internal_ref|duplicate_of|assignee_id)\s*=[^=]", f.read_text())
     ]
     assert assigned == []
+    # `create` is the other writer of a fact with a vocabulary, and asks the area what fact_value does
+    areas = (("bounty", "Consensus"), ("bounty", "nodes"), ("support", "consensus"), ("bounty", "x" * 40))
+    for kind, bad in areas:
+        with pytest.raises(HTTPException) as e:
+            await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind=kind, title="made by hand", area=bad))
+        assert e.value.status_code == 400, bad
+    made = [
+        await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind=kind, title="made by hand", area=area))
+        for kind, area in (("support", "nodes"), ("bounty", "consensus"), ("bounty", ""), ("bounty", None))
+    ]
+    assert [m.area for m in made] == ["nodes", "consensus", None, None]
 
 
 async def test_a_proposal_is_checked_as_the_fact_it_would_set(ctx, db):
