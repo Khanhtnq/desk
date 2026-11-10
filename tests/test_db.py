@@ -1929,6 +1929,56 @@ async def test_a_reporters_write_is_decided_on_the_ticket_as_it_is_now(ctx, db):
     await db.commit()
 
 
+async def test_a_withdrawn_report_keeps_its_assessment_held(ctx, db):
+    """The rule ("Who sees the facts" in the guide): the team's assessment of a confirmed, unfixed bug
+    is not published. A reporter who withdraws an accepted report closes the ticket and fixes nothing,
+    so the assessment stays held on it; asked of each way a reader outside the team gets a tier, a
+    verdict or the tracker link. A ticket the team closes with a ruling publishes it, as before."""
+    team = await _team(ctx, db)
+    r = await rsvc.from_email(ctx, db, "olga@example.org", link_to=None)
+    body = "What I did, what happened, what I expected; enough words to pass the body check."
+    ruling = {"assessed_tier": "high", "verdict": "valid", "internal_ref": "#77"}
+
+    async def accepted(title):
+        f = rsvc.Filing(kind="bounty", title=title, body=body, claimed_tier="medium")
+        t = await rsvc.file_ticket(ctx, db, r, f)
+        await tsvc.set_facts(ctx, db, team, t, ruling)
+        for status in ("triaging", "accepted"):
+            await tsvc.set_status(ctx, db, team, t, status)
+        return t
+
+    def public(t):
+        d = tsvc.to_dict(ctx, t, authz.ANON)
+        return d["assessed_tier"], d["verdict"], d["internal_ref"], d["internal_url"]
+
+    async def found(p, **filt):
+        rows = await tsvc.list_tickets(db, ctx.config, p, tsvc.Filters(status="all", **filt))
+        return {x.id for x in rows}
+
+    held, ruled = await accepted("Ledger accepts a negative lease"), await accepted("Peer list never expires")
+    nothing = (None, None, "", None)
+    assert public(held) == nothing and public(ruled) == nothing  # accepted: held, as ever
+    await rsvc.withdraw(ctx, db, r, held, "changed my mind")
+    await tsvc.set_status(ctx, db, team, ruled, "closed", closed_reason="out-of-scope")
+    assert (held.status, held.closed_reason) == ("closed", "withdrawn")
+    # the row, as every page and the API ask it
+    assert tsvc.assessment_held(held) and not tsvc.assessment_held(ruled)
+    assert public(held) == nothing and public(ruled)[:3] == ("high", "valid", "#77")
+    assert tsvc.shown_tier(held, authz.ANON) == "medium" and tsvc.shown_tier(ruled, authz.ANON) == "high"
+    assert tsvc.to_dict(ctx, held, team)["assessed_tier"] == "high"  # the team sees its own ruling
+    # the same rule as SQL: a public filter matches the claim on a held ticket, never the assessment
+    assert await found(authz.ANON, tier="high") == {ruled.id}
+    assert await found(authz.ANON, tier="medium") == {held.id}
+    assert await found(authz.ANON, verdict="valid") == {ruled.id}
+    assert await found(team, tier="high") == await found(team, verdict="valid") == {held.id, ruled.id}
+    # reopened and fixed, it is published like any other
+    for status in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, team, held, status)
+    assert public(held)[:3] == ("high", "valid", "#77") and await found(authz.ANON, tier="high") == {
+        held.id, ruled.id
+    }
+
+
 async def test_support_questions_take_topics_not_areas(ctx, db):
     r = await rsvc.from_email(ctx, db, "gail@example.org", link_to=None)
     body = "I wrote the seed down when I made the wallet but the paper is gone. Is there any way back in?"

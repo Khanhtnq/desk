@@ -284,11 +284,24 @@ def _rank(cfg: Config, column):
 # internal ticket carries it) is a ranked list of what works against XE and when it will stop working.
 # The ticket, its status and its thread stay public; the assessment is published from `patched` on. The
 # gate and the effort are planning data and stay with the team at every stage.
+#
+# A report its reporter withdraws is closed, and nothing was fixed by that: withdrawn from `accepted`
+# or `fixing` it is still a confirmed, unfixed bug, so a ticket closed as withdrawn keeps its
+# assessment held (the XE-1960 sweep). The rule is spelled twice, for a row and as SQL for the
+# filters, and nowhere else.
 ASSESSMENT_HELD = ("new", "triaging", "needs-info", "accepted", "fixing")
 
 
 def assessment_held(t: Ticket) -> bool:
-    return t.kind == "bounty" and t.status in ASSESSMENT_HELD
+    if t.kind != "bounty":
+        return False
+    return t.status in ASSESSMENT_HELD or (t.status == "closed" and t.closed_reason == "withdrawn")
+
+
+def _held():
+    """`assessment_held` as a column expression; never NULL, so it can be negated."""
+    withdrawn = (Ticket.status == "closed") & (func.coalesce(Ticket.closed_reason, "") == "withdrawn")
+    return (Ticket.kind == "bounty") & (Ticket.status.in_(ASSESSMENT_HELD) | withdrawn)
 
 
 def sees_assessment(p: Principal) -> bool:
@@ -307,7 +320,7 @@ def shown_tier(t: Ticket, p: Principal) -> str | None:
 
 
 def _shown_tier_col():
-    return case((Ticket.status.in_(ASSESSMENT_HELD), Ticket.claimed_tier), else_=Ticket.assessed_tier)
+    return case((_held(), Ticket.claimed_tier), else_=Ticket.assessed_tier)
 
 
 @dataclass
@@ -358,7 +371,7 @@ def _filtered(cfg: Config, p: Principal, f: Filters):
         # the team-only axes are not questions a public caller can ask; refused, not quietly dropped
         # (XE-1560)
         raise HTTPException(403, "gate, has_internal, pending, reporter and queued are team filters")
-    unheld = Ticket.status.notin_(ASSESSMENT_HELD)
+    unheld = ~_held()
     if f.verdict:
         q = q.where(Ticket.verdict == f.verdict if full else (Ticket.verdict == f.verdict) & unheld)
     if f.gate and full:
