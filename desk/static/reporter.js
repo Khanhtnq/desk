@@ -117,6 +117,14 @@
     catch (e) { say("#payout-msg", e.message, false); }
   });
   // ---- ways in: remove one; end other sessions --------------------------------------------------
+  // adding GitHub or Discord to the account is a write: asked for by POST, with the CSRF header, and
+  // the browser is then sent to the address the desk returns
+  document.querySelectorAll("button.link-identity").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      const r = await api("POST", "/v1/reporter/auth/" + b.dataset.provider + "/link", { next: "/account" });
+      location.assign(r.url);
+    } catch (e) { say("#unlink-msg", e.message, false); }
+  }));
   document.querySelectorAll("button.unlink").forEach((b) => b.addEventListener("click", async () => {
     const kind = b.dataset.kind, value = b.dataset.value || "";
     if (!confirm("Remove this way in? You will no longer be able to sign in with it.")) return;
@@ -150,7 +158,12 @@
 
   // ---- sign out ------------------------------------------------------------------------------
   const out = $("#reporter-logout");
-  if (out) out.addEventListener("click", async () => { try { await api("POST", "/v1/reporter/logout"); } catch (e) {} location.assign("/"); });
+  if (out) out.addEventListener("click", async () => {
+    // a refusal (a tab from an older session) is said, not hidden behind a redirect that looks like
+    // a sign-out; the reload brings the page up to date with the session
+    try { await api("POST", "/v1/reporter/logout"); location.assign("/"); }
+    catch (e) { alert("Not signed out: " + e.message); location.reload(); }
+  });
 
   // ---- filing ----------------------------------------------------------------------------------
   const form = $("#report-form");

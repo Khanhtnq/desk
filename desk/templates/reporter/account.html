@@ -12,10 +12,10 @@
   <h3>Ways in</h3>
   <table class="toks">
     {% if bounty or me.github_login %}
-    <tr><td>GitHub</td><td class="k">{% if me.github_login %}@{{ me.github_login }}{% else %}not linked{% endif %}</td><td class="right">{% if not me.github_login and github_sign_in %}<a class="mini button" href="/v1/reporter/auth/github?next=/account">Link</a>{% elif me.github_login %}<button class="ghost mini unlink" type="button" data-kind="github">Remove</button>{% endif %}</td></tr>
+    <tr><td>GitHub</td><td class="k">{% if me.github_login %}@{{ me.github_login }}{% else %}not linked{% endif %}</td><td class="right">{% if not me.github_login and github_sign_in %}<button class="mini link-identity" type="button" data-provider="github">Link</button>{% elif me.github_login %}<button class="ghost mini unlink" type="button" data-kind="github">Remove</button>{% endif %}</td></tr>
     {% endif %}
     {% if (not bounty and discord_sign_in) or has_discord %}
-    <tr><td>Discord</td><td class="k">{% if has_discord %}{{ me.platform_ids.get("discord_handle") or has_discord }}{% else %}not linked{% endif %}</td><td class="right">{% if not has_discord and discord_sign_in %}<a class="mini button" href="/v1/reporter/auth/discord?next=/account">Link</a>{% elif has_discord %}<button class="ghost mini unlink" type="button" data-kind="discord">Remove</button>{% endif %}</td></tr>
+    <tr><td>Discord</td><td class="k">{% if has_discord %}{{ me.platform_ids.get("discord_handle") or has_discord }}{% else %}not linked{% endif %}</td><td class="right">{% if not has_discord and discord_sign_in %}<button class="mini link-identity" type="button" data-provider="discord">Link</button>{% elif has_discord %}<button class="ghost mini unlink" type="button" data-kind="discord">Remove</button>{% endif %}</td></tr>
     {% endif %}
     <tr><td>Email{% if bounty %} <span class="k">for replies</span>{% endif %}</td><td class="k">{{ me.email or "none" }}</td><td class="right">{% if not me.email %}<div class="row"><input type="email" id="email" placeholder="you@example.org" style="max-width:200px"><button class="mini" type="button" id="email-start">Add</button></div>{% else %}<button class="ghost mini unlink" type="button" data-kind="email">Remove</button>{% endif %}</td></tr>
     {% if bounty or me.xe_login_addresses %}

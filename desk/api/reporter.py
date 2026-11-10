@@ -75,35 +75,51 @@ def _callback_url(ctx: Ctx) -> str:
     return f"{ctx.settings.scheme}://{ctx.settings.hosts['bounty']}/v1/reporter/auth/github/callback"
 
 
-@router.get("/auth/github")
-async def github_start(ctx: Ctx, db: Db, who: Who, request: Request, next: str | None = None):
-    """Send the browser to GitHub. The state rides in `challenges` with where to come back to and, if a
-    signed-in reporter is adding GitHub to their account, which account."""
+class LinkIn(BaseModel):
+    next: str | None = None
+
+
+async def _oauth_state(ctx: Ctx, db: Db, kind: str, nxt: str | None, link_to: int | None) -> str:
+    """A provider round trip's state: where to come back to and, when a signed-in reporter is adding
+    the identity to their account, which account. `link_to` is written by the two POST routes below
+    and by nothing else: adding a way in to an account is a write, a write made with a cookie carries
+    the CSRF token (`deps.current`), and a GET carries none. The GET starts used to record it from the
+    cookie alone, so a link on another site could start one (the XE-2101 sweep)."""
+    state = secrets.token_urlsafe(24)
+    detail = {"next": _safe_next(ctx, nxt), "link_to": link_to}
+    expires = auth.now() + auth.CHALLENGE_TTL
+    db.add(Challenge(id=state, kind=kind, user_id=None, challenge=b"", expires_at=expires, detail=detail))
+    await db.commit()
+    return state
+
+
+async def _github_url(ctx: Ctx, db: Db, request: Request, nxt: str | None, link_to: int | None) -> str:
     if not ctx.settings.github_oauth_client_id:
         raise HTTPException(503, "GitHub sign-in is not configured")
     _limit(request)
-    state = secrets.token_urlsafe(24)
-    db.add(
-        Challenge(
-            id=state,
-            kind="oauth",
-            user_id=None,
-            challenge=b"",
-            expires_at=auth.now() + auth.CHALLENGE_TTL,
-            detail={"next": _safe_next(ctx, next), "link_to": who.reporter.id if who.reporter else None},
-        )
-    )
-    await db.commit()
     q = urlencode(
         {
             "client_id": ctx.settings.github_oauth_client_id,
             "redirect_uri": _callback_url(ctx),
             "scope": "read:user user:email",
-            "state": state,
+            "state": await _oauth_state(ctx, db, "oauth", nxt, link_to),
             "allow_signup": "true",
         }
     )
-    return RedirectResponse(f"https://github.com/login/oauth/authorize?{q}", status_code=302)
+    return f"https://github.com/login/oauth/authorize?{q}"
+
+
+@router.get("/auth/github")
+async def github_start(ctx: Ctx, db: Db, request: Request, next: str | None = None):
+    """Send the browser to GitHub to sign in. Never a link: see `_oauth_state`."""
+    return RedirectResponse(await _github_url(ctx, db, request, next, None), status_code=302)
+
+
+@router.post("/auth/github/link")
+async def github_link(ctx: Ctx, db: Db, who: Who, request: Request, body: LinkIn):
+    """A signed-in reporter adds GitHub to their account: the address to send the browser to."""
+    r = _reporter(who, request)
+    return {"url": await _github_url(ctx, db, request, body.next, r.id)}
 
 
 OAUTH_EXPIRED = "sign-in expired or state mismatch; start again"
@@ -165,36 +181,34 @@ def _discord_callback_url(ctx: Ctx) -> str:
     return f"{ctx.settings.scheme}://{ctx.settings.hosts['bounty']}/v1/reporter/auth/discord/callback"
 
 
-@router.get("/auth/discord")
-async def discord_start(ctx: Ctx, db: Db, who: Who, request: Request, next: str | None = None):
-    """Same shape as GitHub. The Discord identity is the one the support bot keys tickets on, so a person
-    who asked in Discord and then signs in here finds the thread under /my."""
+async def _discord_url(ctx: Ctx, db: Db, request: Request, nxt: str | None, link_to: int | None) -> str:
     if not ctx.settings.discord_sign_in:
         raise HTTPException(503, "Discord sign-in is not configured")
     _limit(request)
-    state = secrets.token_urlsafe(24)
-    db.add(
-        Challenge(
-            id=state,
-            kind="oauth-discord",
-            user_id=None,
-            challenge=b"",
-            expires_at=auth.now() + auth.CHALLENGE_TTL,
-            detail={"next": _safe_next(ctx, next), "link_to": who.reporter.id if who.reporter else None},
-        )
-    )
-    await db.commit()
     q = urlencode(
         {
             "client_id": ctx.settings.discord_app_id,
             "redirect_uri": _discord_callback_url(ctx),
             "response_type": "code",
             "scope": "identify email",
-            "state": state,
+            "state": await _oauth_state(ctx, db, "oauth-discord", nxt, link_to),
             "prompt": "none",
         }
     )
-    return RedirectResponse(f"https://discord.com/oauth2/authorize?{q}", status_code=302)
+    return f"https://discord.com/oauth2/authorize?{q}"
+
+
+@router.get("/auth/discord")
+async def discord_start(ctx: Ctx, db: Db, request: Request, next: str | None = None):
+    """Same shape as GitHub. The Discord identity is the one the support bot keys tickets on, so a person
+    who asked in Discord and then signs in here finds the thread under /my."""
+    return RedirectResponse(await _discord_url(ctx, db, request, next, None), status_code=302)
+
+
+@router.post("/auth/discord/link")
+async def discord_link(ctx: Ctx, db: Db, who: Who, request: Request, body: LinkIn):
+    r = _reporter(who, request)
+    return {"url": await _discord_url(ctx, db, request, body.next, r.id)}
 
 
 @router.get("/auth/discord/callback")
@@ -351,10 +365,17 @@ async def unbind_payout(ctx: Ctx, db: Db, who: Who, request: Request):
 
 @router.post("/logout")
 async def logout(ctx: Ctx, db: Db, who: Who, request: Request, response: Response):
-    if who.reporter_session is not None:
+    """Ends the reporter session this browser holds. Only a request that came with a session ends
+    one or clears a cookie: `deps.current` has checked its CSRF token, and a request with none (a form
+    on another site, whose POST carries no cookie) changes nothing here (the XE-2101 sweep). A browser
+    holding the team's cookie as well is the team member to `who`, and still holds a reporter session
+    to end."""
+    if who.session is None and who.reporter_session is None:
+        return {"ok": True}
+    if await auth.reporter_session_from_request(db, request) is not None:
         await auth.end_reporter_session(db, request)
         await db.commit()
-    auth.clear_session_cookie(response, ctx.settings, name=auth.REPORTER_COOKIE)
+        auth.clear_session_cookie(response, ctx.settings, name=auth.REPORTER_COOKIE)
     return {"ok": True}
 
 

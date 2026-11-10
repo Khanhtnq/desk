@@ -33,7 +33,7 @@ from desk.config import load_config
 from desk.context import Context, NodeIdentity
 from desk.db import Base
 from desk.log import EventLog, public_payload
-from desk.models import AgentToken, Event, Note, Proposal, Reply, SeenDelivery, Ticket, User
+from desk.models import AgentToken, Challenge, Event, Note, Proposal, Reply, SeenDelivery, Ticket, User
 from desk.services import proposals as psvc
 from desk.services import channels
 from desk.services import reporters as rsvc
@@ -3082,15 +3082,16 @@ async def test_a_cookie_write_carries_the_csrf_token(ctx, db):
         return out
 
     no_session = {
-        "/v1/github/webhook",  # GitHub's HMAC over the body; no cookie is read
-        "/v1/auth/passkey/login/begin",  # the team's sign-ins: nobody is signed in yet
-        "/v1/auth/passkey/login/finish",
-        "/v1/auth/totp/login",
-        "/v1/auth/invite/accept",
+        ("POST", "/v1/github/webhook"),  # GitHub's HMAC over the body; no cookie is read
+        ("POST", "/v1/auth/passkey/login/begin"),  # the team's sign-ins: nobody is signed in yet
+        ("POST", "/v1/auth/passkey/login/finish"),
+        ("POST", "/v1/auth/totp/login"),
+        ("POST", "/v1/auth/invite/accept"),
     }
-    writes = [r for r in app.routes if isinstance(r, APIRoute) and r.methods - set(deps.SAFE_METHODS)]
+    routes = {(m, r.path): r for r in app.routes if isinstance(r, APIRoute) for m in r.methods}
+    writes = {k: r for k, r in routes.items() if k[0] not in deps.SAFE_METHODS}
     assert len(writes) >= 40
-    assert {r.path for r in writes if deps.current not in calls(r.dependant)} == no_session
+    assert {k for k, r in writes.items() if deps.current not in calls(r.dependant)} == no_session
 
     def req(method, cookie="", csrf="", bearer=""):
         headers = []
@@ -3128,3 +3129,54 @@ async def test_a_cookie_write_carries_the_csrf_token(ctx, db):
     _tok, secret = await users.issue(ctx, db, admin, team.user, "m", "t", ["read:public"], 30)
     a = await deps.current(db, req("POST", f"{auth.SESSION_COOKIE}={traw}", "", secret))
     assert a.principal.kind == "token" and a.session is None
+    # adding a way in to an account is a write. The GET that starts a sign-in reads no session and
+    # names no account, however signed-in the browser that follows it; the POST names the caller's
+    from urllib.parse import parse_qs, urlsplit
+
+    from starlette.responses import Response
+
+    from desk.api import authn
+    from desk.api import reporter as rapi
+
+    async def state_of(url):
+        return (await db.get(Challenge, parse_qs(urlsplit(url).query)["state"][0])).detail
+
+    rapi._attempts.clear()
+    ctx.settings.github_oauth_client_id = "client"
+    ctx.settings.discord_app_id, ctx.settings.discord_oauth_client_secret = "app", "secret"
+    rcookie = f"{auth.REPORTER_COOKIE}={rraw}"
+    nobody = auth.Auth(authz.Principal())
+    for provider, start, link in (
+        ("github", rapi.github_start, rapi.github_link), ("discord", rapi.discord_start, rapi.discord_link)
+    ):
+        path = f"/v1/reporter/auth/{provider}"
+        assert deps.current not in calls(routes[("GET", path)].dependant), provider
+        assert ("POST", f"{path}/link") in writes, provider
+        went = await start(ctx, db, req("GET", rcookie), next="/account")
+        assert await state_of(went.headers["location"]) == {"next": "/account", "link_to": None}
+        who = await deps.current(db, req("POST", rcookie, rs.csrf))
+        url = (await link(ctx, db, who, req("POST", rcookie, rs.csrf), rapi.LinkIn(next="/account")))["url"]
+        assert await state_of(url) == {"next": "/account", "link_to": r.id}
+        with pytest.raises(HTTPException) as e:
+            await link(ctx, db, nobody, req("POST"), rapi.LinkIn())
+        assert e.value.status_code == 401, provider
+    # sign-out: a request that came with no session ends nothing and clears no cookie (a form on
+    # another site posts without the cookie, and its response could otherwise sign the reader out)
+    for route in (rapi.logout, authn.logout):
+        resp = Response()
+        assert await route(ctx, db, nobody, req("POST", rcookie), resp) == {"ok": True}
+        assert "set-cookie" not in resp.headers
+    assert await auth.reporter_session_from_request(db, req("GET", rcookie)) is not None
+    # a browser holding both cookies is the team member to `current`; its reporter session ends too
+    both = req("POST", f"{auth.SESSION_COOKIE}={traw}; {rcookie}", ts.csrf)
+    who = await deps.current(db, both)
+    assert who.session is not None and who.reporter_session is None
+    resp = Response()
+    await rapi.logout(ctx, db, who, both, resp)
+    assert resp.headers["set-cookie"].startswith(f"{auth.REPORTER_COOKIE}=")
+    assert await auth.reporter_session_from_request(db, both) is None
+    assert (await deps.current(db, req("GET", f"{auth.SESSION_COOKIE}={traw}"))).session is not None
+    resp = Response()
+    await authn.logout(ctx, db, who, both, resp)
+    assert resp.headers["set-cookie"].startswith(f"{auth.SESSION_COOKIE}=")
+    assert (await deps.current(db, req("GET", f"{auth.SESSION_COOKIE}={traw}"))).principal.kind == "anon"

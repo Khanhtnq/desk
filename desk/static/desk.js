@@ -209,7 +209,10 @@
   if ($("#remove-totp")) $("#remove-totp").addEventListener("click", async () => {
     try { await api("DELETE", "/v1/auth/totp"); reload(); } catch (e) { say($("#totp-msg"), e.message, false); }
   });
-  if ($("#logout")) $("#logout").addEventListener("click", async () => { await api("POST", "/v1/auth/logout"); location.href = "/"; });
+  if ($("#logout")) $("#logout").addEventListener("click", async () => {
+    try { await api("POST", "/v1/auth/logout"); location.href = "/"; }
+    catch (e) { alert("Not signed out: " + e.message); location.reload(); }
+  });
 
   // ---- tokens --------------------------------------------------------------------------------
   const tokenForm = $("#token-form");

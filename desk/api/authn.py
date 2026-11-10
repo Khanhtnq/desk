@@ -239,10 +239,12 @@ async def invite_create(ctx: Ctx, db: Db, who: Who, request: Request, uid: int):
 
 @router.post("/logout")
 async def logout(ctx: Ctx, db: Db, who: Who, request: Request, response: Response):
+    """Ends the team session this browser holds. A request that came with no session clears no
+    cookie: it carried no CSRF token to check (the XE-2101 sweep)."""
     if who.session is not None:
         await auth.end_session(db, request)
         await db.commit()
-    auth.clear_session_cookie(response, ctx.settings)
+        auth.clear_session_cookie(response, ctx.settings)
     return {"ok": True}
 
 
