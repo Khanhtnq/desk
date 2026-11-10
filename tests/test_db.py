@@ -1961,6 +1961,76 @@ async def test_a_reporters_write_is_decided_on_the_ticket_as_it_is_now(ctx, db):
     await db.commit()
 
 
+async def test_a_check_on_a_ticket_is_made_on_the_row_as_it_is_now(ctx, db):
+    """The rule (XE-0463): a check that decides whether a write to a ticket is allowed reads the row
+    under its lock. `set_status` and `set_award` have held it; asked here of the other writers that
+    test the status or the award first, each handed a ticket another session has since moved."""
+    from desk.api import team as team_api
+
+    team = await _team(ctx, db)
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+
+    async def made(title, upto="patched", award=True):
+        t = await tsvc.create(ctx, db, team.actor, tsvc.NewTicket(kind="bounty", title=title, body="b"))
+        await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "medium"})
+        path = ("triaging", "accepted", "patched")
+        for status in path[: path.index(upto) + 1] if upto != "new" else ():
+            await tsvc.set_status(ctx, db, team, t, status)
+        if award:
+            await tsvc.set_award(ctx, db, team, t, 5_000_000, approve=True)
+        await db.commit()
+        return t
+
+    async def elsewhere(t, *acts):
+        async with sm() as other:
+            mine = await tsvc.get(other, t.id)
+            for act in acts:
+                await act(other, mine)
+            await other.commit()
+
+    async def refused(call, says):
+        with pytest.raises(HTTPException) as e:
+            await call()
+        assert e.value.status_code == 409 and says in e.value.detail, e.value.detail
+        await db.commit()  # the refusal took the row lock; let it go before the next move elsewhere
+
+    def moved(status):
+        return lambda s, mine: tsvc.set_status(ctx, s, team, mine, status)
+
+    def paid(ref):
+        return lambda s, mine: tsvc.mark_paid(ctx, s, team, mine, ref)
+
+    # sealing a report, or changing its tier, races its award (XE-2250)
+    t = await made("Sealed while being awarded")
+    await elsewhere(t, moved("awarded"))
+    assert t.status == "patched"  # as this session read it
+    await refused(lambda: tsvc.set_facts(ctx, db, team, t, {"visibility": "private"}), "stays public")
+    await refused(lambda: tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "high"}), "the award stands")
+    assert (t.status, t.visibility, t.assessed_tier) == ("awarded", "public", "medium")
+    # a payment recorded twice: the second is told it is paid, and the first reference stands
+    await elsewhere(t, paid("tx-first"))
+    await refused(lambda: tsvc.mark_paid(ctx, db, team, t, "tx-second"), "this one is paid")
+    assert (t.status, t.paid_ref) == ("paid", "tx-first")
+    # moving a ticket to another reporter while it is being paid
+    t = await made("Reassigned while being paid")
+    await elsewhere(t, moved("awarded"), paid("tx"))
+    await refused(lambda: rsvc.attach(ctx, db, team, t, email="pat@example.org"), "reporter on record stands")
+    assert t.reporter_id is None
+    # converting a report to a question while it is being accepted
+    t = await made("Converted while being accepted", upto="new", award=False)
+    await elsewhere(t, moved("triaging"), moved("accepted"))
+    who = auth.Auth(principal=team)
+    await refused(lambda: team_api.set_kind(ctx, db, who, None, t.id, "support"), "is not converted")
+    assert (t.kind, t.status) == ("bounty", "accepted")
+    # filling a blank amount that has just been filled: it fills blanks, it does not revise
+    t = await made("Amount set while being filled", award=False)
+    await elsewhere(t, lambda s, mine: tsvc.set_award(ctx, s, team, mine, 7_000_000))
+    out = await psvc.fill_awards(ctx, db, team, [t.id], next(iter(ctx.config.award_steps)))
+    assert out["filled"] == [] and out["skipped"] == [{"ticket": t.id, "why": "already has an amount"}]
+    assert t.award_xe == 7_000_000
+    await db.commit()
+
+
 async def test_a_withdrawn_report_keeps_its_assessment_held(ctx, db):
     """The rule ("Who sees the facts" in the guide): the team's assessment of a confirmed, unfixed bug
     is not published. A reporter who withdraws an accepted report closes the ticket and fixes nothing,

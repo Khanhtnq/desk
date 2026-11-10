@@ -121,6 +121,7 @@ async def fill_awards(ctx: Context, db: AsyncSession, p: Principal, ids: list[st
         if t is None or not can_see(p, t):
             skipped.append({"ticket": tid, "why": "no such ticket"})
             continue
+        await tsvc.lock(db, t)  # "has no amount" as the row is now, not as this request read it
         if t.award_xe is not None:
             skipped.append({"ticket": tid, "why": "already has an amount"})
             continue

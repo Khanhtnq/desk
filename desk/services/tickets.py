@@ -803,7 +803,10 @@ async def set_facts(
     via: str = "",
 ) -> dict[str, Any]:
     """Set fact fields. The caller has checked permissions per field (authz.require_field). Returns the
-    applied diff. Vocabulary is enforced here so a bad value never lands however it arrived."""
+    applied diff. Vocabulary is enforced here so a bad value never lands however it arrived. The row is
+    locked first: what may change depends on the ticket's status (the tier behind an award, sealing an
+    awarded report), and that is read as it is now (XE-0463)."""
+    await lock(db, t)
     diff: dict[str, Any] = {}
     for k, v in changes.items():
         if k not in FACT_VOCAB:
@@ -1192,6 +1195,7 @@ async def mark_paid(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, pai
     ref = (paid_ref or "").strip()
     if not ref or len(ref) > 64 or not ref.isprintable():
         raise HTTPException(400, "paid_ref is 1 to 64 printable characters")
+    await lock(db, t)  # of two recordings of one payment the second finds it paid (XE-0463)
     if t.status != "awarded":
         raise HTTPException(409, f"only an awarded ticket is paid; this one is {t.status}")
     t.paid_ref = ref

@@ -119,6 +119,7 @@ async def set_kind(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, kind:
     _team(who, request)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "facts", t)
+    await tsvc.lock(db, t)  # the record that stops a conversion is read as it is now (XE-0463)
     if kind not in ("bounty", "support") or kind == t.kind:
         raise HTTPException(400, "kind is bounty or support, and must change")
     settled = ("accepted", "fixing", "patched", "disclosed", "awarded", "paid")
