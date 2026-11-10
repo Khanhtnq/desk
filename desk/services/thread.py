@@ -324,13 +324,15 @@ def fill(ctx: Context, tpl: str, t: Ticket, **extra: str) -> str:
     that is not a template (a stray brace) comes back as it was. `{duplicate_url}` is filled only when
     given (see `fill_for`): without a reader in mind the desk does not know whether it may be named, and
     an unfilled placeholder keeps a draft in the editor (`review_reason`)."""
-    from .tickets import assessment_held, ticket_url, xe_amount
+    from .tickets import assessment_held, award_published, ticket_url, xe_amount
 
     values = {
         "ticket_url": ticket_url(ctx, t),
         # where a reporter binds the address an award is paid to; same front door as the ticket
         "account_url": ticket_url(ctx, t).rsplit("/", 1)[0] + "/account",
-        "award": "" if t.award_xe is None else xe_amount(t.award_xe),
+        # the amount is published by `awarded`; a template or a draft filled before that names nothing,
+        # and the `awarded` reply is filled after the move (XE-0735)
+        "award": xe_amount(t.award_xe) if t.award_xe is not None and award_published(t) else "",
         # the tier is held until the fix ships; a draft that names it early names nothing (XE-0733)
         "tier": "" if assessment_held(t) else ctx.config.tier_label(t.assessed_tier),
         "patch_refs": extra.pop("patch_refs", "the linked PR"),

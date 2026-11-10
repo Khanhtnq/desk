@@ -50,7 +50,7 @@ Either way there is also a staging instance at `desk.test.network`, per the proj
 
 | Role | Who | Can |
 |---|---|---|
-| Reporter | Anyone with an account | File, read and update own tickets; add a payout address; see own award status; see the public leaderboard and public tickets |
+| Reporter | Anyone with an account | File, read and update own tickets; add a payout address; see own award once the ticket is `awarded`; see the public leaderboard and public tickets |
 | Agent | A pinned model with a scoped token, run by a team member | Read every ticket including private ones it is scoped to; write internal notes; propose severity, duplicate, internal ticket, status, estimate, gate; attach a patch reference. Cannot send a public reply, change public status, or touch awards |
 | Reviewer | Core team humans (Adam, Joseph, Will, named others) | Everything an agent can, plus: adopt or reject proposals, send public replies, set status and tier, mark duplicates, set the mainnet gate, link patches, mark disclosed |
 | Treasurer | Members only (Joseph, Will) | Approve awards; export the payout list |

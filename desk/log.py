@@ -341,6 +341,10 @@ ADMIN_ID_KEYS = frozenset({"user", "token", "owner"})
 HELD_FACT_KEYS = frozenset(
     {"assessed_tier", "verdict", "mainnet_gate", "effort_eng", "internal_ref", "duplicate_of"}
 )
+# A change that is not named at all outside the team: `award_approved`, written when a tier is re-ruled
+# under an approved award. Listing it under `held` would say an award had been approved, which is what
+# `awarded` publishes and nothing before it (XE-0735).
+UNNAMED_FACT_KEYS = frozenset({"award_approved"})
 HELD_PAYLOAD_KEYS = {
     "ticket.facts": frozenset({"reason"}),
     "ticket.status": frozenset({"reason"}),
@@ -349,8 +353,8 @@ HELD_PAYLOAD_KEYS = {
     "proposal.rejected": frozenset({"reason"}),
     "ticket.internal_predates": frozenset({"internal_ref"}),
     # an award is published by `awarded`, on the ticket (`tickets.shown_award`, XE-0735); the log says
-    # that an award was set or approved and not what it is. The steps are a published table, so the
-    # amount alone names the tier while it is held, and the step after
+    # that an award was set or changed, and neither what it is nor whether it is approved. The steps
+    # are a published table, so the amount alone names the tier while it is held, and the step after
     "ticket.award": frozenset({"tier", "step", "award_xe", "approved"}),
 }
 
@@ -409,7 +413,7 @@ def public_payload(kind: str, payload: Any) -> Any:
         drop = drop | DAILY_COUNTS
     out = {k: v for k, v in payload.items() if k not in drop}
     if kind == "ticket.facts" and isinstance(out.get("changes"), dict):
-        kept = {k: v for k, v in out["changes"].items() if k not in HELD_FACT_KEYS}
+        kept = {k: v for k, v in out["changes"].items() if k not in HELD_FACT_KEYS | UNNAMED_FACT_KEYS}
         held = sorted(k for k in out["changes"] if k in HELD_FACT_KEYS)
         out["changes"] = kept
         if held:

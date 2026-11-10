@@ -632,6 +632,19 @@ async def test_held_facts_stay_out_of_public_payloads(ctx, db):
         "ticket.facts", {"ticket": "x", "changes": {"duplicate_of": {"from": None, "to": "XE-0002"}}}
     )
     assert marked["changes"] == {} and marked["held"] == ["duplicate_of"]
+    # a tier re-ruled under an approved award: the tier is a held fact that changed, and that an
+    # approval was taken back is not said at all, by value or by name (XE-0735)
+    reruled = public_payload(
+        "ticket.facts",
+        {
+            "ticket": "x",
+            "changes": {
+                "assessed_tier": {"from": "high", "to": "minor"},
+                "award_approved": {"from": True, "to": False},
+            },
+        },
+    )
+    assert reruled["changes"] == {} and reruled["held"] == ["assessed_tier"]
     assert public_payload("ticket.status", {"via": "family:XE-0002"}) == {"via": "family"}
     predates = public_payload("ticket.internal_predates", {"ticket": "x", "internal_ref": "#9"})
     assert "internal_ref" not in predates
@@ -2401,7 +2414,8 @@ async def test_awarded_is_what_publishes_an_award(ctx, db):
     queue) and to nobody else, the reporter included: the steps are a published table, so an amount
     set on a patched ticket names a judgement nobody has announced. Asked of each way a reader
     outside the team gets a ticket's award: the row as the API and the pages serialise it, the
-    social card, the leaderboard, the log, and the templates that are not the team's."""
+    social card, the leaderboard, the log, a reply filled from a template or a draft, and the
+    templates that are not the team's."""
     from desk import og, ui
     from desk.log import event_to_dict
 
@@ -2414,7 +2428,7 @@ async def test_awarded_is_what_publishes_an_award(ctx, db):
     f = rsvc.Filing(kind="bounty", title="Ledger accepts a negative lease", body=body, claimed_tier="medium")
     t = await rsvc.file_ticket(ctx, db, r, f)
     await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "high", "verdict": "valid"})
-    for status in ("triaging", "accepted", "patched"):
+    for status in ("triaging", "accepted"):
         await tsvc.set_status(ctx, db, team, t, status)
     inside, outside = (team, agent), (authz.ANON, own, linker)
     amount, nothing = 5_000_000, (None, False)
@@ -2432,20 +2446,36 @@ async def test_awarded_is_what_publishes_an_award(ctx, db):
         assert evs and all(e.public for e in evs)
         return [event_to_dict(e, full=False)["payload"] for e in evs]
 
-    # patched, with an amount set and then approved: the tier is public by now, the award is not
-    assert tsvc.to_dict(ctx, t, authz.ANON)["assessed_tier"] == "high"
+    # accepted, with an amount set (it can be, from here on): the bug is unfixed and nothing is served
     await tsvc.set_award(ctx, db, team, t, amount, step="standard")
     assert [served(p) for p in inside] == [(amount, False)] * 2
+    assert [served(p) for p in outside] == [nothing] * 3
+    assert thread.fill(ctx, "Awarded: {award} XE.", t) == "Awarded:  XE."
+    # patched, and then approved: the tier is public by now, the award is not
+    await tsvc.set_status(ctx, db, team, t, "patched")
+    assert tsvc.to_dict(ctx, t, authz.ANON)["assessed_tier"] == "high"
     assert [served(p) for p in outside] == [nothing] * 3
     await tsvc.set_award(ctx, db, team, t, None, approve=True)
     assert t.status == "patched" and t.award_approved_at is not None and not tsvc.award_published(t)
     assert [served(p) for p in inside] == [(amount, True)] * 2
     assert [served(p) for p in outside] == [nothing] * 3
     assert card() == [] and await tsvc.leaderboard(db) == []
-    # the log says an award was set and approved, and not what it is
+    # a template or a draft filled before the move names no amount
+    assert thread.fill(ctx, "Awarded: {award} XE.", t) == "Awarded:  XE."
+    # the log says an award was set and changed, and not what it is or whether it is approved
     assert await logged() == [{"ticket": t.id}] * 2
     full = [e.payload for e in await EventLog.page(db, 0, 50, ref=t.id) if e.kind == "ticket.award"]
     assert {p["award_xe"] for p in full} == {amount} and {p["tier"] for p in full} == {"high"}
+    # a tier re-ruled under the approved award takes the approval back: the log names the tier as a
+    # held fact that changed and says nothing of the approval
+    await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "medium"})
+    assert t.award_approved_at is None
+    facts = [e for e in await EventLog.page(db, 0, 50, ref=t.id) if e.kind == "ticket.facts"]
+    reruled = [e for e in facts if "award_approved" in e.payload["changes"]]
+    assert len(reruled) == 1 and reruled[0].public
+    seen = event_to_dict(reruled[0], full=False)["payload"]
+    assert seen["changes"] == {} and seen["held"] == ["assessed_tier"]
+    await tsvc.set_award(ctx, db, team, t, None, approve=True)
 
     # `awarded` publishes it: the row, the card and the leaderboard carry it; the log still does not
     await tsvc.set_status(ctx, db, team, t, "awarded")
@@ -2453,7 +2483,8 @@ async def test_awarded_is_what_publishes_an_award(ctx, db):
     assert [served(p) for p in inside + outside] == [(amount, True)] * 5
     assert card() == ["5 XE"]
     assert [(row["reporter_id"], row["award_xe"]) for row in await tsvc.leaderboard(db)] == [(r.id, amount)]
-    assert await logged() == [{"ticket": t.id}] * 2
+    assert await logged() == [{"ticket": t.id}] * 3
+    assert thread.fill(ctx, "Awarded: {award} XE.", t) == "Awarded: 5 XE."
     # a question is never awarded, whatever its row says
     t.kind = "support"
     assert not tsvc.award_published(t) and served(authz.ANON) == nothing
