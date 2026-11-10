@@ -109,6 +109,22 @@ async def _team(ctx, db, roles=("reviewer", "tier", "treasurer", "admin"), email
     return authz.Principal(kind="user", user=u, roles=set(roles))
 
 
+def _api_routes(app) -> list:
+    """Every API route the app serves, each as it is served: `path`, `methods`, `endpoint`, `dependant`
+    and `body_field` with the including router's prefix and dependencies applied. FastAPI used to copy
+    an included router's routes into `app.routes`; it now keeps the router there and resolves its
+    routes on demand, so `app.routes` holds no `APIRoute` for them and a walk of it found nothing
+    (and a test that asserts "no route does X" over nothing passes). `iter_route_contexts` is what
+    FastAPI's own OpenAPI builder walks; without it the list is the flat one."""
+    from fastapi import routing
+
+    walk = getattr(routing, "iter_route_contexts", None)
+    found = list(walk(app.routes)) if walk else list(app.routes)
+    out = [r for r in found if isinstance(getattr(r, "original_route", r), routing.APIRoute)]
+    assert len(out) >= 60, len(out)  # the desk has well over this many; an empty walk asserts nothing
+    return out
+
+
 async def _agent(ctx, db, owner: User, scopes=("read:public", "write:notes", "write:proposals")):
     tok, _raw = await users.issue(
         ctx, db, authz.Principal(kind="user", user=owner, roles={"admin"}), owner, "m", "t", list(scopes), 30
@@ -2398,7 +2414,6 @@ async def test_hex_in_a_signed_request_has_one_spelling(ctx, db):
     import inspect
     import typing
 
-    from fastapi.routing import APIRoute
     from pydantic import ValidationError
 
     from desk.main import app
@@ -2442,10 +2457,7 @@ async def test_hex_in_a_signed_request_has_one_spelling(ctx, db):
         with pytest.raises(statechain.StateChainError, match="64 hex"):
             statechain.validate_keyset({"keys": [k], "threshold": 1})
     # both routes that take a signed request take it through the model
-    signed = [
-        r for r in app.routes
-        if isinstance(r, APIRoute) and "verify_signed(" in inspect.getsource(r.endpoint)
-    ]
+    signed = [r for r in _api_routes(app) if "verify_signed(" in inspect.getsource(r.endpoint)]
     assert {r.path for r in signed} == {"/v1/reporter/auth/xe", "/v1/reporter/payout"}
     for r in signed:
         assert SignedRequest in typing.get_type_hints(r.endpoint).values(), r.path
@@ -3566,7 +3578,6 @@ async def test_a_cookie_write_carries_the_csrf_token(ctx, db):
     CSRF token. It lives in `deps.current`, the one place a route learns who is asking, so the test is
     over every write route the app has: each either goes through it or is on the short list of routes
     that read no session at all. A write route added later without it fails here."""
-    from fastapi.routing import APIRoute
     from starlette.requests import Request
 
     from desk.api import deps
@@ -3585,7 +3596,7 @@ async def test_a_cookie_write_carries_the_csrf_token(ctx, db):
         ("POST", "/v1/auth/totp/login"),
         ("POST", "/v1/auth/invite/accept"),
     }
-    routes = {(m, r.path): r for r in app.routes if isinstance(r, APIRoute) for m in r.methods}
+    routes = {(m, r.path): r for r in _api_routes(app) for m in r.methods}
     writes = {k: r for k, r in routes.items() if k[0] not in deps.SAFE_METHODS}
     assert len(writes) >= 40
     assert {k for k, r in writes.items() if deps.current not in calls(r.dependant)} == no_session
@@ -3687,7 +3698,6 @@ async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
     takes a body some other way (a bare dict, the raw request) fails here too."""
     import typing
 
-    from fastapi.routing import APIRoute
     from pydantic import BaseModel, ValidationError
 
     from desk import main
@@ -3744,7 +3754,7 @@ async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
         args = typing.get_args(tp)
         return {tp} if not args else {c for a in args if a is not type(None) for c in classes(a)}
 
-    routes = [r for r in main.app.routes if isinstance(r, APIRoute)]
+    routes = _api_routes(main.app)
     declared = {
         (r.path, f.name): classes(f.field_info.annotation) for r in routes for f in r.dependant.body_params
     }
@@ -4138,14 +4148,13 @@ async def test_a_request_body_is_bounded_as_it_is_read(ctx, monkeypatch):
     assert await run("/v1/events/stream", json_max + 1, method="GET", reader="late") == (200, json_max)
     # and no route has FastAPI read a form for it: a declared body is read before `current` says who
     # is calling, so the filing reads its own once it knows (the JSON routes have 2 MB at most)
+    served = _api_routes(main.app)
     forms = [
-        r.path
-        for r in main.app.routes
-        if isinstance(getattr(getattr(r, "body_field", None), "field_info", None), params.Form)
+        r.path for r in served if isinstance(getattr(r.body_field, "field_info", None), params.Form)
     ]
     assert forms == []
-    route = next(r for r in main.app.routes if getattr(r, "path", "") == filing and "POST" in r.methods)
-    assert route.body_field is None
+    route = [r for r in served if r.path == filing and "POST" in r.methods]
+    assert len(route) == 1 and route[0].body_field is None
     # the real stack and the real parser: a JSON route, a body one byte over that declares no length.
     # FastAPI reads a model's body before any dependency, so no database is touched
     sent, out = 0, []
