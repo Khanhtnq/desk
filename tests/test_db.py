@@ -2194,6 +2194,8 @@ async def test_hex_in_a_signed_request_has_one_spelling(ctx, db):
         return [
             h[:2] + " " + h[2:], " " + h, h + " ", h + "\n", h[:-2] + "\t" + h[-2:],  # fromhex reads these
             "0x" + h, h[:-2], h + "00", "g" + h[1:], "",
+            # the right length and not ASCII hex: what a later `\d`, `(?i)` or `$` would let through
+            "\u0661" + h[1:], "\uff21" + h[1:], h[:-1] + "\n",
         ]
 
     kp = KeyPair.generate()
@@ -2202,7 +2204,7 @@ async def test_hex_in_a_signed_request_has_one_spelling(ctx, db):
     base = {"payload": good.payload, "timestamp": good.timestamp}
     bad = [{"pub_key": k, "signature": good.signature} for k in respell(good.pub_key)]
     bad += [{"pub_key": good.pub_key, "signature": s} for s in respell(good.signature)]
-    assert len(bad) == 20
+    assert len(bad) == 26
     for fields in bad:
         with pytest.raises(ValidationError):  # the request model: a 422 at the route, before any handler
             SignedRequest(**base, **fields)
