@@ -17,7 +17,7 @@ import struct
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
-from .keys import KeyPair, derive_address, verify_hex_signature
+from .keys import KeyPair, derive_address, is_hex, verify_hex_signature
 
 VERSION_BYTE = 0x02
 
@@ -55,13 +55,9 @@ def _u32(v: int) -> bytes:
 
 
 def _hex(value: str, what: str, size: int = 32) -> bytes:
-    try:
-        raw = bytes.fromhex(value)
-    except ValueError as e:
-        raise EncodingError(f"invalid {what} hex") from e
-    if len(raw) != size:
-        raise EncodingError(f"{what} must be {size} bytes, got {len(raw)}")
-    return raw
+    if not is_hex(value, size):
+        raise EncodingError(f"invalid {what}: want {2 * size} hex digits")
+    return bytes.fromhex(value)
 
 
 def _len_prefixed(data: bytes) -> bytes:

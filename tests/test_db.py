@@ -1841,6 +1841,80 @@ async def test_payout_binding_needs_matching_key(ctx, db):
     assert rsvc.csv_cell("-1") == "'-1" and rsvc.csv_cell(5) == "5" and rsvc.csv_cell(None) == ""
 
 
+async def test_hex_in_a_signed_request_has_one_spelling(ctx, db):
+    """The rule (XE-2215; XE-0699 on the DAO's copy): a key or a signature in a signed request is exactly
+    its length in hex digits. Asked of every layer that reads one, so no layer leans on another: the
+    request model both signed routes take, the decoders in `xe/`, and `verify_signed`, which must refuse
+    before it writes the replay row. `bytes.fromhex` takes whitespace; none of these may."""
+    import inspect
+    import typing
+
+    from fastapi.routing import APIRoute
+    from pydantic import ValidationError
+
+    from desk.main import app
+    from desk.models import SeenSignature
+    from xe import encoding, statechain
+    from xe.keys import KeyError_, derive_address, is_hex, verify_hex_signature
+
+    def respell(h):
+        return [
+            h[:2] + " " + h[2:], " " + h, h + " ", h + "\n", h[:-2] + "\t" + h[-2:],  # fromhex reads these
+            "0x" + h, h[:-2], h + "00", "g" + h[1:], "",
+        ]
+
+    kp = KeyPair.generate()
+    good = _signed(kp, DOMAIN_LOGIN, {"host": "bounty.test"})
+    target = signing_target(DOMAIN_LOGIN, good.payload, good.timestamp)
+    base = {"payload": good.payload, "timestamp": good.timestamp}
+    bad = [{"pub_key": k, "signature": good.signature} for k in respell(good.pub_key)]
+    bad += [{"pub_key": good.pub_key, "signature": s} for s in respell(good.signature)]
+    assert len(bad) == 20
+    for fields in bad:
+        with pytest.raises(ValidationError):  # the request model: a 422 at the route, before any handler
+            SignedRequest(**base, **fields)
+        with pytest.raises(KeyError_):  # the decoder, for a caller that did not come through the model
+            verify_hex_signature(fields["pub_key"], fields["signature"], target)
+        with pytest.raises(HTTPException) as e:
+            await verify_signed(db, SignedRequest.model_construct(**base, **fields), DOMAIN_LOGIN)
+        assert e.value.status_code == 401
+    assert (await db.execute(select(SeenSignature))).scalars().all() == []
+    for k in respell(good.pub_key):
+        assert not is_hex(k, 32)
+        with pytest.raises(KeyError_):
+            derive_address(k)
+        with pytest.raises(encoding.EncodingError):
+            encoding._hex(k, "account")
+        with pytest.raises(statechain.StateChainError, match="prev_hash"):
+            blk = statechain.StateBlock(index=0, prev_hash=k, ops=[], timestamp=0)
+            statechain.marshal_state_canonical(blk)
+        with pytest.raises(statechain.StateChainError, match="64 hex"):
+            statechain.validate_keyset({"keys": [k], "threshold": 1})
+    # both routes that take a signed request take it through the model
+    signed = [
+        r for r in app.routes
+        if isinstance(r, APIRoute) and "verify_signed(" in inspect.getsource(r.endpoint)
+    ]
+    assert {r.path for r in signed} == {"/v1/reporter/auth/xe", "/v1/reporter/payout"}
+    for r in signed:
+        assert SignedRequest in typing.get_type_hints(r.endpoint).values(), r.path
+    # either case is hex; it is one signature and one key, stored in one spelling
+    upper = {"pub_key": good.pub_key.upper(), "signature": good.signature.upper()}
+    v = await verify_signed(db, SignedRequest(**base, **upper), DOMAIN_LOGIN)
+    assert (v.account, v.pub_key, v.signature) == (kp.address, kp.pub_key_hex, good.signature)
+    with pytest.raises(HTTPException) as e:
+        await verify_signed(db, good, DOMAIN_LOGIN)
+    assert e.value.status_code == 409
+    r = await rsvc.from_xe(ctx, db, v, link_to=None)
+    pay = _signed(kp, DOMAIN_PAYOUT, {"address": kp.address})
+    shout = SignedRequest(
+        payload=pay.payload, timestamp=pay.timestamp, pub_key=pay.pub_key.upper(),
+        signature=pay.signature.upper(),
+    )
+    await rsvc.bind_payout(ctx, db, r, await verify_signed(db, shout, DOMAIN_PAYOUT))
+    assert r.payout_proof["pub_key"] == kp.pub_key_hex and r.payout_proof["signature"] == pay.signature
+
+
 async def test_xe_login_and_identity_merge(ctx, db):
     kp = KeyPair.generate()
     v = await verify_signed(db, _signed(kp, DOMAIN_LOGIN, {"host": "bounty.test"}), DOMAIN_LOGIN)

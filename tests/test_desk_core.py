@@ -53,7 +53,7 @@ def test_domains_separate_signatures():
 
 
 def test_signed_request_shape_matches_harness():
-    req = SignedRequest(payload={"a": 1}, timestamp=1, pub_key="ab", signature="cd")
+    req = SignedRequest(payload={"a": 1}, timestamp=1, pub_key="ab" * 32, signature="cd" * 64)
     assert set(req.model_dump()) == {"payload", "timestamp", "pub_key", "signature"}
 
 

@@ -622,11 +622,19 @@ async def resolve(db: AsyncSession, request: Request) -> Auth:
 # ---- XE signed requests (release 2 routes; the verifier lives here so it is tested now) ------------------
 
 
+# Exactly 64 / 128 hex digits, either case, at the request model: the signature is the replay key and the
+# key names the account, so each has one accepted spelling (lowercased below) and nothing that is not hex
+# reaches the verifier, the replay table or a stored proof. `xe.keys` refuses the same strings on its own,
+# for a caller that does not come through this model (XE-2215; XE-0699 was the DAO's copy).
+HEX32 = r"^[0-9a-fA-F]{64}$"
+HEX64 = r"^[0-9a-fA-F]{128}$"  # the lengths are stated twice below: `$` is not end-of-text in every engine
+
+
 class SignedRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: int
-    pub_key: str
-    signature: str
+    pub_key: str = Field(pattern=HEX32, min_length=64, max_length=64)
+    signature: str = Field(pattern=HEX64, min_length=128, max_length=128)
 
 
 @dataclass
