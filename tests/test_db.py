@@ -3809,6 +3809,22 @@ async def test_a_proposal_is_checked_as_the_fact_it_would_set(ctx, db):
     assert out["diff"]["internal_ref"]["to"] == "#1064" and t.internal_ref == "#1064"
     out = await psvc.decide(ctx, db, p, dup, True)
     assert t.duplicate_of == canon.id
+    # the two fields that are not facts are asked the same question: a status the ticket's door does
+    # not have, and an amount no award may be (with no tier yet there is no ceiling to stop it)
+    for bad in ("accepted", "patched", {"status": "awarded"}):
+        with pytest.raises(HTTPException) as e:
+            await psvc.propose(ctx, db, agent, question, "status", bad, "no")
+        assert e.value.status_code == 400, bad
+    with pytest.raises(HTTPException) as e:
+        over = tsvc.AWARD_MAX // 1_000_000 + 1
+        await psvc.propose(ctx, db, agent, canon, "award_xe", over, "an amount no tier comes near")
+    assert e.value.status_code == 400
+    # a proposal to clear a fact holds null; the triage row does not read that as the id "None"
+    clear = await psvc.propose(ctx, db, agent, canon, "duplicate_of", "", "not a duplicate after all")
+    untier = await psvc.propose(ctx, db, agent, canon, "assessed_tier", "", "no tier yet")
+    assert (clear.value, untier.value) == ({"value": None}, {"value": None})
+    assert psvc.TriageRow(canon, [clear, untier]).duplicate_of is None
+    assert psvc.proposed_tier(canon, [untier]) is None
 
 
 async def test_the_daily_note_counts_what_the_public_counts(ctx, db):

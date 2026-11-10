@@ -42,6 +42,9 @@ async def propose(
         closed_reason = None if isinstance(value, str) else value.get("closed_reason")
         if status not in tsvc.STATUSES:
             raise HTTPException(400, f"unknown status {status!r}; one of {list(tsvc.STATUSES)}")
+        if status not in tsvc.TRANSITIONS[t.kind] and status != t.status:
+            # `accepted` on a support question: a status of the other door, which no path reaches
+            raise HTTPException(400, f"a {t.kind} ticket has no status {status}")
         reasons = sorted(tsvc.CLOSED_REASONS_FOR[t.kind])
         if status == "closed" and closed_reason not in reasons:
             raise HTTPException(400, f"closing a {t.kind} ticket needs closed_reason from {reasons}")
@@ -58,6 +61,10 @@ async def propose(
     if field == "award_xe":
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise HTTPException(400, "award_xe is a whole number of XE, 0 or more")
+        if value > tsvc.AWARD_MAX // 1_000_000:
+            # with no tier yet there is no ceiling to check against, and `set_award` refuses this
+            # whatever the tier: it waited for a person to adopt it, summed into the proposed totals
+            raise HTTPException(400, f"award_xe is at most {tsvc.AWARD_MAX // 1_000_000:,} XE")
         ceiling = ctx.config.ceiling_micro(t.assessed_tier) // 1_000_000
         if ceiling and value > ceiling * 2:
             raise HTTPException(400, f"award_xe exceeds twice the {t.assessed_tier} ceiling ({ceiling} XE)")
@@ -499,8 +506,8 @@ def triage_views(prs: list[Proposal]) -> set[str]:
 def proposed_tier(t: Ticket, prs: list[Proposal]) -> str | None:
     """The tier the row sorts and filters on: the pending proposal if there is one, else the ruling."""
     for pr in prs:
-        if pr.field == "assessed_tier":
-            return str(pr.value.get("value"))
+        if pr.field == "assessed_tier" and pr.value.get("value"):
+            return str(pr.value["value"])  # a proposal to clear it holds null: not the tier "None"
     return t.assessed_tier
 
 
@@ -522,8 +529,9 @@ class TriageRow:
     def duplicate_of(self) -> str | None:
         """The canonical the row groups under: the pending proposal, else the mark already on the ticket."""
         for pr in self.proposals:
-            if pr.field == "duplicate_of":
-                return str(pr.value.get("value"))
+            if pr.field == "duplicate_of" and pr.value.get("value"):
+                # a proposal to clear the mark holds null: not a family headed "None"
+                return str(pr.value["value"])
         return self.ticket.duplicate_of
 
 
