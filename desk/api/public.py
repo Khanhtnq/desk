@@ -13,7 +13,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
-from .. import __version__
+from .. import __version__, auth
 from ..authz import can
 from ..db import session
 from ..log import REPORTER_KINDS, EventLog, event_to_dict
@@ -384,10 +384,8 @@ async def github_webhook(ctx: Ctx, db: Db, request: Request):
         raise HTTPException(401, "bad signature")
     delivery = request.headers.get("x-github-delivery", "")
     event = request.headers.get("x-github-event", "")
-    if delivery:
-        if (await db.execute(select(SeenDelivery).where(SeenDelivery.id == delivery))).scalar_one_or_none():
-            return {"ok": True, "duplicate": True}
-        db.add(SeenDelivery(id=delivery))
+    if delivery and not await auth.claim_first(db, SeenDelivery, id=delivery):
+        return {"ok": True, "duplicate": True}
     try:
         payload = json.loads(body)
     except ValueError:

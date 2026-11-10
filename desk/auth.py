@@ -35,6 +35,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from xe.keys import KeyError_, derive_address, verify_hex_signature
@@ -660,13 +661,8 @@ async def verify_signed(db: AsyncSession, req: SignedRequest, domain: bytes) -> 
     except KeyError_ as e:
         raise HTTPException(401, f"bad signature: {e}") from e
     sig = req.signature.lower()
-    seen = (
-        await db.execute(select(SeenSignature).where(SeenSignature.signature == sig))
-    ).scalar_one_or_none()
-    if seen is not None:
+    if not await claim_first(db, SeenSignature, signature=sig, ts=t):
         raise HTTPException(409, "this signature has already been used")
-    db.add(SeenSignature(signature=sig, ts=t))
-    await db.flush()
     return Verified(
         account=account,
         pub_key=req.pub_key.lower(),
@@ -674,6 +670,16 @@ async def verify_signed(db: AsyncSession, req: SignedRequest, domain: bytes) -> 
         timestamp=req.timestamp,
         signature=sig,
     )
+
+
+async def claim_first(db: AsyncSession, model, **values) -> bool:
+    """Write the row that marks something as used (a signature, a webhook delivery); False when it is
+    already there. One INSERT ... ON CONFLICT DO NOTHING, so of two requests carrying the same one the
+    second waits for the first and is then told it was used, where a read followed by an insert let both
+    read nothing and the second fail on the primary key as a 500."""
+    table = model.__table__
+    stmt = pg_insert(table).values(**values).on_conflict_do_nothing().returning(*table.primary_key.columns)
+    return (await db.execute(stmt)).first() is not None
 
 
 async def purge_seen_signatures(db: AsyncSession) -> int:

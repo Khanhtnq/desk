@@ -33,7 +33,7 @@ from desk.config import load_config
 from desk.context import Context, NodeIdentity
 from desk.db import Base
 from desk.log import EventLog, public_payload
-from desk.models import AgentToken, Event, Note, Proposal, Reply, Ticket, User
+from desk.models import AgentToken, Event, Note, Proposal, Reply, SeenDelivery, Ticket, User
 from desk.services import proposals as psvc
 from desk.services import channels
 from desk.services import reporters as rsvc
@@ -2649,6 +2649,13 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     assert await auth.claim_totp_step(db, team.user, 999) is False
     assert await auth.claim_totp_step(db, team.user, 1001) is True
     await db.commit()
+    # a signed request's signature and a webhook delivery id: the row that marks it used is the claim, and
+    # the second request is told so (a 409, a duplicate), not failed on the primary key
+    signed = _signed(KeyPair.generate(), DOMAIN_LOGIN, {"host": "bounty.test"})
+    first, waited, got = await raced(lambda s: verify_signed(s, signed, DOMAIN_LOGIN))
+    assert first is not None and waited and got is None
+    first, waited, got = await raced(lambda s: auth.claim_first(s, SeenDelivery, id="delivery-1"))
+    assert first is True and waited and got is False
 
 
 async def test_first_sign_ins_converge_on_one_row_and_names_fit(ctx, db):
