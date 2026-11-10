@@ -15,8 +15,10 @@ docs/DEPLOY.md):
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -33,7 +35,9 @@ from desk.config import load_config
 from desk.context import Context, NodeIdentity
 from desk.db import Base
 from desk.log import EventLog, public_payload
-from desk.models import AgentToken, Challenge, Event, Note, Proposal, Reply, SeenDelivery, Ticket, User
+from desk.models import (
+    AgentToken, Challenge, Event, Note, Passkey, Proposal, Reply, SeenDelivery, Ticket, User,
+)
 from desk.services import proposals as psvc
 from desk.services import channels
 from desk.services import reporters as rsvc
@@ -2993,7 +2997,7 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     conditional write, so of two concurrent uses the second waits on the first and then fails. Checked
     for every single-use credential the desk has, with two connections: the first claims and has not
     committed when the second tries. A claim that reads, checks and then writes lets the second read
-    past the first, and fails here (it does not wait, and it succeeds)."""
+    past the first and succeed, and fails here."""
     sm = async_sessionmaker(db.bind, expire_on_commit=False)
     team = await _team(ctx, db)
     uid = team.user.id
@@ -3046,6 +3050,51 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     assert first is not None and waited and got is None
     first, waited, got = await raced(lambda s: auth.claim_first(s, SeenDelivery, id="delivery-1"))
     assert first is True and waited and got is False
+    # a passkey's counter: two sign-ins at one count, then one behind and one ahead
+    pk, plain = (Passkey(user_id=uid, credential_id=c, public_key=b"key") for c in (b"counts", b"plain"))
+    db.add_all([pk, plain])
+    await db.commit()
+    first, waited, got = await raced(lambda s: auth.claim_sign_count(s, pk, 5))
+    assert first is True and waited and got is False
+    assert await auth.claim_sign_count(db, pk, 5) is False
+    assert await auth.claim_sign_count(db, pk, 6) is True
+    # an authenticator that keeps no counter sends 0 each time, and is not locked out by it
+    assert await auth.claim_sign_count(db, plain, 0) and await auth.claim_sign_count(db, plain, 0)
+    await db.commit()
+    # an OAuth state is spent by the callback that presents it, whatever the provider then says: the
+    # same state again is "start again", not a second round trip
+    from starlette.requests import Request
+
+    from desk.api import authn
+    from desk.api import reporter as rapi
+
+    request = Request({"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": []})
+    nobody = auth.Auth(authz.Principal())
+    callbacks = (
+        ("oauth", rapi.github_callback, "GitHub"), ("oauth-discord", rapi.discord_callback, "Discord")
+    )
+    for kind, callback, provider in callbacks:
+        state = await auth._store_challenge(db, kind, b"", None)
+        await db.commit()
+        for said in (f"{provider} did not sign you in", rapi.OAUTH_EXPIRED):
+            async with sm() as web:  # a request's own session, closed uncommitted when its route raises
+                with pytest.raises(HTTPException) as e:
+                    await callback(ctx, web, nobody, request, code="", state=state, error="access_denied")
+            assert e.value.status_code == 400 and e.value.detail.startswith(said), kind
+    # and no site claims one any other way. Outside desk/auth.py nothing reads, deletes or updates a
+    # challenge or a replay table (the worker's expiry of old challenges aside), and a TOTP step is
+    # assigned in one place, where setup writes the new secret and its step together
+    root = Path(auth.__file__).parent
+    direct = re.compile(r"\b(select|delete|update)\(\s*(Challenge|SeenSignature|SeenDelivery)\b")
+    found = {}
+    for f in sorted(root.rglob("*.py")):
+        src = f.read_text(encoding="utf-8")
+        name = str(f.relative_to(root))
+        if name != "auth.py":
+            found.update({name: direct.findall(src)} if direct.search(src) else {})
+        assert len(re.findall(r"\.totp_last_step\s*=[^=]", src)) == (1 if name == "api/authn.py" else 0), name
+    assert found == {"worker.py": [("delete", "Challenge")]}
+    assert ".totp_last_step = " in inspect.getsource(authn.totp_confirm)
 
 
 async def test_first_sign_ins_converge_on_one_row_and_names_fit(ctx, db):

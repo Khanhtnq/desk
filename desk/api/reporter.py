@@ -125,6 +125,17 @@ async def github_link(ctx: Ctx, db: Db, who: Who, request: Request, body: LinkIn
 OAUTH_EXPIRED = "sign-in expired or state mismatch; start again"
 
 
+async def _take_state(db: Db, state: str, kind: str) -> auth.TakenChallenge:
+    """A provider's callback spends its state before anything else, and for good: the take is
+    committed here. Left to the request's own commit, a callback that then failed (no code, a code
+    the provider refused) rolled the take back, so one state could be presented again and again for
+    its five minutes, each time holding the row's lock and a pooled connection across the provider
+    round trip (the XE-2053 sweep). Every failure after this already says "start again"."""
+    ch = await auth.take_challenge(db, state, kind, OAUTH_EXPIRED)
+    await db.commit()
+    return ch
+
+
 def _link_target(ch: auth.TakenChallenge, who: Who) -> int | None:
     """The account a sign-in adds its identity to: only the one the asking browser is still signed in as.
     A state handed to another browser (login CSRF) is a plain sign-in there, never a merge."""
@@ -138,7 +149,7 @@ def _link_target(ch: auth.TakenChallenge, who: Who) -> int | None:
 async def github_callback(
     ctx: Ctx, db: Db, who: Who, request: Request, code: str = "", state: str = "", error: str = ""
 ):
-    ch = await auth.take_challenge(db, state, "oauth", OAUTH_EXPIRED)
+    ch = await _take_state(db, state, "oauth")
     if error or not code:
         raise HTTPException(400, f"GitHub did not sign you in: {error or 'no code'}")
     async with httpx.AsyncClient(timeout=15) as client:
@@ -215,7 +226,7 @@ async def discord_link(ctx: Ctx, db: Db, who: Who, request: Request, body: LinkI
 async def discord_callback(
     ctx: Ctx, db: Db, who: Who, request: Request, code: str = "", state: str = "", error: str = ""
 ):
-    ch = await auth.take_challenge(db, state, "oauth-discord", OAUTH_EXPIRED)
+    ch = await _take_state(db, state, "oauth-discord")
     if error or not code:
         raise HTTPException(400, f"Discord did not sign you in: {error or 'no code'}")
     async with httpx.AsyncClient(timeout=15) as client:

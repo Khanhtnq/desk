@@ -410,6 +410,21 @@ async def claim_totp_step(db: AsyncSession, user: User, step: int) -> bool:
     return res.first() is not None
 
 
+async def claim_sign_count(db: AsyncSession, pk: Passkey, new: int) -> bool:
+    """A passkey's signature counter only moves forward, and recording it is a claim like the TOTP
+    step's (the XE-2053 sweep): one conditional UPDATE, so of two sign-ins that both read the old
+    count the one behind is refused rather than writing the counter back. An authenticator that
+    keeps no counter sends 0 every time; 0 over 0 is accepted, as the library accepts it."""
+    forward = Passkey.sign_count < new if new else Passkey.sign_count == 0
+    res = await db.execute(
+        update(Passkey)
+        .where(Passkey.id == pk.id, forward)
+        .values(sign_count=new, last_used_at=now())
+        .returning(Passkey.id)
+    )
+    return res.first() is not None
+
+
 async def passkey_begin_registration(db: AsyncSession, settings: Settings, user: User) -> dict:
     from webauthn import generate_registration_options, options_to_json
     from webauthn.helpers.structs import (
@@ -523,8 +538,8 @@ async def passkey_finish_login(
         )
     except Exception as e:
         raise HTTPException(401, f"passkey sign-in failed: {e}") from e
-    pk.sign_count = v.new_sign_count
-    pk.last_used_at = now()
+    if not await claim_sign_count(db, pk, v.new_sign_count):
+        raise HTTPException(401, "passkey sign-in failed: its counter has moved on; try again")
     u = (await db.execute(select(User).where(User.id == pk.user_id))).scalar_one_or_none()
     if u is None or not u.active:
         raise HTTPException(401, "account is not active")
