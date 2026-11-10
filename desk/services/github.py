@@ -25,6 +25,29 @@ API = "https://api.github.com"
 LINK_NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
+def storable(value: Any) -> Any:
+    """What GitHub sent, with the two things Postgres will not store taken out of every string: a NUL,
+    and half a surrogate pair. A request from a browser that carries either is refused (`auth.Body`);
+    this is the other way in, and here they are dropped, not refused: an issue the desk could not
+    store would stop the poll at that issue on every run, and its ticket would never follow it.
+    Applied where GitHub's JSON is parsed (every response the client reads, the webhook's payload),
+    not at each field `sync` happens to copy: an edited issue's title and body, a PR's title, a
+    label's name and a login were written as they came."""
+    if isinstance(value, str):
+        if "\x00" in value:
+            value = value.replace("\x00", "")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            value = value.encode("utf-8", "ignore").decode("utf-8")
+        return value
+    if isinstance(value, list):
+        return [storable(v) for v in value]
+    if isinstance(value, dict):
+        return {storable(k): storable(v) for k, v in value.items()}
+    return value
+
+
 class GitHubError(RuntimeError):
     def __init__(self, status: int, message: str):
         super().__init__(f"github returned {status}: {message}")
@@ -66,8 +89,8 @@ class GitHub:
                 continue
             if r.status_code >= 400:
                 try:
-                    j = r.json()
-                    msg = j.get("message", r.text)
+                    j = storable(r.json())
+                    msg = j.get("message", storable(r.text))
                     if j.get("errors"):  # 422s say what failed in here, not in the message
                         msg += " " + "; ".join(
                             f"{e.get('resource', '')}.{e.get('field', '')}: {e.get('code', '')}"
@@ -75,7 +98,7 @@ class GitHub:
                             for e in j["errors"]
                         )
                 except Exception:
-                    msg = r.text
+                    msg = storable(r.text)
                 raise GitHubError(r.status_code, msg)
             return r
         raise GitHubError(429, "rate limited")
@@ -92,7 +115,7 @@ class GitHub:
 
     async def get(self, path: str, **params: Any) -> Any:
         r = await self._request("GET", path, params={k: v for k, v in params.items() if v is not None})
-        return r.json() if r.content else None
+        return storable(r.json()) if r.content else None
 
     async def paged(self, path: str, **params: Any) -> AsyncIterator[dict]:
         params = {k: v for k, v in params.items() if v is not None}
@@ -102,7 +125,7 @@ class GitHub:
         while url:
             r = await self._request("GET", url, params=params if first else None)
             first = False
-            for item in r.json() or []:
+            for item in storable(r.json()) or []:
                 yield item
             m = LINK_NEXT.search(r.headers.get("link", ""))
             url = m.group(1) if m else None
@@ -167,25 +190,24 @@ class GitHub:
 
     async def set_labels(self, repo: str, number: int, names: list[str]) -> list[str]:
         r = await self._request("PUT", f"/repos/{repo}/issues/{number}/labels", json={"labels": names})
-        return [label["name"] for label in r.json()]
+        return [label["name"] for label in storable(r.json())]
 
     async def comment(self, repo: str, number: int, body: str) -> dict:
-        return (
-            await self._request("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": body})
-        ).json()
+        r = await self._request("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": body})
+        return storable(r.json())
 
     async def set_state(self, repo: str, number: int, state: str, state_reason: str | None = None) -> dict:
         body: dict = {"state": state}
         if state == "closed" and state_reason:
             body["state_reason"] = state_reason
-        return (await self._request("PATCH", f"/repos/{repo}/issues/{number}", json=body)).json()
+        r = await self._request("PATCH", f"/repos/{repo}/issues/{number}", json=body)
+        return storable(r.json())
 
     async def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> dict:
-        return (
-            await self._request(
-                "POST", f"/repos/{repo}/issues", json={"title": title, "body": body, "labels": labels}
-            )
-        ).json()
+        r = await self._request(
+            "POST", f"/repos/{repo}/issues", json={"title": title, "body": body, "labels": labels}
+        )
+        return storable(r.json())
 
 
 # ---- webhooks ---------------------------------------------------------------------------------------

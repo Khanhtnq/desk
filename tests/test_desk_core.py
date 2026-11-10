@@ -335,6 +335,33 @@ def test_webhook_hmac():
     assert not gh.verify_webhook("s3cret", body, "sha1=abc")
 
 
+def test_what_github_sends_is_made_storable_where_it_is_parsed():
+    """The rule (XE-0827, the other way in): no text reaches a statement with a NUL or half a surrogate
+    pair in it. From GitHub it is dropped where the JSON is parsed, so no field `sync` copies needs
+    to remember: asserted of the helper, and of every place the client or the webhook parses JSON."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    import desk
+
+    sent = {
+        "title": "a\x00b", "body": "half \ud83d a pair", "labels": [{"name": "x\x00"}],
+        "user": {"login": "ada\udc80", "id": 7}, "k\x00": None, "n": 1.5, "ok": True,
+        "whole": "\U0001f600 and \x7f stay",
+    }
+    assert gh.storable(sent) == {
+        "title": "ab", "body": "half  a pair", "labels": [{"name": "x"}],
+        "user": {"login": "ada", "id": 7}, "k": None, "n": 1.5, "ok": True,
+        "whole": "\U0001f600 and \x7f stay",
+    }
+    src = inspect.getsource(gh)
+    assert len(re.findall(r"\.json\(\)", src)) == len(re.findall(r"storable\(r\.json\(\)\)", src)) == 7
+    assert len(re.findall(r"r\.text", src)) == len(re.findall(r"storable\(r\.text\)", src)) == 2
+    hook = (Path(desk.__file__).parent / "api" / "public.py").read_text()
+    assert "gh.storable(json.loads(body))" in hook and hook.count("json.loads(") == 1
+
+
 def test_a_secret_from_a_request_is_compared_as_bytes():
     """The rule (XE-1033): a secret a client sends is compared, never trusted to be ASCII. A header is
     whatever bytes arrived (read as latin-1), and `hmac.compare_digest` raises on a non-ASCII str, so

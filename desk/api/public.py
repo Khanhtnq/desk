@@ -387,8 +387,8 @@ async def github_webhook(ctx: Ctx, db: Db, request: Request):
     if delivery and not await auth.claim_first(db, SeenDelivery, id=delivery):
         return {"ok": True, "duplicate": True}
     try:
-        payload = json.loads(body)
-    except ValueError:
+        payload = gh.storable(json.loads(body))
+    except (ValueError, RecursionError):
         raise HTTPException(400, "not json") from None
     result = await sync.handle_webhook(ctx, db, event, payload)
     await db.commit()
