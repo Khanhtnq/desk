@@ -347,6 +347,9 @@ class Ticket(Base):
     mainnet_gate: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     effort_eng: Mapped[str | None] = mapped_column(String(8), nullable=True)
     internal_ref: Mapped[str] = mapped_column(String(32), nullable=False, default="", index=True)
+    # "<ref>:<state>:<state_reason>" of the tracker issue as the follower last acted on it for this ticket
+    # (XE-2080): the tracker moves the ticket when its issue changes, not each time it is read
+    internal_followed: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default="")
     disclosed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     award_xe: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # micro-units
     award_approved_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -478,6 +481,9 @@ class PatchRef(Base):
     author: Mapped[str] = mapped_column(String(128), nullable=False, default="")  # GitHub login, PRs only
     # the status the ticket held before this PR moved it, so closing the PR unmerged can put it back
     moved_from: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    # the PR state (open | merged | closed) the follower last acted on for this ticket: a state moves the
+    # ticket once, and seeing the PR again in the same state moves nothing (XE-2080)
+    followed: Mapped[str] = mapped_column(String(16), nullable=False, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

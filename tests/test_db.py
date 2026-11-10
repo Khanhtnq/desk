@@ -1346,6 +1346,70 @@ async def test_a_strangers_fork_pull_links_but_moves_nothing_until_merged(ctx, d
     assert t2.status == "fixing"
 
 
+async def test_a_source_moves_a_ticket_once_and_a_persons_status_then_stands(ctx, db):
+    """The rule (XE-2080): a follower acts on a change at its source, once. A PR or a tracker issue
+    read again in the state it was last acted on moves nothing, so a status a person set since stands;
+    a real change at the source (merged, reopened, closed again, another PR) still moves the ticket.
+    Asked of both followers and of each state they act on."""
+    repo = "xeprotocol/xe"
+    team = await _team(ctx, db)
+
+    async def pull(n, issue, **kw):
+        await sync.link_pull(ctx, db, repo, _pull(n, f"Fix {issue}", f"Fixes #{issue}", **kw))
+
+    # a PR. Opened: fixing. A person takes it back to accepted; the open PR seen again leaves it there
+    t, _ = await sync.upsert_issue(ctx, db, repo, _issue(150, "Vote replay, again"))
+    await pull(160, 150)
+    assert t.status == "fixing"
+    await tsvc.set_status(ctx, db, team, t, "accepted")
+    await pull(160, 150)
+    assert t.status == "accepted"
+    # merged: patched. The fix did not hold and a person walks it back; the merge replayed changes nothing
+    await pull(160, 150, state="closed", merged=True)
+    assert t.status == "patched"
+    await tsvc.set_status(ctx, db, team, t, "fixing")
+    for _ in range(2):
+        await pull(160, 150, state="closed", merged=True)
+        assert t.status == "fixing"
+    # another PR merging is news, and patches it
+    await pull(161, 150, state="closed", merged=True)
+    assert t.status == "patched"
+    # closed unmerged: back where it was. A person puts it at fixing by hand; the close replayed leaves it
+    t2, _ = await sync.upsert_issue(ctx, db, repo, _issue(151, "Fork on equal height, again"))
+    await pull(162, 151)
+    await pull(162, 151, state="closed")
+    assert t2.status == "triaging"
+    await tsvc.set_status(ctx, db, team, t2, "accepted")
+    await tsvc.set_status(ctx, db, team, t2, "fixing")
+    await pull(162, 151, state="closed")
+    assert t2.status == "fixing"
+    # reopened is a change, and so is its merge
+    await tsvc.set_status(ctx, db, team, t2, "accepted")
+    await pull(162, 151)
+    assert t2.status == "fixing"
+    await pull(162, 151, state="closed", merged=True)
+    assert t2.status == "patched"
+
+    # the tracker. Open: accepted. A person takes it back to triaging; the open issue read again leaves it
+    t3, _ = await sync.upsert_issue(ctx, db, repo, _issue(152, "Explorer search bar, again"))
+
+    async def tracker(**kw):
+        return await sync.link_internal_issue(ctx, db, _issue(1080, "security: bundle xe#152", **kw))
+
+    assert (await tracker())["moved"] == 1 and t3.status == "accepted"
+    await tsvc.set_status(ctx, db, team, t3, "triaging")
+    assert (await tracker())["moved"] == 0 and t3.status == "triaging"
+    # closed as completed: patched. Walked back; the closed issue read again changes nothing
+    done = dict(state="closed", state_reason="completed")
+    assert (await tracker(**done))["moved"] == 1 and t3.status == "patched"
+    await tsvc.set_status(ctx, db, team, t3, "fixing")
+    for _ in range(2):
+        assert (await tracker(**done))["moved"] == 0 and t3.status == "fixing"
+    # the issue is reopened (nothing to move at fixing) and closed again: that close is news
+    assert (await tracker())["moved"] == 0 and t3.status == "fixing"
+    assert (await tracker(**done))["moved"] == 1 and t3.status == "patched"
+
+
 async def test_the_teams_own_words_on_the_thread_tell_the_reporter(ctx, db):
     # the rule: a reporter is told when the team writes on the ticket's own thread: a desk reply, a
     # maintainer's comment on the issue, a team member's message in the chat thread. Who maintains the

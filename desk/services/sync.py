@@ -269,12 +269,21 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
 # A fixing PR drives the public ticket the way the internal tracker does. Only forward along the
 # allowed path, only from statuses before `patched`, and never past it: what happens after a fix ships
 # (disclosure, award, payment) is a person's call. Every change is SYSTEM with via="github:<repo>#<pr>".
+#
+# Both followers act on a change at the source, once (XE-2080): a PR opened, merged or closed, a tracker
+# issue opened or closed. The state last acted on is kept (`PatchRef.followed`,
+# `Ticket.internal_followed`), and the same PR or issue read again in that state moves nothing, so what
+# a person sets afterwards (a walk back from `patched` to `fixing`, say) stands until the source itself
+# changes. Without it every redelivery, edit or re-import of a merged PR patched the ticket again.
 PRE_PATCH = ("new", "triaging", "needs-info", "accepted", "fixing")
 
 
 async def _follow_pull_state(
     ctx: Context, db: AsyncSession, t: Ticket, pr: PatchRef, state: str, *, trusted: bool
 ) -> bool:
+    if pr.followed == state:
+        return False
+    pr.followed = state
     if t.kind != "bounty" or t.status not in PRE_PATCH:
         return False
     via = f"github:{pr.repo}#{pr.ref}"
@@ -449,6 +458,10 @@ async def _follow_internal_state(ctx: Context, db: AsyncSession, t: Ticket, issu
     state = issue.get("state") or "open"
     reason = issue.get("state_reason") or ""
     ref = f"#{issue['number']}"
+    seen = f"{ref}:{state}:{reason}"[:64]
+    if t.internal_followed == seen:
+        return False  # read again, unchanged: it has had its say (see PRE_PATCH above)
+    t.internal_followed = seen
     if state == "open":
         if t.status in ("new", "triaging", "needs-info"):
             await _accept(ctx, db, t, f"internal {ref} open", via)
