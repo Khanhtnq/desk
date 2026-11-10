@@ -143,17 +143,45 @@ async def test_no_request_replays_the_chain(ctx, db):
     """The rule (XE-0657): a replay's cost grows with the log, so only the worker runs one; a request is
     served the worker's last verdict from one row. Walked over every module that answers requests, so a
     route added later that replays fails here."""
-    import inspect
-
     from desk import log as desklog
-    from desk import main, og, ui
-    from desk.api import agent, authn, reporter, team
     from desk.api import public as pub
+    from desk.worker import Worker
 
-    for mod in (pub, agent, authn, reporter, team, ui, og, main):
-        src = inspect.getsource(mod)
-        for replay in ("EventLog.verify", ".iter_all(", "replay_and_record"):
-            assert replay not in src, f"{mod.__name__} replays the chain on a request ({replay})"
+    # every module of the desk but the three that may: the log itself, the worker, and the operator's CLI
+    root = Path(desklog.__file__).parent
+    replayers = {"log.py", "worker.py", "cli.py"}
+    walked = [f for f in sorted(root.rglob("*.py")) if str(f.relative_to(root)) not in replayers]
+    assert {"api/public.py", "ui.py", "main.py", "bots/discord_bot.py"} <= {
+        str(f.relative_to(root)) for f in walked
+    }
+    for f in walked:
+        src = f.read_text(encoding="utf-8")
+        for replay in (".verify(", "iter_all(", "replay_and_record"):
+            assert replay not in src, f"{f.relative_to(root)} replays the chain ({replay})"
+    # and in the worker the replay runs beside the loop: the jobs after it do not wait for it, and a
+    # tick that finds one still running does not start a second
+
+    class W(Worker):
+        JOBS = {desklog.VERIFY_JOB: 0, "quick": 0}
+        TICK_S = 0.01
+        quick = replays = 0
+
+        async def job_health(self):
+            pass
+
+        async def job_log_verify(self):
+            self.replays += 1
+            await asyncio.Event().wait()  # a replay that never finishes
+
+        async def job_quick(self):
+            self.quick += 1
+            if self.quick == 5:
+                self.stop.set()
+
+    w = W(ctx)
+    assert desklog.VERIFY_JOB in Worker.BACKGROUND and desklog.VERIFY_JOB in Worker.JOBS
+    await asyncio.wait_for(w.run(), timeout=10)
+    assert (w.quick, w.replays) == (5, 1) and w.running[desklog.VERIFY_JOB].cancelled()
     key = ctx.signer.public_key("log")
     for i in range(3):
         await ctx.events.append(db, "test", "desk", {"i": i})

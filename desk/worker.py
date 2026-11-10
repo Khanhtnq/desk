@@ -49,12 +49,18 @@ class Worker:
         "anchor": 3600,
         "daily": 3600,
     }
+    # Jobs that run beside the loop, not in it. A replay takes as long as the log is long, and the
+    # jobs behind it (a reply waiting to be mirrored, the polls) do not wait for it (the XE-0657
+    # sweep). One of each at a time: a tick that finds the last one still running is skipped.
+    BACKGROUND = frozenset({VERIFY_JOB})
+    TICK_S = 5
 
     def __init__(self, ctx: Context):
         self.ctx = ctx
         self.stop = asyncio.Event()
         self.gh = gh.GitHub(ctx.settings.github_token)
         self.last: dict[str, float] = {}
+        self.running: dict[str, asyncio.Task] = {}
 
     # ---- jobs -----------------------------------------------------------------------------
 
@@ -186,6 +192,9 @@ class Worker:
             await db.commit()
         if not verdict["ok"]:
             log.error("log verify failed at count %s: %s", verdict["count"], verdict["first_error"])
+        if verdict["took_ms"] > VERIFY_EVERY_S * 250:
+            # a quarter of the interval: said while there is still room to do something about it
+            log.warning("log replay took %d ms over %s events", verdict["took_ms"], verdict["count"])
 
     async def job_housekeeping(self):
         async with session() as db:
@@ -271,6 +280,12 @@ class Worker:
 
     # ---- loop -----------------------------------------------------------------------------
 
+    async def _run_job(self, name: str) -> None:
+        try:
+            await getattr(self, f"job_{name}")()
+        except Exception as e:
+            log.exception("job %s failed: %s", name, e)
+
     async def run(self):
         log.info("worker up; github %s", "on" if self.gh.enabled else "off (no token)")
         try:
@@ -283,14 +298,19 @@ class Worker:
                 if now - self.last.get(name, 0) < every:
                     continue
                 self.last[name] = now
-                try:
-                    await getattr(self, f"job_{name}")()
-                except Exception as e:
-                    log.exception("job %s failed: %s", name, e)
+                if name not in self.BACKGROUND:
+                    await self._run_job(name)
+                elif name in self.running and not self.running[name].done():
+                    log.warning("job %s is still running from its last tick; this one is skipped", name)
+                else:
+                    self.running[name] = asyncio.create_task(self._run_job(name))
             try:
-                await asyncio.wait_for(self.stop.wait(), timeout=5)
+                await asyncio.wait_for(self.stop.wait(), timeout=self.TICK_S)
             except asyncio.TimeoutError:
                 pass
+        for task in self.running.values():
+            task.cancel()
+        await asyncio.gather(*self.running.values(), return_exceptions=True)
         await self.gh.aclose()
         log.info("worker stopped")
 
