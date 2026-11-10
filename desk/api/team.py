@@ -127,19 +127,9 @@ async def set_kind(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, kind:
         # a report that has been accepted, or carries an award, is a bounty record; it is closed or
         # paid as one, never walked back through a conversion (XE-0789)
         raise HTTPException(409, f"a {t.status} ticket with a bounty record is not converted; close it")
-    old = t.kind
-    t.kind = kind
-    t.area = None  # areas are engineering areas on the bounty and topics on support; neither carries over
+    await tsvc.set_kind(ctx, db, who.principal.actor, t, kind)
     if kind == "support" and t.status not in ("new", "triaging", "needs-info", "closed"):
         await tsvc.set_status(ctx, db, who.principal, t, "triaging", reason="converted to support")
-    await ctx.events.append(
-        db,
-        "ticket.kind",
-        who.principal.actor,
-        {"ticket": t.id, "from": old, "to": kind},
-        ref=t.id,
-        public=t.visibility == "public",
-    )
     await db.commit()
     return tsvc.to_dict(ctx, t, who.principal)
 

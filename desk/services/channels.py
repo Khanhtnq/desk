@@ -240,17 +240,8 @@ async def convert_to_bounty(ctx: Context, db: AsyncSession, t: Ticket, *, user_i
     not engineering areas; the bot tells the reporter where it went and not to post a PoC in the thread."""
     if t.kind == "bounty":
         raise HTTPException(409, "already a bounty ticket")
-    t.kind = "bounty"
-    t.area = None
+    await tsvc.set_kind(ctx, db, "desk", t, "bounty", via=f"{t.source}:{user_id}")
     t.updated_at = utcnow()
-    await ctx.events.append(
-        db,
-        "ticket.kind",
-        "desk",
-        {"ticket": t.id, "from": "support", "to": "bounty", "via": f"{t.source}:{user_id}"},
-        ref=t.id,
-        public=t.visibility == "public",
-    )
 
 
 async def rename_from_channel(ctx: Context, db: AsyncSession, t: Ticket, *, user_id: str, title: str) -> str:

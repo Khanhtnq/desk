@@ -1799,6 +1799,24 @@ async def test_a_critical_or_severe_claim_is_born_private_whoever_writes_it(ctx,
         ctx, db, "xeprotocol/xe", _issue(88, "Mint without a key", body="Severity: critical\n" + body)
     )
     assert (hub.visibility, hub.claimed_tier) == ("public", "critical")
+    # a question claims nothing, at birth or by edit, and a ticket that arrives on the bounty by
+    # conversion has made no claim: no conversion ends as a public report claiming Critical or Severe
+    ask = tsvc.NewTicket(kind="support", title="Is this a bug or me", body=body, claimed_tier="critical")
+    q = await tsvc.create(ctx, db, "desk", ask)
+    assert (q.visibility, q.claimed_tier) == ("public", None)
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_facts(ctx, db, team, q, {"claimed_tier": "critical"})
+    assert e.value.status_code == 400
+    q.claimed_tier = "severe"  # a row written before this rule
+    await channels.convert_to_bounty(ctx, db, q, user_id="9")
+    assert (q.kind, q.claimed_tier, q.visibility) == ("bounty", None, "public")
+    b = await by_create("high", "There and back again")
+    for kind in ("support", "bounty"):
+        await team_api.set_kind(ctx, db, who, None, b.id, kind)
+        assert (b.kind, b.claimed_tier, b.visibility) == (kind, None, "public")
+    # every conversion is the one function: no caller writes a ticket's kind itself
+    for mod in (team_api, channels, triage, sync, psvc, rsvc):
+        assert not re.search(r"\.kind\s*=[^=]", inspect.getsource(mod)), mod.__name__
     # without the vault key a private report is refused, not stored in the clear
     full, ctx.vault = ctx.vault, Vault(Signer({"log": KeyPair.generate()}, {"log": {"event.sign"}}))
     for name, write in writers.items():

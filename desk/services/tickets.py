@@ -206,12 +206,31 @@ def born_private(spec: NewTicket, tier: str | None) -> bool:
     return spec.kind == "bounty" and tier in PRIVATE_TIERS and not on_github
 
 
+async def set_kind(
+    ctx: Context, db: AsyncSession, actor: str, t: Ticket, kind: str, *, via: str = ""
+) -> None:
+    """Move a ticket to the other door; the id and the history stay. What does not carry over is
+    cleared here, for every caller (the team's route, `/bounty` in a chat thread, the triage import):
+    the area, since areas are engineering areas on the bounty and topics on support, and the claimed
+    tier, since a claim is made by a reporter filing on the bounty and a ticket that arrives there by
+    conversion has made none. So no conversion produces a public report claiming Critical or Severe
+    (the XE-1932 sweep); a person who then sets the claim also decides the visibility."""
+    if kind not in KINDS:
+        raise HTTPException(400, f"kind is one of {list(KINDS)}")
+    old = t.kind
+    t.kind, t.area, t.claimed_tier = kind, None, None
+    payload = {"ticket": t.id, "from": old, "to": kind, **({"via": via} if via else {})}
+    await ctx.events.append(db, "ticket.kind", actor, payload, ref=t.id, public=t.visibility == "public")
+
+
 async def create(ctx: Context, db: AsyncSession, actor: str, spec: NewTicket) -> Ticket:
     """A new ticket, at `new`. It took a status once, which no caller passed: a second writer of a
     status that asked none of `set_status`'s questions (a private ticket born awarded)."""
     if spec.kind not in KINDS or spec.visibility not in VISIBILITIES or spec.source not in SOURCES:
         raise HTTPException(400, "bad kind, visibility or source")
     tier = claimed(spec.claimed_tier)
+    if spec.kind != "bounty":
+        tier = None  # a question claims nothing, so a later conversion has no claim to inherit
     visibility = "private" if born_private(spec, tier) else "public"
     if visibility == "private" and not ctx.vault.available:
         raise HTTPException(503, "private reports cannot be taken right now: the vault key is not loaded")
@@ -821,6 +840,8 @@ async def set_facts(
             v = "" if k == "internal_ref" else None
         elif vocab is not None and v not in vocab:
             raise HTTPException(400, f"{k} must be one of {list(vocab)}")
+        if k == "claimed_tier" and v is not None and t.kind != "bounty":
+            raise HTTPException(400, "a support question carries no claimed tier")
         if k == "duplicate_of" and v:
             v = str(v).upper()
             if v == t.id:

@@ -384,20 +384,14 @@ async def import_rows(
                 changes["internal_ref"] = by_key[r.duplicate_of_key].internal_ref
         said = {k: v for k, v in changes.items() if v not in EMPTY}
         if r.kind != t.kind and not owned:
-            said.pop("area", None)  # moved to the other door since, and that door has its own areas
+            # moved to the other door since: it has its own areas, and a question carries no claim
+            said.pop("area", None)
+            said.pop("claimed_tier", None)
         changes = {k: v for k, v in said.items() if owned or getattr(t, k) in EMPTY}
         if any(getattr(t, k) != v for k, v in said.items() if k not in changes):
             stats["facts_kept"] += 1
         if r.kind != t.kind and owned:
-            await ctx.events.append(
-                db,
-                "ticket.kind",
-                "desk",
-                {"ticket": t.id, "from": t.kind, "to": r.kind, "via": "triage"},
-                ref=t.id,
-                public=t.visibility == "public",
-            )
-            t.kind = r.kind
+            await tsvc.set_kind(ctx, db, "desk", t, r.kind, via="triage")
         diff = await tsvc.set_facts(ctx, db, SYSTEM, t, changes, reason="triage import", via="triage")
         if diff:
             stats["updated"] += 1
