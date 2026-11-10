@@ -107,7 +107,7 @@ The triage document is not in the repo (it carries the private email reports). C
 
 For the three email reports, put their bodies in a JSON file and pass `--emails /app/secrets/emails.json` (`{"E1": "...", "E2": "...", "E3": "..."}`); the bodies are sealed on write. Add payout addresses on the ticket pages when the reporters send them.
 
-Then the worker's first `push` run (within a minute) puts the status labels on the issues and closes the ones the desk has closed. Check `/team/outbox`: it lists every ticket that was fixed but whose reporter has not been told. Work through it with the `patched` template.
+Then the worker's first `push` run (within a minute) puts the status labels on the issues and closes the ones the desk has closed. Check `/team/outbox`: it lists every ticket that was fixed but whose reporter has not been told. Tickets resting at `accepted` or `patched` are sent the stock reply by the desk: `docker compose exec app desk tell-backlog --dry-run` lists what would go and what is left and why, the same command without `--dry-run` sends it. Work through the rest by hand.
 
 ## 5. Webhook
 

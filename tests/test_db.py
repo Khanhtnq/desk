@@ -1356,8 +1356,9 @@ async def test_the_teams_own_words_on_the_thread_tell_the_reporter(ctx, db):
 async def test_the_desk_tells_a_resting_ticket_nobody_has(ctx, db):
     # the rule: a bounty ticket resting at accepted or patched, untold past the grace period, is sent the
     # stock reply for that status, signed by the desk. What a person has in hand (a reply, a draft, an
-    # agent's draft to adopt), a fix the desk may not name, a move back, an import and everything moved
-    # before the sweep first ran are left to the outbox. Only the desk itself sends without a person.
+    # agent's draft to adopt), a fix the desk may not name, a move back and an import are left to the
+    # outbox. The worker tells moves made since it first ran; what rested before that is swept by hand,
+    # by the same rule. Only the desk itself sends without a person.
     repo = "xeprotocol/xe"
     team = await _team(ctx, db)
     agent = await _agent(ctx, db, team.user)
@@ -1438,6 +1439,19 @@ async def test_the_desk_tells_a_resting_ticket_nobody_has(ctx, db):
     assert {x["ticket"] for x in again} == {bare.id, stray.id}
     assert f"fixed in {repo}@deadbeefca." in (await said(bare))[0]
     assert f"fixed in {repo}#123." in (await said(stray))[0]
+
+    # the backlog, swept by hand (`desk tell-backlog`): the same rule with no start. What it lists is
+    # what it sends, what it leaves it gives a reason for, and a second sweep says nothing twice
+    rows = {r.id: r for r in await tell.resting(ctx, db, now=later)}
+    assert set(rows) == {t.id for t in (old, writing, drafted, back, imported)}
+    assert [i for i, r in rows.items() if r.text] == [old.id]
+    assert all(bool(r.text) != bool(r.why) for r in rows.values())
+    assert "triage import" in rows[imported.id].why and "moved back" in rows[back.id].why
+    assert await tell.tell_resting(ctx, db, now=later) == []  # the worker's run still leaves it
+    swept = await tell.tell_resting(ctx, db, now=later, backlog=True)
+    assert [x["ticket"] for x in swept] == [old.id] and "Read and accepted" in (await said(old))[0]
+    assert await tell.tell_resting(ctx, db, now=later, backlog=True) == []
+    assert old.id not in {x.id for x in await tsvc.outbox(db, ctx.config, team)}
 
     # a reply with no person behind it is the desk's alone: a token and a reporter are still refused
     for p in (agent, authz.Principal(kind="reporter", reporter_id=1), authz.ANON):

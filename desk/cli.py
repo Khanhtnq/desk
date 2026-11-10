@@ -388,6 +388,49 @@ def export_triage(out: Path = typer.Option(None, help="write here instead of std
     _run(go())
 
 
+@app.command("tell-backlog")
+def tell_backlog(
+    dry_run: bool = typer.Option(False, help="list what would be sent, what is left and why; send nothing"),
+):
+    """Send the stock accepted or patched reply on every ticket that was already resting untold when
+    the desk began telling on its own (the worker only tells moves made since). The rule is the
+    worker's (services/tell.py): what a person has in hand, or the desk cannot say, is left, and the
+    dry run says why. Replies go out as any reply does: a GitHub comment by the worker, a mail from
+    here. Re-runnable; a ticket that has been told is not told twice."""
+
+    async def go():
+        from .db import session
+        from .services import notify, tell
+        from .services import tickets as tsvc
+
+        ctx = _ctx()
+        async with session() as db:
+            if dry_run:
+                rows = await tell.resting(ctx, db, now=tsvc.utcnow())
+                for r in rows:
+                    t = r.ticket
+                    what = "tell" if r.text else f"left: {r.why}"
+                    typer.echo(f"{r.id}  {r.status:8}  {t.source:8}  {t.visibility:7}  {what}")
+                n = sum(1 for r in rows if r.text)
+                typer.echo(f"{n} would be told, {len(rows) - n} left for a person")
+            else:
+                total = mailed = 0
+                while True:
+                    told = await tell.tell_resting(ctx, db, backlog=True)
+                    owed = notify.take_owed(db)
+                    await db.commit()  # a batch at a time: what is mailed below is what was committed
+                    for x in told:
+                        typer.echo(f"{x['ticket']}  {x['status']:8}  told (reply {x['reply']})")
+                    mailed += await notify.mail_owed(ctx, owed)
+                    total += len(told)
+                    if len(told) < tell.BATCH:
+                        break
+                typer.echo(f"{total} told, {mailed} mailed")
+        await ctx.aclose()
+
+    _run(go())
+
+
 @app.command("github-labels")
 def github_labels():
     """Create or update the desk's status labels on every configured repo."""
