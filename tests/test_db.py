@@ -1792,11 +1792,11 @@ async def test_triage_import_of_the_real_doc(ctx, db, triage_text):
     assert tickets["E1"].visibility == "private" and tickets["E1"].duplicate_of == tickets["14"].id
     assert tickets["E1"].body == "" and tsvc.body_for(ctx, tickets["E1"]) == "e1"
     assert tickets["61"].duplicate_of == tickets["E1"].id
+    # "support" in the sheet is a verdict on the bounty, not a move to the support door (60a95ed)
     assert (
-        tickets["99"].kind == "support"
+        tickets["99"].kind == "bounty"
         and tickets["99"].status == "closed"
         and tickets["99"].internal_ref == "faucet#10"
-        and tickets["99"].area == "testnet-faucet"  # a support row takes a topic, not a bounty area
     )
     assert tickets["57"].area == "ops-testnet"
     assert tickets["8"].assessed_tier == "severe" and tickets["8"].claimed_tier is None  # "mixed" bundle

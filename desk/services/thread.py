@@ -413,7 +413,11 @@ async def add_patch_ref(
     note: str = "",
     state: str = "",
     author: str = "",
+    only_new: bool = False,
 ) -> PatchRef | None:
+    """Link a PR or a commit to a ticket. Returns the link when it was added or changed, None when it
+    was already as given. `only_new` is for a writer replaying a snapshot (the triage import): a link
+    the ticket already has is left exactly as it is."""
     repo, ref = repo.strip(), str(ref).strip()
     if not repo or not ref or kind not in ("pr", "commit"):
         raise HTTPException(400, "repo, ref and kind (pr|commit) are required")
@@ -433,6 +437,8 @@ async def add_patch_ref(
         )
     ).scalar_one_or_none()
     if exists:
+        if only_new:
+            return None
         changed = False
         for k, v in (("title", title), ("url", url), ("note", note), ("state", state), ("author", author)):
             if v and getattr(exists, k) != v:

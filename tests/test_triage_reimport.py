@@ -96,6 +96,102 @@ async def test_reimport_leaves_what_has_been_ruled_since(ctx, db):  # noqa: F811
     assert (t2.assessed_tier, t2.internal_ref) == ("medium", "#3003")
 
 
+async def test_reimport_leaves_the_rulings_a_status_does_not_show(ctx, db):  # noqa: F811
+    """The same rule, asked of what a person or GitHub rules without taking the ticket past triage, or
+    without leaving a value behind: waiting on the reporter, the move to the support door, a tracker
+    link cleared by hand, a duplicate re-pointed, a patch link GitHub has reported on, and a tier
+    behind an award of nothing."""
+    team = await _team(ctx, db)
+    xe = "xeprotocol/xe"
+    sheet = dict(
+        area="consensus", verdict="valid", gate="before", claimed_tier="high", assessed_tier="medium",
+        effort="1-4h",
+    )
+    tracked = dict(sheet, internal_ref="#1001")
+
+    def row(key, **cells):
+        url = f"https://github.com/{xe}/issues/{key}"
+        return triage.Row(key=key, repo=xe, url=url, title=f"Sheet row {key}", **cells)
+
+    async def started(key, **cells):
+        await triage.import_rows(ctx, db, [row(key, **cells)])
+        return await triage._find(db, row(key))
+
+    # needs-info: no row says it, so a person put the ticket there; it is not moved and not written over
+    a = await started("911", **sheet)
+    assert a.status == "triaging"
+    await tsvc.set_status(ctx, db, team, a, "needs-info")
+    await tsvc.set_facts(ctx, db, team, a, {"assessed_tier": "high"})
+    again = await triage.import_rows(ctx, db, [row("911", **sheet)])
+    assert (a.status, a.assessed_tier) == ("needs-info", "high")
+    assert again["status_kept"] == 1 and again["facts_kept"] == 1 and again["updated"] == 0
+
+    # the support door: the import never converts. Not back to the bounty while the question is open,
+    # and a row that would close it with a reason the support door does not have stops nothing
+    b = await started("912", **sheet)
+    await tsvc.set_kind(ctx, db, team.actor, b, "support")
+    await tsvc.set_facts(ctx, db, team, b, {"area": "getting-started"})
+    for cells in (sheet, dict(sheet, verdict="invalid"), tracked):
+        again = await triage.import_rows(ctx, db, [row("912", **cells)])
+        assert (b.kind, b.status, b.area) == ("support", "triaging", "getting-started"), cells
+        assert (b.claimed_tier, b.verdict, b.internal_ref) == (None, "valid", ""), cells
+        assert again["updated"] == 0 and again["facts_kept"] == 1, cells
+        assert again["status_kept"] == (0 if cells is sheet else 1), cells
+
+    # a tracker link the ticket followed and a person then cleared is not put back, past triage or in it
+    c = await started("913", **tracked)
+    assert (c.status, c.internal_ref) == ("accepted", "#1001")
+    c.internal_followed = "#1001:open:"  # as sync leaves it once the tracker has been read
+    await tsvc.set_facts(ctx, db, team, c, {"internal_ref": ""})
+    again = await triage.import_rows(ctx, db, [row("913", **tracked)])
+    assert c.internal_ref == "" and again["updated"] == 0 and again["facts_kept"] == 1
+    await tsvc.set_status(ctx, db, team, c, "triaging")
+    await triage.import_rows(ctx, db, [row("913", **tracked)])
+    assert c.internal_ref == ""
+
+    # a duplicate takes its canonical and the canonical's tracker link from the sheet; re-pointed by a
+    # person, both stand
+    pair = [
+        row("914", **dict(sheet, internal_ref="#1004")),
+        row("915", verdict="duplicate", duplicate_of_key="914"),
+    ]
+    await triage.import_rows(ctx, db, pair)
+    canon, d = await triage._find(db, pair[0]), await triage._find(db, pair[1])
+    assert (d.status, d.closed_reason, d.duplicate_of, d.internal_ref) == (
+        "closed", "duplicate", canon.id, "#1004"
+    )
+    await tsvc.set_facts(ctx, db, team, d, {"duplicate_of": a.id, "internal_ref": "#2002"})
+    again = await triage.import_rows(ctx, db, pair)
+    assert (d.duplicate_of, d.internal_ref) == (a.id, "#2002")
+    assert again["updated"] == 0 and again["facts_kept"] == 1
+
+    # a patch link: the sheet adds one the ticket does not have and rewrites none it has
+    linked = row("916", **tracked, patches=[triage.PatchToken(xe, "55", "sheet")], internal_fix_prs=["#56"])
+    first = await triage.import_rows(ctx, db, [linked])
+    e = await triage._find(db, linked)
+    links = {p.ref: p for p in await thread.patches_for(db, e)}
+    assert first["patches"] == 2 and (links["55"].note, links["56"].state) == ("sheet", "merged")
+    links["55"].note, links["56"].state = "written by hand", "closed"
+    await db.flush()
+    again = await triage.import_rows(ctx, db, [linked])
+    assert again["patches"] == 0 and len(await thread.patches_for(db, e)) == 2
+    assert (links["55"].note, links["56"].state) == ("written by hand", "closed")
+
+    # an award of nothing needs no tier; the sheet's tier is not slipped in behind it, which took the
+    # approval back on a patched ticket and stopped the whole run on an awarded one
+    untiered = dict(tracked, assessed_tier=None)
+    f = await started("917", **untiered)
+    assert f.status == "accepted" and f.assessed_tier is None
+    await tsvc.set_status(ctx, db, team, f, "patched")
+    await tsvc.set_award(ctx, db, team, f, 0, approve=True)
+    for st in ("patched", "awarded"):
+        if f.status != st:
+            await tsvc.set_status(ctx, db, team, f, st)
+        again = await triage.import_rows(ctx, db, [row("917", **tracked)])
+        assert (f.status, f.assessed_tier) == (st, None) and f.award_approved_at is not None, st
+        assert again["updated"] == 0 and again["facts_kept"] == 1, st
+
+
 async def test_the_export_writes_each_ticket_it_counts_once(ctx, db):  # noqa: F811
     """The rule (XE-2271): the number in the export's heading is the number of rows under it. Asked
     with a ticket in every configured area, one in `other`, one with no area, one whose area the

@@ -1,9 +1,10 @@
 """The triage doc, in and out.
 
 `parse_triage` reads docs/BOUNTY_TRIAGE.md into rows with no database involved, so it is testable
-against the real file. `import_rows` applies them: facts as facts (the doc is the team's ruling), the
-italic note as an internal note by the triage agent token, PRs as patch refs, the Internal column as
-status per brief §10. `export_markdown` writes the same tables back from the database.
+against the real file. `import_rows` applies them: facts as facts (the doc is the team's ruling, until
+the desk holds a later one: see `IMPORT_MOVES_FROM`), the italic note as an internal note by the triage
+agent token, PRs as patch refs, the Internal column as status per brief §10. `export_markdown`
+writes the same tables back from the database.
 """
 
 from __future__ import annotations
@@ -340,7 +341,21 @@ def _principal_for(tok: AgentToken) -> Principal:
 # written over the ticket's; past them the sheet only fills a fact that is still empty, so a tier, a
 # verdict, a gate or a tracker link ruled since the sheet was written is not rolled back by importing it
 # again. An empty cell never erases anything, at any status.
-IMPORT_MOVES_FROM = ("new", "triaging", "needs-info")
+#
+# Four rulings do not show in the status, and each is asked for by name in `import_rows`:
+# - `needs-info` is not in the list. No row says it (`Row.status`), so a ticket there was put there by a
+#   person, who is waiting for the reporter.
+# - a ticket on the support door. Every row is a bounty row and every ticket the import can find was
+#   born one, so a person moved it. The import never converts a ticket: it took the question back to
+#   the bounty, cleared its topic and walked it to the sheet's status. It gets no fact and no status.
+# - a tracker link cleared by hand. The ticket followed the tracker once (`internal_followed`) and has
+#   no link now: a person cleared it, the wrong class, say. `sync.link_internal_issue` leaves that
+#   alone and so does the sheet; put back, the tracker would move the report again.
+# - an award. A tier offered to a ticket whose award is approved or made is a change behind the award
+#   to `set_facts`, even from empty: the approval was taken back, or the run stopped on a 409.
+# And a patch link: the sheet adds one the ticket does not have, and does not rewrite the state GitHub
+# has since reported or a note a person wrote on one it has.
+IMPORT_MOVES_FROM = ("new", "triaging")
 EMPTY = ("", None)
 
 
@@ -369,7 +384,12 @@ async def import_rows(
     # pass 2: facts, status, notes, patches
     for r in rows:
         t = by_key[r.key]
-        owned = t.status in IMPORT_MOVES_FROM  # as the ticket stands before this row moves it
+        # the row lock first: what the sheet may write is decided on the ticket as it is in the database
+        # now, not as pass 1 read it some hundreds of rows ago. `set_facts` takes the same lock on every
+        # row; it is only taken before the decision and no longer after it
+        await tsvc.lock(db, t)
+        elsewhere = t.kind != r.kind
+        owned = not elsewhere and t.status in IMPORT_MOVES_FROM  # before this row moves it
         changes: dict = {
             "area": r.area,
             "claimed_tier": r.claimed_tier,
@@ -384,33 +404,37 @@ async def import_rows(
             if not r.internal_ref:
                 changes["internal_ref"] = by_key[r.duplicate_of_key].internal_ref
         said = {k: v for k, v in changes.items() if v not in EMPTY}
-        if r.kind != t.kind and not owned:
-            # moved to the other door since: it has its own areas, and a question carries no claim
-            said.pop("area", None)
-            said.pop("claimed_tier", None)
-        changes = {k: v for k, v in said.items() if owned or getattr(t, k) in EMPTY}
+        stands = set(said) if elsewhere else set()
+        if not t.internal_ref and t.internal_followed:
+            stands.add("internal_ref")
+        if not owned and (t.award_approved_at or t.status in tsvc.AWARD_STATUSES):
+            stands.add("assessed_tier")
+        changes = {
+            k: v for k, v in said.items() if k not in stands and (owned or getattr(t, k) in EMPTY)
+        }
         if any(getattr(t, k) != v for k, v in said.items() if k not in changes):
             stats["facts_kept"] += 1
-        if r.kind != t.kind and owned:
-            await tsvc.set_kind(ctx, db, "desk", t, r.kind, via="triage")
         diff = await tsvc.set_facts(ctx, db, SYSTEM, t, changes, reason="triage import", via="triage")
         if diff:
             stats["updated"] += 1
         status, reason = r.status()
         if (t.status, t.closed_reason) != (status, reason):
-            if t.status in IMPORT_MOVES_FROM and tsvc.status_path(t.kind, t.status, status) is not None:
+            moves = not elsewhere and t.status in IMPORT_MOVES_FROM
+            if moves and tsvc.status_path(t.kind, t.status, status) is not None:
                 await tsvc.set_status_via_path(
                     ctx, db, SYSTEM, t, status, closed_reason=reason, reason="triage import", via="triage"
                 )
             else:
                 stats["status_kept"] += 1
         for ptk in r.patches:
-            if await thread.add_patch_ref(ctx, db, SYSTEM, t, repo=ptk.repo, ref=ptk.ref, note=ptk.note):
+            if await thread.add_patch_ref(
+                ctx, db, SYSTEM, t, repo=ptk.repo, ref=ptk.ref, note=ptk.note, only_new=True
+            ):
                 stats["patches"] += 1
         for pr in r.internal_fix_prs:
             parsed = thread.parse_patch_token(pr, ctx.config.primary_repo)
             if parsed and await thread.add_patch_ref(
-                ctx, db, SYSTEM, t, repo=parsed[0], ref=parsed[1], note="fix", state="merged"
+                ctx, db, SYSTEM, t, repo=parsed[0], ref=parsed[1], note="fix", state="merged", only_new=True
             ):
                 stats["patches"] += 1
         note = _note_text(r)

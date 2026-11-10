@@ -210,7 +210,7 @@ async def set_kind(
     ctx: Context, db: AsyncSession, actor: str, t: Ticket, kind: str, *, via: str = ""
 ) -> None:
     """Move a ticket to the other door; the id and the history stay. What does not carry over is
-    cleared here, for every caller (the team's route, `/bounty` in a chat thread, the triage import):
+    cleared here, for both callers (the team's route and `/bounty` in a chat thread):
     the area, since areas are engineering areas on the bounty and topics on support, and the claimed
     tier, since a claim is made by a reporter filing on the bounty and a ticket that arrives there by
     conversion has made none. So no conversion produces a public report claiming Critical or Severe
