@@ -3930,6 +3930,11 @@ async def test_the_daily_note_counts_what_the_public_counts(ctx, db):
     assert note["outbox"] == len(await tsvc.outbox(db, ctx.config, authz.ANON)) == owed - 1
     src = inspect.getsource(worker.Worker.job_daily) + inspect.getsource(worker.daily_counts)
     assert "SYSTEM" not in src and "daily_counts(" in inspect.getsource(worker.Worker.job_daily)
+    # a note written before that, with the private tickets counted in, is served without its numbers
+    old = {"date": "2026-11-01", "bounty": {"accepted": 2}, "support": {}, "outbox": 2, "network_id": "n"}
+    assert public_payload("note.daily", old) == {"date": "2026-11-01", "network_id": "n"}
+    new = {**old, **note}
+    assert note["counted"] == "public" and public_payload("note.daily", new) == new
 
 
 async def test_a_link_does_not_outlive_the_identity_it_was_sent_to(ctx, db):

@@ -390,6 +390,9 @@ def _public_rows(q):
     return q.where(Event.public.is_(True), ~hidden, sealed)
 
 
+DAILY_COUNTS = frozenset({"bounty", "support", "outbox"})
+
+
 def public_payload(kind: str, payload: Any) -> Any:
     """The payload as a reader outside the team sees it."""
     if not isinstance(payload, dict):
@@ -397,6 +400,10 @@ def public_payload(kind: str, payload: Any) -> Any:
     if is_admin_kind(kind):
         return {k: v for k, v in payload.items() if k in ADMIN_ID_KEYS}
     drop = TEAM_ONLY_KEYS | HELD_PAYLOAD_KEYS.get(kind, frozenset())
+    if kind == "note.daily" and payload.get("counted") != "public":
+        # a daily note from before its numbers were an anonymous reader's: they count the private
+        # tickets too, day by day. The row and its hash stand; the numbers are the team's to read
+        drop = drop | DAILY_COUNTS
     out = {k: v for k, v in payload.items() if k not in drop}
     if kind == "ticket.facts" and isinstance(out.get("changes"), dict):
         kept = {k: v for k, v in out["changes"].items() if k not in HELD_FACT_KEYS}

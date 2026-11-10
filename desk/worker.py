@@ -48,6 +48,9 @@ async def daily_counts(ctx, db) -> dict:
         "bounty": await tsvc.counts(db, ANON, "bounty"),
         "support": await tsvc.counts(db, ANON, "support"),
         "outbox": len(await tsvc.outbox(db, ctx.config, ANON)),
+        # says how these were counted. A note without it is from before, counted with the private
+        # tickets in: `log.public_payload` serves that one without its numbers
+        "counted": "public",
     }
 
 
