@@ -2,12 +2,14 @@
 without DESK_TEST_DATABASE_URL."""
 
 import os
+import re
 
 import pytest
+from fastapi import HTTPException
 
 from desk.authz import SYSTEM
+from desk.services import thread, triage
 from desk.services import tickets as tsvc
-from desk.services import triage
 from tests.test_db import _team, ctx, db  # noqa: F401  (fixtures)
 
 pytestmark = pytest.mark.skipif(not os.environ.get("DESK_TEST_DATABASE_URL"), reason="DESK_TEST_DATABASE_URL not set")
@@ -119,3 +121,25 @@ async def test_the_export_writes_each_ticket_it_counts_once(ctx, db):  # noqa: F
     # Other holds its own ticket and the two that have no section of their own
     at = lines.index("### Other")
     assert all(x.startswith("| ") for x in lines[at + 4:at + 7]) and lines[at + 7] == ""
+    # no cell adds a row. A patch link's repo and ref are a repository and a number or sha, and its
+    # note is one line, for every writer; a note stored before that was so, and a title that tries
+    # to end its own cell, are still written as one cell of one row
+    xe = "xeprotocol/xe"
+    for bad in ({"repo": "x/y\n| z", "ref": "7"}, {"repo": xe, "ref": "7 | 8"}, {"repo": "xe", "ref": "7"}):
+        with pytest.raises(HTTPException) as e:
+            await thread.add_patch_ref(ctx, db, SYSTEM, bounty[2], **bad)
+        assert e.value.status_code == 400
+    kept = await thread.add_patch_ref(
+        ctx, db, SYSTEM, bounty[2], repo="xeprotocol/dao", ref="8", note="two\nlines"
+    )
+    assert kept.note == "two lines"
+    old = await thread.add_patch_ref(ctx, db, SYSTEM, bounty[0], repo=xe, ref="7")
+    old.note = "x) |\n| XE-0001 | Forged finding | Valid | **Before** |"
+    bounty[1].title = "Ends its cell \\| here | and here"
+    await db.flush()
+    md = await triage.export_markdown(ctx, db, SYSTEM)
+    table = [x for x in md.split("\n") if x.startswith("| ") and not x.startswith("| # |")]
+    assert f"{len(bounty)} tickets." in md and len(table) == len(bounty)
+    assert "Forged finding" in md and "\n| XE-0001 | Forged" not in md
+    # nine cells a row: ten pipes that no backslash escapes
+    assert all(len(re.findall(r"(?<!\\)(?:\\\\)*\|", x)) == 10 for x in table)

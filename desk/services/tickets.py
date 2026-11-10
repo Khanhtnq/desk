@@ -429,24 +429,40 @@ async def count_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters)
     return int((await db.execute(q)).scalar_one())
 
 
-async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) -> list[Ticket]:
+def _ordered(cfg: Config, p: Principal, f: Filters):
+    """The list's query in the list's order. The id is the last key of every order: tickets tied on
+    the rest (one import, one second on GitHub) had no order between them, and Postgres promises
+    nothing about which of them a page boundary falls between, so a pager could be given one twice
+    and the other never (XE-2271)."""
     q = _filtered(cfg, p, f)
     full = sees_assessment(p)
     # queued reports (past their reporter's daily cap) come after everything else in every order but
     # "updated"; a scanner's fortieth probe never sits above another account's first report
+    age = func.coalesce(Ticket.source_created_at, Ticket.created_at).asc()
     if f.sort == "age":
-        q = q.order_by(Ticket.queued.asc(), func.coalesce(Ticket.source_created_at, Ticket.created_at).asc())
-    elif f.sort == "updated":
-        q = q.order_by(Ticket.updated_at.desc())
-    else:
-        q = q.order_by(
-            Ticket.queued.asc(),
-            _rank(cfg, Ticket.assessed_tier if full else _shown_tier_col()),
-            _rank(cfg, Ticket.claimed_tier),
-            func.coalesce(Ticket.source_created_at, Ticket.created_at).asc(),
-        )
-    q = q.offset(max(f.offset, 0)).limit(min(max(f.limit, 1), 500))
+        return q.order_by(Ticket.queued.asc(), age, Ticket.id.asc())
+    if f.sort == "updated":
+        return q.order_by(Ticket.updated_at.desc(), Ticket.id.asc())
+    return q.order_by(
+        Ticket.queued.asc(),
+        _rank(cfg, Ticket.assessed_tier if full else _shown_tier_col()),
+        _rank(cfg, Ticket.claimed_tier),
+        age,
+        Ticket.id.asc(),
+    )
+
+
+async def list_tickets(db: AsyncSession, cfg: Config, p: Principal, f: Filters) -> list[Ticket]:
+    q = _ordered(cfg, p, f).offset(max(f.offset, 0)).limit(min(max(f.limit, 1), 500))
     return list((await db.execute(q)).scalars().all())
+
+
+async def every_ticket(db: AsyncSession, cfg: Config, p: Principal, f: Filters) -> list[Ticket]:
+    """Every ticket the filters match and the reader may see, in the list's order, read in one
+    statement. Pages are each their own snapshot: a ticket filed or moved between two of them shifts
+    the rest, and a reader of every page gets one ticket twice or misses one (XE-2271). For whatever
+    says "every": the export, not a page of the list."""
+    return list((await db.execute(_ordered(cfg, p, f))).scalars().all())
 
 
 # ---- similar tickets ----------------------------------------------------------------------------

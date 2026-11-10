@@ -14,6 +14,7 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -496,26 +497,25 @@ EFFORT_LABEL = {
 }
 
 
-async def all_tickets(db: AsyncSession, cfg, p: Principal, page: int = 500, kind: str = "all") -> list:
-    """Every ticket the reader may see, paged under the list's cap, so "every" means every."""
-    out: list = []
-    offset = 0
-    while True:
-        f = Filters(kind=kind, status="all", offset=offset, limit=page)
-        rows = await tsvc.list_tickets(db, cfg, p, f)
-        out.extend(rows)
-        if len(rows) < page:
-            return out
-        offset += page
+def _cell(s: str | None) -> str:
+    """One table cell, one line (XE-0713): line breaks go, and a `|` cannot end the cell, nor a `\\`
+    before one un-escape it. A cell that could break the row adds rows the heading does not count."""
+    return " ".join((s or "").split()).replace("\\", "\\\\").replace("|", "\\|")
 
 
 async def export_markdown(ctx: Context, db: AsyncSession, p: Principal) -> str:
     """The triage doc as the database has it now: the bounty's tickets, which are what a triage
-    assesses. Private tickets appear only for readers who may see them; everyone else gets the public
-    rows. The number in the heading is the number of rows under it: every ticket counted is in exactly
-    one section, and each section is written once (XE-2271)."""
+    assesses. It is the assessment of every open ticket, which the desk does not publish, so it is
+    written for the team and its agents and refused to anyone else here, whoever the caller is.
+    Private tickets appear only for readers who may see them, and a duplicate's private target is not
+    named to one who may not (`tickets.hidden_targets`). The number in the heading is the number of
+    rows under it: every ticket is read once, in one statement, is in exactly one section, and each
+    section is written once (XE-2271)."""
+    if not tsvc.sees_assessment(p):
+        raise HTTPException(403, "the triage export is the assessment of every open ticket; team and agents")
     cfg = ctx.config
-    rows = await all_tickets(db, cfg, p, kind="bounty")
+    rows = await tsvc.every_ticket(db, cfg, p, Filters(kind="bounty", status="all"))
+    hidden = await tsvc.hidden_targets(db, p, rows)
     now = datetime.now(timezone.utc)
     out = [
         f"# XE triage export, {now:%d %B %Y %H:%M} UTC",
@@ -551,15 +551,17 @@ async def export_markdown(ctx: Context, db: AsyncSession, p: Principal) -> str:
                 t.mainnet_gate or "", "—"
             )
             if t.duplicate_of:
-                gate = f"via {t.duplicate_of}"
+                gate = f"via {thread.UNNAMED_DUPLICATE if t.duplicate_of in hidden else t.duplicate_of}"
             prs = ", ".join(
-                f"{pr.repo.split('/')[-1] + '#' if pr.repo != cfg.primary_repo else '#'}{pr.ref}"
-                + (f" ({pr.note})" if pr.note else "")
+                _cell(
+                    f"{pr.repo.split('/')[-1] + '#' if pr.repo != cfg.primary_repo else '#'}{pr.ref}"
+                    + (f" ({pr.note})" if pr.note else "")
+                )
                 for pr in patches[t.id]
             )
             status = t.status + (f" / {t.closed_reason}" if t.closed_reason else "")
             internal = f"`{t.internal_ref}`" if t.internal_ref else "—"
-            title = " ".join(t.title.split()).replace("|", "\\|")  # one cell, one line (XE-0713)
+            title = _cell(t.title)
             out.append(
                 f"| {ref} | {title} | {cfg.verdicts.get(t.verdict or '', t.verdict or '—')} | {gate} | {tier} | "
                 f"{EFFORT_LABEL.get(t.effort_eng or '', '—')} | {internal} | {status} | {prs} |"

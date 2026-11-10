@@ -572,7 +572,7 @@ def build_agent_brief(
             "report named.",
         )
     )
-    add(f"- `{b}/v1/export/triage.md`: the whole desk as triage tables, for a wide read.")
+    add(f"- `{b}/v1/export/triage.md`: every bounty ticket you may see as triage tables, for a wide read.")
     add("")
     cfg_h = cfg.hashes.get("desk.yaml", "")[:12]
     copy_h = cfg.hashes.get("copy/programme.yaml", "")[:12]

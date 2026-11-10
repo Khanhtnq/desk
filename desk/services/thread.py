@@ -28,6 +28,7 @@ REPO_ALIASES = {
     "faucet": "xeprotocol/faucet",
 }
 PR_TOKEN = re.compile(r"(?:(?P<owner>[\w.-]+)/)?(?P<repo>[\w.-]*)#(?P<num>\d+)")
+PATCH_REPO, PATCH_REF = re.compile(r"[\w.-]{1,100}/[\w.-]{1,100}"), re.compile(r"[\w.-]{1,64}")
 
 
 # ---- notes ------------------------------------------------------------------------------------------
@@ -416,6 +417,12 @@ async def add_patch_ref(
     repo, ref = repo.strip(), str(ref).strip()
     if not repo or not ref or kind not in ("pr", "commit"):
         raise HTTPException(400, "repo, ref and kind (pr|commit) are required")
+    # every writer of a patch ref comes through here. The repo and ref become a URL, a table cell in
+    # the export and a name in a reply, so they are a repository and a number or sha and nothing
+    # else; the free text beside them is one line
+    if not PATCH_REPO.fullmatch(repo) or not PATCH_REF.fullmatch(ref):
+        raise HTTPException(400, "repo is owner/name and ref is a number or a commit sha")
+    title, note, author = (clean_text(x, one_line=True) for x in (title, note, author))
     url = url.strip()
     if url and not url.lower().startswith("https://"):
         # the page renders it as a link; nothing but https ever goes in an href here

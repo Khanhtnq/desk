@@ -286,7 +286,11 @@ def build_llms_txt(
             "## Tickets",
             link("/XE-0001.md", "A ticket", "facts, patches, and the public thread; replace the id"),
             link("/v1/tickets?kind=bounty&status=open", "Tickets JSON", "the same list, filterable"),
-            link("/v1/export/triage.md", "Triage export", "the whole desk as the triage tables"),
+            link(
+                "/v1/export/triage.md",
+                "Triage export",
+                "every bounty ticket as the triage tables; the team and agent tokens only",
+            ),
             "",
             *common_api,
             "## Optional",

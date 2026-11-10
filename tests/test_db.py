@@ -435,9 +435,26 @@ async def test_a_report_is_read_across_the_desk(ctx, db):
     f = tsvc.Filters(status="all", limit=2)
     assert len(await tsvc.list_tickets(db, ctx.config, p, f)) == 2
     assert await tsvc.count_tickets(db, ctx.config, p, f) == 6
-    # the export reads every page, not the first
-    assert len(await triage.all_tickets(db, ctx.config, p, page=2)) == 6
-    assert "6 tickets." in await triage.export_markdown(ctx, db, p)
+    # the export reads every ticket, each once, in one statement; and a pager of the list is given
+    # each once too, because the list's order is total (XE-2271)
+    every = await tsvc.every_ticket(db, ctx.config, p, tsvc.Filters(status="all"))
+    assert len(every) == 6 and len({t.id for t in every}) == 6
+    pages = [tsvc.Filters(status="all", offset=at, limit=2) for at in (0, 2, 4)]
+    paged = [t.id for f in pages for t in await tsvc.list_tickets(db, ctx.config, p, f)]
+    assert paged == [t.id for t in every]
+    whole = await triage.export_markdown(ctx, db, p)
+    assert "6 tickets." in whole and f"via {e.id}" in whole
+    # it is the working layer's. An agent without read:private gets the public rows, and the private
+    # target of a public duplicate is not named to it (XE-0799); anyone else is refused, and by the
+    # exporter itself, whoever calls it
+    reader = await _agent(ctx, db, p.user)
+    part = await triage.export_markdown(ctx, db, reader)
+    assert "4 tickets." in part and c.id in part and e.id not in part
+    assert f"via {thread.UNNAMED_DUPLICATE}" in part
+    for outsider in (authz.ANON, authz.Principal(kind="reporter", reporter_id=r1.id)):
+        with pytest.raises(HTTPException) as no:
+            await triage.export_markdown(ctx, db, outsider)
+        assert no.value.status_code == 403
 
 
 async def test_a_note_says_what_it_checked(ctx, db):
@@ -1758,7 +1775,7 @@ async def test_approved_awards_whose_ticket_has_not_caught_up_are_listed(ctx, db
 
 
 async def test_triage_import_of_the_real_doc(ctx, db, triage_text):
-    await _team(ctx, db)
+    team = await _team(ctx, db)
     rows = triage.parse_triage(triage_text)
     stats = await triage.import_rows(ctx, db, rows, email_bodies={"E1": "e1", "E2": "e2", "E3": "e3"})
     await db.commit()
@@ -1802,7 +1819,7 @@ async def test_triage_import_of_the_real_doc(ctx, db, triage_text):
     assert (await EventLog.verify(db))["ok"]
     md = await triage.export_markdown(ctx, db, authz.SYSTEM)
     assert "XE-" in md and "`#1028`" in md and md.count("\n| ") >= 90
-    public_md = await triage.export_markdown(ctx, db, authz.ANON)
+    public_md = await triage.export_markdown(ctx, db, await _agent(ctx, db, team.user))
     assert tickets["E1"].title in md and tickets["E1"].title not in public_md
     assert public_md.count("\n| ") == md.count("\n| ") - 3
     pending = (await db.execute(select(Proposal))).scalars().all()

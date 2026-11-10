@@ -131,7 +131,7 @@ Everything is also available as markdown at `.md` and in `llms.txt`, same middle
 
 ## 7. The agent API
 
-REST, JSON under `/v1`, `no-store`, CORS open, same conventions as the harness. Public tickets, the leaderboard, the triage export and `GET /v1` (commit, config hashes, network) need no auth, so anyone can curl them. Everything else is a bearer token bound to a human owner, a model id, a scope set and an expiry; every write it makes is recorded against both the token and the owner.
+REST, JSON under `/v1`, `no-store`, CORS open, same conventions as the harness. Public tickets, the leaderboard and `GET /v1` (commit, config hashes, network) need no auth, so anyone can curl them. The triage export is the assessment of every open bounty ticket, which the desk does not publish while a bug is open: it is for the team and agent tokens, and refused to anyone else. Everything else is a bearer token bound to a human owner, a model id, a scope set and an expiry; every write it makes is recorded against both the token and the owner.
 
 ```
 GET    /v1/tickets?kind=bounty&status=open&sort=severity
