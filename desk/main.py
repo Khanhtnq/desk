@@ -124,6 +124,26 @@ async def _refuse(scope, send, status: int, why: str):
 app.add_middleware(BodyLimit)
 
 
+class NoNul:
+    """A NUL in the path or the query string is a 400 here, before any route reads it. Postgres refuses
+    one in a parameter, and a lookup that carried it (`/v1/tickets/%00`, `?area=%00`, `/log?kind=%00`)
+    ended as a bare 500 (XE-0827 again, at the sites that did not call `clean_lookup`). Checked once,
+    for every route there is or will be; JSON bodies are `auth.Body`'s."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and (
+            "\x00" in scope.get("path", "") or b"%00" in scope.get("query_string", b"")
+        ):
+            return await _refuse(scope, send, 400, "the request has a NUL character in it")
+        return await self.app(scope, receive, send)
+
+
+app.add_middleware(NoNul)
+
+
 @app.exception_handler(RequestValidationError)
 async def invalid_request(request: Request, exc: RequestValidationError):
     """A 422 that names the fields and says nothing else: the default handler echoes the input, which

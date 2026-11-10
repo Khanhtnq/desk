@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from ..authz import require
 from ..brief import build_agent_brief, fix_brief
@@ -17,25 +17,25 @@ from ..services import proposals as psvc
 from ..services import thread, users
 from ..services import tickets as tsvc
 from ..ui import site_for, site_url
-from .deps import Ctx, Db, Who
+from .deps import Body, Ctx, Db, Who
 
 router = APIRouter(prefix="/v1", tags=["agent"])
 
 
-class NoteIn(BaseModel):
+class NoteIn(Body):
     body: str = Field(min_length=1, max_length=20_000)
     # what was looked at before writing:
     # {"desk": 692, "similar": ["XE-0130"], "tracker": true, "tree": "xe@abc1234"}
     checked: dict[str, Any] | None = None
 
 
-class ProposalIn(BaseModel):
+class ProposalIn(Body):
     field: str
     value: Any
     reason: str = Field(default="", max_length=4000)
 
 
-class PatchIn(BaseModel):
+class PatchIn(Body):
     repo: str = Field(default="", max_length=128)
     ref: str = Field(max_length=64)
     kind: str = Field(default="pr", max_length=8)

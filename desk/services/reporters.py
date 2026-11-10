@@ -94,7 +94,7 @@ def _name(s: str) -> str:
 
 def clean_email(email: str) -> str:
     e = (email or "").strip().lower()
-    if not EMAIL.match(e) or len(e) > 256:
+    if not EMAIL.match(e) or len(e) > 256 or e != tsvc.clean_text(e, one_line=True):
         raise HTTPException(400, "that does not look like an email address")
     return e
 
@@ -530,8 +530,8 @@ async def save_attachment(
     a = Attachment(
         ticket_id=t.id,
         n=n,
-        filename=(up.filename or "file")[:256],
-        content_type=(up.content_type or "application/octet-stream")[:128],
+        filename=(tsvc.clean_text(up.filename, one_line=True) or "file")[:256],
+        content_type=(tsvc.clean_text(up.content_type, one_line=True) or "application/octet-stream")[:128],
         size=len(data),
         sha256=hashlib.sha256(data).hexdigest(),
         blob_path=str(path.relative_to(ctx.settings.blob_dir)),

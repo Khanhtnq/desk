@@ -9,13 +9,12 @@ from collections import defaultdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
 from sqlalchemy import delete, select
 
 from .. import auth
 from ..models import Passkey
 from ..services import users
-from .deps import Ctx, Db, Who
+from .deps import Body, Ctx, Db, Who
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -46,11 +45,11 @@ async def _sign_in(ctx: Ctx, db, request: Request, response: Response, user, how
 # ---- passkeys ---------------------------------------------------------------------------------------
 
 
-class BeginLoginIn(BaseModel):
+class BeginLoginIn(Body):
     email: str | None = None
 
 
-class FinishIn(BaseModel):
+class FinishIn(Body):
     challenge_id: str
     credential: Any
     label: str = ""
@@ -113,12 +112,12 @@ async def passkey_remove(ctx: Ctx, db: Db, who: Who, request: Request, pid: int)
 # ---- TOTP -------------------------------------------------------------------------------------------
 
 
-class TotpLoginIn(BaseModel):
+class TotpLoginIn(Body):
     email: str
     code: str
 
 
-class TotpConfirmIn(BaseModel):
+class TotpConfirmIn(Body):
     challenge_id: str
     code: str
 
@@ -202,7 +201,7 @@ async def totp_remove(ctx: Ctx, db: Db, who: Who, request: Request):
 # ---- invites and sessions ---------------------------------------------------------------------------
 
 
-class InviteIn(BaseModel):
+class InviteIn(Body):
     token: str
 
 

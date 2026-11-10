@@ -33,7 +33,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,6 +93,38 @@ def clean_lookup(raw: str | None, limit: int = 256) -> str:
     except UnicodeEncodeError:
         return ""
     return s[:limit]
+
+
+def has_nul(value: Any) -> bool:
+    """A NUL anywhere in parsed JSON: any string, any key, at any depth (walked without recursion)."""
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            if "\x00" in v:
+                return True
+        elif isinstance(v, dict):
+            stack.extend(v.keys())
+            stack.extend(v.values())
+        elif isinstance(v, (list, tuple)):
+            stack.extend(v)
+    return False
+
+
+class Body(BaseModel):
+    """The base of every JSON request body. Postgres refuses a NUL in text and in jsonb, and a request
+    that carried one into a statement ended as a bare 500 (XE-0827, XE-1426, XE-1015). The cleaning
+    was at the call sites that remembered it; the rule is here, at the boundary, for every field of
+    every body including the free-form ones (a facts dict, a proposal's value): a body with a NUL in
+    it is a 422. Refused, not stripped: stripping gives `XE-0\x00142` and `XE-0142` one meaning. The
+    path and the query string are `main.NoNul`'s; form fields are cleaned where they are read."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_nul(cls, data: Any) -> Any:
+        if has_nul(data):
+            raise ValueError("the request has a NUL character in it")
+        return data
 
 
 _DECOY_KEY = secrets.token_bytes(32)  # per process; see passkey_begin_login
@@ -646,7 +678,7 @@ HEX32 = r"^[0-9a-fA-F]{64}$"
 HEX64 = r"^[0-9a-fA-F]{128}$"  # the lengths are stated twice below: `$` is not end-of-text in every engine
 
 
-class SignedRequest(BaseModel):
+class SignedRequest(Body):
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: int
     pub_key: str = Field(pattern=HEX32, min_length=64, max_length=64)

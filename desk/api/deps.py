@@ -5,7 +5,7 @@ from typing import Annotated, AsyncIterator
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import Auth, check_csrf, resolve
+from ..auth import Auth, Body, check_csrf, resolve
 from ..context import Context, get_context
 from ..db import sessionmaker
 from ..services import notify
@@ -20,6 +20,8 @@ async def request_db() -> AsyncIterator[AsyncSession]:
         owed = notify.take_owed(s)
     await notify.mail_owed(get_context(), owed)
 
+
+__all__ = ["Body", "Ctx", "Db", "Who", "current", "request_db"]  # Body: the base of every request model
 
 Ctx = Annotated[Context, Depends(get_context)]
 Db = Annotated[AsyncSession, Depends(request_db)]

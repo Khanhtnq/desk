@@ -3346,3 +3346,63 @@ async def test_a_cookie_write_carries_the_csrf_token(ctx, db):
     await authn.logout(ctx, db, who, both, resp)
     assert resp.headers["set-cookie"].startswith(f"{auth.SESSION_COOKIE}=")
     assert (await deps.current(db, req("GET", f"{auth.SESSION_COOKIE}={traw}"))).principal.kind == "anon"
+
+
+async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
+    """The rule (XE-0827, XE-1426, XE-1015): Postgres refuses a NUL in text and in jsonb, so no request
+    carries one as far as a statement. It is refused once at each way in: the path and the query
+    string by `main.NoNul`, a JSON body by `auth.Body`, which every request model is. A route added
+    later is behind the first; a model added later is the second, or fails here."""
+    from pydantic import BaseModel, ValidationError
+
+    from desk import main
+    from desk.api import agent, authn, deps
+    from desk.api import public as pub
+    from desk.api import reporter as rapi
+    from desk.api import team as team_api
+
+    assert any(m.cls is main.NoNul for m in main.app.user_middleware)
+
+    async def through(path, query=b""):
+        seen = []
+
+        async def inner(scope, receive, send):
+            seen.append("passed")
+
+        async def send(message):
+            seen.append(message.get("status", message["type"]))
+
+        scope = {"type": "http", "method": "GET", "path": path, "query_string": query, "headers": []}
+        await main.NoNul(inner)(scope, None, send)
+        return seen[0]
+
+    assert await through("/v1/tickets/XE-0001", b"area=consensus&q=100%25") == "passed"
+    refused = (
+        ("/v1/tickets/\x00", b""), ("/XE-00\x0001", b""), ("/v1/tickets", b"area=%00"),
+        ("/log", b"kind=a%00b&x=1"),
+    )
+    for path, query in refused:
+        assert await through(path, query) == 400, (path, query)
+    # every model the API modules define, and the signed request: a NUL in a value, in a key, or deep
+    # inside a free-form field is a validation error before any field is read
+    models = {
+        v
+        for mod in (agent, authn, deps, pub, rapi, team_api, auth)
+        for v in vars(mod).values()
+        if isinstance(v, type) and issubclass(v, BaseModel) and v.__module__ == mod.__name__
+    }
+    models.discard(auth.Body)
+    assert len(models) >= 30 and {SignedRequest, team_api.FactsIn, rapi.TextIn, agent.ProposalIn} <= models
+    for m in models:
+        assert issubclass(m, auth.Body), m.__name__
+        for body in ({"x": "a\x00b"}, {"a\x00": 1}, {"changes": {"deep": [{"k": ["\x00"]}]}}):
+            with pytest.raises(ValidationError):
+                m.model_validate(body)
+    clean = {"changes": {"area": "consensus"}}
+    assert team_api.FactsIn.model_validate(clean).changes == clean["changes"]
+    # the one address stored as typed, which no model carries when it arrives on the filing form
+    for bad in ("a\x00@b.co", "a@b\x00.co", "a\x7f@b.co"):
+        with pytest.raises(HTTPException) as e:
+            rsvc.clean_email(bad)
+        assert e.value.status_code == 400
+    assert rsvc.clean_email(" Ann@Example.org ") == "ann@example.org"

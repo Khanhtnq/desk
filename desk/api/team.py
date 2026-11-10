@@ -9,14 +9,14 @@ import io
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from ..authz import can, require, require_field
 from ..services import proposals as psvc
 from ..services import reporters as rsvc
 from ..services import notify, thread, users
 from ..services import tickets as tsvc
-from .deps import Ctx, Db, Who
+from .deps import Body, Ctx, Db, Who
 
 router = APIRouter(prefix="/v1/team", tags=["team"])
 
@@ -28,36 +28,36 @@ def _team(who: Who, request: Request) -> None:
         raise HTTPException(401 if p.kind == "anon" else 403, "team sign-in required")
 
 
-class FactsIn(BaseModel):
+class FactsIn(Body):
     changes: dict[str, Any]
     reason: str = Field(default="", max_length=500)
 
 
-class ReporterIn(BaseModel):
+class ReporterIn(Body):
     reporter_id: int | None = None
     email: str | None = Field(default=None, max_length=256)
 
 
-class StatusIn(BaseModel):
+class StatusIn(Body):
     status: str
     closed_reason: str | None = None
     reason: str = Field(default="", max_length=500)
 
 
-class ReplyIn(BaseModel):
+class ReplyIn(Body):
     body: str = Field(min_length=1, max_length=20_000)
 
 
-class DecideIn(BaseModel):
+class DecideIn(Body):
     reason: str = Field(default="", max_length=500)
 
 
-class AwardIn(BaseModel):
+class AwardIn(Body):
     award_xe: int | None = None
     approve: bool | None = None  # True approves, False takes approval back, None leaves it
 
 
-class NewTicketIn(BaseModel):
+class NewTicketIn(Body):
     kind: str = Field(default="bounty", max_length=16)
     title: str = Field(min_length=3, max_length=512)
     body: str = Field(default="", max_length=60_000)
@@ -177,7 +177,7 @@ async def award(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: Aw
     return tsvc.to_dict(ctx, t, who.principal)
 
 
-class SettleIn(BaseModel):
+class SettleIn(Body):
     tickets: list[str] = Field(min_length=1, max_length=500)
 
 
@@ -215,7 +215,7 @@ async def settle_many(ctx: Ctx, db: Db, who: Who, request: Request, body: Settle
     return out
 
 
-class PaidIn(BaseModel):
+class PaidIn(Body):
     paid_ref: str = Field(min_length=1, max_length=64)
 
 
@@ -260,13 +260,13 @@ async def reject(ctx: Ctx, db: Db, who: Who, request: Request, pid: int, body: D
     return out
 
 
-class BulkIn(BaseModel):
+class BulkIn(Body):
     adopt: list[int] = []
     reject: list[int] = []
     send_plain: bool = False  # send reply drafts the desk reads as plain acknowledgements (the triage page)
 
 
-class FamilyIn(BaseModel):
+class FamilyIn(Body):
     tickets: list[str] | None = None  # a subset of the family; all of it when omitted
 
 
@@ -365,7 +365,7 @@ async def payouts(ctx: Ctx, db: Db, who: Who, request: Request):
 # ---- tokens and users -------------------------------------------------------------------------------
 
 
-class TokenIn(BaseModel):
+class TokenIn(Body):
     model_id: str = Field(min_length=1, max_length=128)
     label: str = Field(default="", max_length=128)
     scopes: list[str]
@@ -374,7 +374,7 @@ class TokenIn(BaseModel):
     instructions: str = Field(default="", max_length=4000)
 
 
-class InstructionsIn(BaseModel):
+class InstructionsIn(Body):
     instructions: str = Field(default="", max_length=4000)
 
 
@@ -423,7 +423,7 @@ async def revoke_token(ctx: Ctx, db: Db, who: Who, request: Request, tid: int):
     return {"revoked": t.id}
 
 
-class UserIn(BaseModel):
+class UserIn(Body):
     email: str = Field(max_length=256)
     name: str = Field(default="", max_length=128)
     roles: list[str] = []
@@ -444,18 +444,18 @@ async def add_user(ctx: Ctx, db: Db, who: Who, request: Request, body: UserIn):
     return users.user_dict(u)
 
 
-class UserEditIn(BaseModel):
+class UserEditIn(Body):
     roles: list[str] | None = None
     active: bool | None = None
     name: str | None = None
     email: str | None = None
 
 
-class NameIn(BaseModel):
+class NameIn(Body):
     name: str
 
 
-class EmailIn(BaseModel):
+class EmailIn(Body):
     email: str
 
 

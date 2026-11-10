@@ -17,7 +17,6 @@ from urllib.parse import quote, urlencode
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
 
 from .. import auth
 from ..canonical import DOMAIN_LOGIN, DOMAIN_PAYOUT
@@ -25,7 +24,7 @@ from ..models import Challenge, Reporter
 from ..services import channels
 from ..services import reporters as rsvc
 from ..services import tickets as tsvc
-from .deps import Ctx, Db, Who
+from .deps import Body, Ctx, Db, Who
 
 router = APIRouter(prefix="/v1/reporter", tags=["reporter"])
 
@@ -75,7 +74,7 @@ def _callback_url(ctx: Ctx) -> str:
     return f"{ctx.settings.scheme}://{ctx.settings.hosts['bounty']}/v1/reporter/auth/github/callback"
 
 
-class LinkIn(BaseModel):
+class LinkIn(Body):
     next: str | None = None
 
 
@@ -268,7 +267,7 @@ async def discord_callback(
 # ---- email link ---------------------------------------------------------------------------------------
 
 
-class EmailIn(BaseModel):
+class EmailIn(Body):
     email: str
     next: str | None = None
 
@@ -390,7 +389,7 @@ async def logout(ctx: Ctx, db: Db, who: Who, request: Request, response: Respons
     return {"ok": True}
 
 
-class UnlinkIn(BaseModel):
+class UnlinkIn(Body):
     kind: str
     value: str = ""
 
@@ -475,7 +474,7 @@ async def file_ticket(
     return {"ticket": t.id, "url": url, "visibility": t.visibility, "notify_sent": notify, "queued": t.queued}
 
 
-class TextIn(BaseModel):
+class TextIn(Body):
     body: str = ""
 
 
