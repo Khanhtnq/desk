@@ -2814,6 +2814,8 @@ async def test_nothing_about_a_private_ticket_is_written_to_its_channel(ctx, db)
     import inspect
     import re
 
+    import desk
+
     team = await _team(ctx, db)
     client = _Recorder()
 
@@ -2861,18 +2863,59 @@ async def test_nothing_about_a_private_ticket_is_written_to_its_channel(ctx, db)
     twin = await channels.open_from_channel(ctx, db, _post(thread_ref="779", title="Which port is it"))
     for t in (chat, twin):
         await tsvc.set_status(ctx, db, team, t, "triaging")
+        await thread.add_reply(ctx, db, team, t, "Answered in the thread.")
         await tsvc.set_status(ctx, db, team, t, "closed", closed_reason="answered")
     await tsvc.set_facts(ctx, db, team, chat, {"visibility": "private"})
     assert [t.id for t in await channels.needing_state_push(db, "discord")] == [twin.id]
-    assert await channels.queued_replies(db, "discord") == []
-    # every function in sync that writes to GitHub about a ticket asks the question
+    assert [t.id for _, t in await channels.queued_replies(db, "discord")] == [twin.id]
+
+    # asked at the write, of the row as it is now. A pass selects its work once, keeps what it loaded
+    # and may wait minutes on GitHub before it reaches a ticket; one sealed by someone else meanwhile
+    # is still public in the pass's memory, with its text in clear
+    late_t, late_r = await from_github(142, "Sealed while the worker was busy")
+    late_d, _ = await disclosed("Sealed again while the worker was busy")
+    late_post = _post(uid="1002", thread_ref="780", title="Sealed mid-pass")
+    late_chat = await channels.open_from_channel(ctx, db, late_post)
+    late_chat_r = await thread.add_reply(ctx, db, team, late_chat, "Check the port.")
+    await db.commit()
+    assert late_t.id in {t.id for t in await sync.tickets_needing_push(db)}
+    assert late_r.id in {r.id for r in await sync.queued_replies(db)}
+    assert late_chat_r.id in {r.id for r, _ in await channels.queued_replies(db, "discord")}
+    await db.commit()
+    async with async_sessionmaker(db.bind, expire_on_commit=False)() as other:
+        for tid in (late_t.id, late_d.id, late_chat.id):
+            await tsvc.set_facts(ctx, other, team, await tsvc.get(other, tid), {"visibility": "private"})
+        await other.commit()
+    held = (late_t.visibility, late_d.visibility, late_chat.visibility, late_r.mirror, late_chat_r.mirror)
+    assert held == ("public", "public", "public", "queued", "queued")  # what the pass still holds
+    assert await outbound(late_t, late_r) == []
+    assert await sync.open_disclosure(ctx, db, client, late_d) == "" and client.writes == []
+    assert not await channels.writes_to_thread(db, late_chat, late_chat_r)
+    assert not await channels.writes_to_thread(db, late_chat)
+    assert await channels.writes_to_thread(db, twin)
+    assert (late_t.visibility, late_r.mirror, late_d.source, late_chat_r.mirror) == (
+        "private", "none", "web", "none"
+    )
+
+    # every function in sync that writes to GitHub about a ticket re-reads it and asks the question,
+    # in that order, before the write
     writers = []
     for name, fn in inspect.getmembers(sync, inspect.iscoroutinefunction):
         src = inspect.getsource(fn)
-        if re.search(r"client\.(set_labels|set_state|comment|create_issue)\(", src):
+        write = re.search(r"client\.(set_labels|set_state|comment|create_issue)\(", src)
+        if write:
             writers.append(name)
-            assert "writes_to_issue(" in src or 't.visibility != "public"' in src, name
+            asked = src[src.index("tsvc.as_it_is_now(db, t"):write.start()]
+            assert "writes_to_issue(t)" in asked or 't.visibility != "public"' in asked, name
     assert sorted(writers) == ["mirror_reply", "open_disclosure", "push_labels", "push_state"]
+    # and the bot, before the first thing it sends or changes in either loop of its pass
+    bot = (Path(desk.__file__).parent / "bots" / "discord_bot.py").read_text()
+    once = bot[bot.index("async def mirror_once"):bot.index("# ---- slash commands")]
+    loops = once.split("for t in await ch.needing_state_push")
+    assert len(loops) == 2
+    for loop in loops:
+        first_write = min(loop.index("th.send("), loop.index("th.edit("))
+        assert loop.index("await ch.writes_to_thread(db, t") < first_write
 
 
 class _Issues:

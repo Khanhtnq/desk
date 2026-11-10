@@ -275,6 +275,15 @@ async def queued_replies(db: AsyncSession, platform: str, limit: int = 50) -> li
     return [(r, t) for r, t in (await db.execute(q)).all()]
 
 
+async def writes_to_thread(db: AsyncSession, t: Ticket, r: Reply | None = None) -> bool:
+    """The desk writes to a ticket's chat thread only while the ticket is public, and a reply only
+    while it is still queued (XE-0700). Asked by the bot straight before it sends, of the rows as they
+    are now: the selectors above ran before the bot went to the network for the thread, and a ticket
+    sealed since has had its replies taken back (`tickets.seal_thread`)."""
+    await tsvc.as_it_is_now(db, t, *([r] if r is not None else []))
+    return t.visibility == "public" and (r is None or r.mirror == "queued")
+
+
 def reply_text(ctx: Context, t: Ticket, r: Reply) -> str:
     """How a desk reply reads in the channel: the person's name, the words, the ticket link as a footnote."""
     body = thread.reply_body(ctx, r)

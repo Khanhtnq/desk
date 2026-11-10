@@ -583,7 +583,10 @@ def writes_to_issue(t: Ticket) -> bool:
 
 async def push_labels(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticket) -> bool:
     """Make the issue's status label match the ticket. Other labels are left as they are."""
-    if not writes_to_issue(t) or not client.enabled:
+    if not client.enabled:
+        return False
+    await tsvc.as_it_is_now(db, t)
+    if not writes_to_issue(t):
         return False
     cfg = ctx.config
     want = cfg.label_for(t.status, t.closed_reason)
@@ -603,7 +606,10 @@ async def push_labels(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Tick
 
 async def push_state(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticket) -> bool:
     """Close the issue when the desk closes the ticket; reopen when the desk reopens it."""
-    if not writes_to_issue(t) or not client.enabled:
+    if not client.enabled:
+        return False
+    await tsvc.as_it_is_now(db, t)
+    if not writes_to_issue(t):
         return False
     want = "closed" if t.status in ("closed", "paid") else "open"
     if t.github_state == want:
@@ -625,6 +631,10 @@ async def push_state(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticke
 
 async def mirror_reply(ctx: Context, db: AsyncSession, client: gh.GitHub, r: Reply) -> bool:
     t = await tsvc.get(db, r.ticket_id)
+    if t is not None:
+        await tsvc.as_it_is_now(db, t, r)  # the seal that made the ticket private also took the reply back
+    if r.mirror != "queued":
+        return False
     if t is None or not writes_to_issue(t):
         # a ticket made private after the reply was queued keeps the reply at home
         r.mirror = "none"
@@ -672,7 +682,10 @@ async def open_disclosure(ctx: Context, db: AsyncSession, client: gh.GitHub, t: 
     ticket from then on, so labels and replies flow like any other. Only while it is public: one sealed
     again after its disclosure and before the worker came round gets no issue (the same rule as
     `writes_to_issue`, for the issue that does not exist yet)."""
-    if t.source == "github" or t.visibility != "public" or not client.enabled:
+    if not client.enabled:
+        return ""
+    await tsvc.as_it_is_now(db, t)
+    if t.source == "github" or t.visibility != "public":
         return ""
     repo = ctx.config.primary_repo
     patches = await thread.patches_for(db, t)

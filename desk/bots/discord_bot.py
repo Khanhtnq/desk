@@ -281,6 +281,9 @@ class DeskBot(discord.Client):
                     await ch.mark_failed(self.ctx, db, r, t, "thread not found")
                     await db.commit()
                     continue
+                if not await ch.writes_to_thread(db, t, r):
+                    await db.commit()  # sealed, or taken back, since this pass selected it
+                    continue
                 try:
                     if th.archived:
                         await th.edit(archived=False)
@@ -295,7 +298,12 @@ class DeskBot(discord.Client):
                 th = await self._thread(t.source_ref)
                 if th is None:
                     continue
+                if not await ch.writes_to_thread(db, t):
+                    await db.commit()
+                    continue
                 want = ch.wanted_state(t)
+                if t.channel_state == want:
+                    continue  # moved back while the thread was being fetched
                 try:
                     if want == "closed":
                         await th.send(ch.closed_line(self.ctx, t))
@@ -426,7 +434,10 @@ class DeskBot(discord.Client):
             async with session() as db:
                 t = await self.ticket_here(interaction, db)
                 url = ticket_url(self.ctx, t)
-            await interaction.response.send_message(f"{t.id} · {t.status} · {url}", ephemeral=True)
+            # anyone in the thread may ask; where a sealed ticket stands is on its page, for those
+            # who may open it (XE-0700)
+            where = f"{t.id} · {t.status} · {url}" if t.visibility == "public" else f"{t.id} · {url}"
+            await interaction.response.send_message(where, ephemeral=True)
 
 
 async def main():

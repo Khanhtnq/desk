@@ -935,6 +935,19 @@ async def lock(db: AsyncSession, t: Ticket) -> None:
     await db.refresh(t, with_for_update=True)
 
 
+async def as_it_is_now(db: AsyncSession, *rows) -> None:
+    """Re-read rows a pass loaded a while ago, straight before a write to the outside that depends on
+    them. The worker and the bot select their work once and then make one network call after another
+    (a rate-limited GitHub call can sleep for minutes), on sessions that keep what they loaded; a
+    ticket sealed meanwhile was still public in memory, its text still in clear, and the label, the
+    comment or the disclosure issue was written (XE-0700 sweep). Pending changes are flushed first so
+    none is lost. Not a row lock: that would hold a team member's seal behind a GitHub call; the
+    window left is the one request."""
+    await db.flush()
+    for row in rows:
+        await db.refresh(row)
+
+
 async def set_status(
     ctx: Context,
     db: AsyncSession,
