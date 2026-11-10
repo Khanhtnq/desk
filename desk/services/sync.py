@@ -399,51 +399,94 @@ async def import_repo(
     comments: bool = True,
     pulls: bool = True,
 ) -> dict:
-    """Full or incremental import of one repository. Commits as it goes so a long run is resumable."""
-    stats = {"repo": repo, "issues": 0, "created": 0, "comments": 0, "pulls": 0}
+    """Full or incremental import of one repository. Commits as it goes so a long run is resumable.
+
+    Each issue and each PR is its own piece of work: one that fails is rolled back, counted under
+    `failed` and passed over, and the rest of the repository is still read (XE-1806 sweep). A comment
+    on a sealed ticket while the vault key is not loaded is one such; left to raise, it stopped the
+    listing at that issue on every pass and the PRs behind it were never reached. The cursor moves
+    only when nothing failed, so what failed is read again on the next pass: the PRs are filtered by
+    the same cursor, and moving it past one that failed would skip that one for good."""
+    stats = {"repo": repo, "issues": 0, "created": 0, "comments": 0, "pulls": 0, "failed": 0}
     newest = since or ""
     async for issue in client.issues(repo, since=since):
-        t, created = await upsert_issue(ctx, db, repo, issue)
+        try:
+            t, created = await upsert_issue(ctx, db, repo, issue)
+            added = 0
+            if t is not None and comments and (issue.get("comments") or 0) > 0:
+                async for c in client.comments(repo, issue["number"], since=since):
+                    added += int(await upsert_comment(ctx, db, t, c))
+            await db.commit()
+        except Exception as e:
+            await _undo(db, f"{repo}#{issue.get('number')}", e)
+            stats["failed"] += 1
+            continue
         stats["issues"] += 1
         stats["created"] += int(created)
-        if t is not None and comments and (issue.get("comments") or 0) > 0:
-            async for c in client.comments(repo, issue["number"], since=since):
-                stats["comments"] += int(await upsert_comment(ctx, db, t, c))
+        stats["comments"] += added
         newest = max(newest, issue.get("updated_at") or "")
-        await db.commit()
     if pulls:
         async for pull in client.pulls(repo):
             if since and (pull.get("updated_at") or "") < since:
                 continue
-            stats["pulls"] += await link_pull(ctx, db, repo, pull)
-            # per PR, as the issues are: the follower's row locks and the log are not held across
-            # the rest of the listing, which is a request a page and can wait on GitHub for minutes
-            await db.commit()
+            try:
+                linked = await link_pull(ctx, db, repo, pull)
+                # per PR, as the issues are: the follower's row locks and the log are not held across
+                # the rest of the listing, which is a request a page and can wait on GitHub for minutes
+                await db.commit()
+            except Exception as e:
+                await _undo(db, f"{repo} PR #{pull.get('number')}", e)
+                stats["failed"] += 1
+                continue
+            stats["pulls"] += linked
+    if not stats["failed"]:
+        await set_cursor(db, f"github:{repo}:issues", newest, stats)
         await db.commit()
-    await set_cursor(db, f"github:{repo}:issues", newest, stats)
-    await db.commit()
     return stats
+
+
+async def _undo(db: AsyncSession, what: str, e: Exception) -> None:
+    """One piece of a read failed: what it left uncommitted goes, and the read goes on. Everything
+    before it is committed already. A rollback that itself fails (the connection is gone) is logged
+    and not raised: the next statement says so, in the next piece's own name."""
+    log.exception("reading %s failed: %s", what, e)
+    try:
+        await db.rollback()
+    except Exception as gone:
+        log.warning("rollback after %s failed: %s", what, gone)
 
 
 async def poll(ctx: Context, db: AsyncSession, client: gh.GitHub) -> list[dict]:
     out = []
     for repo in ctx.config.repos:
-        # one repo's bad day does not stop the others or the tracker being read (XE-1160): what it
-        # left uncommitted is rolled back and the poll goes on. Not a savepoint: `import_repo` commits
-        # as it goes, a commit inside a savepoint's block closes it, and the session then refuses the
-        # next statement, so every repo's poll ended at the statement after its first commit and its
-        # cursor was never written (XE-1806)
+        # one repo's bad day (its listing fails, say) does not stop the others or the tracker being
+        # read (XE-1160): what it left uncommitted is rolled back and the poll goes on. Not a
+        # savepoint: `import_repo` commits as it goes, a commit inside a savepoint's block closes it,
+        # and the session then refuses the next statement, so every repo's poll ended at the statement
+        # after its first commit and its cursor was never written (XE-1806)
         try:
             since = await get_cursor(db, f"github:{repo}:issues")
             out.append(await import_repo(ctx, db, client, repo, since=since or None))
         except Exception as e:
-            await db.rollback()
-            log.exception("poll of %s failed: %s", repo, e)
+            await _undo(db, f"poll of {repo}", e)
             out.append({"repo": repo, "error": str(e)[:200]})
-    if ctx.config.internal_repo:
-        since = await get_cursor(db, f"github:{ctx.config.internal_repo}:issues")
-        out.append(await import_internal(ctx, db, client, since=since or None))
+    tracker = ctx.config.internal_repo
+    if tracker:
+        try:
+            since = await get_cursor(db, f"github:{tracker}:issues")
+            out.append(await import_internal(ctx, db, client, since=since or None))
+        except Exception as e:
+            await _undo(db, f"poll of {tracker}", e)
+            out.append({"repo": tracker, "error": str(e)[:200]})
     return out
+
+
+def poll_summary(out: list[dict]) -> dict:
+    """What the worker records of a poll. A repository whose listing failed is in the list as
+    {"repo", "error"} with no counts, and one that was read with pieces passed over says how many
+    under `failed`: either makes the run not a clean one."""
+    total = sum(int(s.get(k) or 0) for s in out for k in ("issues", "comments", "pulls"))
+    return {"ok": not any(s.get("error") or s.get("failed") for s in out), "total": total, "stats": out}
 
 
 # ---- the engineering tracker (read-only) ------------------------------------------------------------
@@ -586,21 +629,31 @@ async def _note_once(ctx: Context, db: AsyncSession, t: Ticket, body: str) -> bo
 async def import_internal(
     ctx: Context, db: AsyncSession, client: gh.GitHub, *, since: str | None = None
 ) -> dict:
-    """Read the tracker, newest-updated last, and apply each issue. Commits as it goes."""
+    """Read the tracker, newest-updated last, and apply each issue. Commits as it goes; an issue
+    that fails is rolled back, counted and passed over, and the cursor then stays (`import_repo`)."""
     repo = ctx.config.internal_repo
-    stats = {"repo": repo, "issues": 0, "comments": 0, "pulls": 0, "tagged": 0, "linked": 0, "moved": 0}
+    stats = {
+        "repo": repo, "issues": 0, "comments": 0, "pulls": 0, "tagged": 0, "linked": 0, "moved": 0,
+        "failed": 0,
+    }
     if not repo:
         return stats
     newest = since or ""
     async for issue in client.issues(repo, since=since):
-        s = await link_internal_issue(ctx, db, issue)
+        try:
+            s = await link_internal_issue(ctx, db, issue)
+            await db.commit()
+        except Exception as e:
+            await _undo(db, f"{repo}#{issue.get('number')}", e)
+            stats["failed"] += 1
+            continue
         stats["issues"] += 1
         for k in ("tagged", "linked", "moved"):
             stats[k] += s[k]
         newest = max(newest, issue.get("updated_at") or "")
+    if not stats["failed"]:
+        await set_cursor(db, f"github:{repo}:issues", newest, stats)
         await db.commit()
-    await set_cursor(db, f"github:{repo}:issues", newest, stats)
-    await db.commit()
     return stats
 
 

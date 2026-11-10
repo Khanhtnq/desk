@@ -86,14 +86,10 @@ class Worker:
             return
         async with session() as db:
             try:
-                stats = await sync.poll(self.ctx, db, self.gh)
-                # a repo that failed is in the list as {"repo", "error"}: it has no counts to add,
-                # and the run is not reported as a clean one
-                total = sum(s.get("issues", 0) + s.get("comments", 0) + s.get("pulls", 0) for s in stats)
-                if total:
-                    log.info("github poll: %s", stats)
-                ok = not any("error" in s for s in stats)
-                await mark_run(db, "github_poll", {"ok": ok, "stats": stats})
+                seen = sync.poll_summary(await sync.poll(self.ctx, db, self.gh))
+                if seen["total"] or not seen["ok"]:
+                    log.info("github poll: %s", seen["stats"])
+                await mark_run(db, "github_poll", {"ok": seen["ok"], "stats": seen["stats"]})
             except Exception as e:
                 await db.rollback()  # what the failed read left half-done is not committed with the mark
                 log.warning("github poll failed: %s", e)

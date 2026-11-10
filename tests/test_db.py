@@ -36,7 +36,7 @@ from desk.context import Context, NodeIdentity
 from desk.db import Base
 from desk.log import EventLog, public_payload
 from desk.models import (
-    AgentToken, Challenge, Event, Note, Passkey, Proposal, Reply, SeenDelivery, Ticket, User,
+    AgentToken, Challenge, Event, Note, Passkey, Proposal, Reply, ScheduleRun, SeenDelivery, Ticket, User,
 )
 from desk.services import proposals as psvc
 from desk.services import channels
@@ -1451,12 +1451,14 @@ async def test_a_strangers_fork_pull_links_but_moves_nothing_until_merged(ctx, d
 
 
 class _Hub:
-    """GitHub as the poll reads it: each repository's issues and pulls, or a repository that fails."""
+    """GitHub as the poll reads it: each repository's issues and pulls, a repository whose listing
+    fails (`broken`), and an issue whose comments cannot be read (`unread`)."""
 
     enabled = True
 
-    def __init__(self, issues, pulls=None, broken=()):
-        self._issues, self._pulls, self.broken = issues, pulls or {}, set(broken)
+    def __init__(self, issues, pulls, broken=(), unread=()):
+        self._issues, self._pulls = issues, pulls
+        self.broken, self.unread = set(broken), set(unread)
 
     async def issues(self, repo, since=None):
         if repo in self.broken:
@@ -1465,6 +1467,8 @@ class _Hub:
             yield issue
 
     async def comments(self, repo, number, since=None):
+        if (repo, number) in self.unread:
+            raise GitHubError(502, "bad gateway")
         for comment in ():
             yield comment
 
@@ -1473,34 +1477,92 @@ class _Hub:
             yield pull
 
 
-async def test_a_poll_reads_every_repository_and_one_that_fails_stops_none(ctx, db):
+async def test_a_poll_reads_every_repository_and_one_that_fails_stops_none(ctx, db, monkeypatch):
     """The rule (XE-1160, XE-1806): a poll reads every repository and the tracker, each to its end,
-    and one that fails loses only what it had not committed. The import commits as it goes; wrapped in
-    a savepoint, its first commit closed the savepoint and the session refused the next statement, so
-    no repository got past its first issue and no cursor was ever written. Asked through `poll`
-    itself, which nothing else here calls, with more than one issue in a repository."""
-    xe, dao, sdk = ctx.config.repos
+    and what fails loses only what it had not committed: a repository whose listing fails stops no
+    other, and an issue that fails stops neither the rest of its repository nor its PRs. The import
+    commits as it goes; wrapped in a savepoint, its first commit closed the savepoint and the session
+    refused the next statement, so no repository got past its first issue and no cursor was ever
+    written. Asked through `poll` itself and the worker's job, which nothing else here calls."""
+    from contextlib import asynccontextmanager
+
+    from desk import worker
+
+    xe, dao, sdk = ctx.config.repos[:3]
+    core = ctx.config.internal_repo
+    stamp = "2026-10-20T10:00:00Z"  # `_issue`'s updated_at
     hub = _Hub(
-        {xe: [_issue(501, "First of two"), _issue(502, "Second of two")], sdk: [_issue(7, "In the SDK")]},
-        pulls={xe: [_pull(510, "Fix the first", "Fixes #501")]},
+        {
+            xe: [_issue(501, "First"), _issue(502, "Second", comments=1), _issue(503, "Third")],
+            sdk: [_issue(7, "In the SDK")],
+            core: [_issue(1201, "A chore that names no report"), _issue(1202, "bundle sdk#7")],
+        },
+        {xe: [_pull(510, "Fix the first", "Fixes #501")]},
         broken={dao},
+        unread={(xe, 502)},
     )
-    by = {s["repo"]: s for s in await sync.poll(ctx, db, hub)}
-    assert (by[xe]["issues"], by[xe]["created"], by[xe]["pulls"]) == (2, 2, 1)
+
+    async def cursors():
+        return [await sync.get_cursor(db, f"github:{r}:issues") for r in (xe, dao, sdk, core)]
+
+    out = await sync.poll(ctx, db, hub)
+    by = {s["repo"]: s for s in out}
+    # the second issue failed after its ticket was written: it alone is gone, the third and the PR
+    # behind it are read, and the cursor stays so the next pass reads the one that failed again
+    assert [by[xe][k] for k in ("issues", "created", "pulls", "failed")] == [2, 2, 1, 1]
+    assert await tsvc.find_by_source(db, "github", xe, "502") is None
+    assert await tsvc.find_by_source(db, "github", xe, "503") is not None
+    assert (await tsvc.find_by_source(db, "github", xe, "501")).status == "fixing"
+    # a repository whose listing fails is an entry with no counts, and the ones after it are read
     assert "error" in by[dao] and "issues" not in by[dao]
-    assert (by[sdk]["issues"], by[sdk]["created"]) == (1, 1)
-    assert by[ctx.config.internal_repo]["issues"] == 0  # the tracker is read after a repository failed
-    stamp = "2026-10-20T10:00:00Z"
-    cursors = [await sync.get_cursor(db, f"github:{r}:issues") for r in (xe, dao, sdk)]
-    assert cursors == [stamp, "", stamp]
-    first = await tsvc.find_by_source(db, "github", xe, "501")
-    assert first.status == "fixing"
-    assert await tsvc.find_by_source(db, "github", xe, "502") is not None
-    assert await tsvc.find_by_source(db, "github", sdk, "7") is not None
-    # the next poll starts from the cursor and finds what is there
+    assert [by[sdk][k] for k in ("issues", "created", "failed")] == [1, 1, 0]
+    # the tracker too, past its first commit
+    assert [by[core][k] for k in ("issues", "linked", "failed")] == [2, 1, 0]
+    assert (await tsvc.find_by_source(db, "github", sdk, "7")).internal_ref == "#1202"
+    assert await cursors() == ["", "", stamp, stamp]
+    seen = sync.poll_summary(out)
+    assert (seen["ok"], seen["total"]) == (False, 6) and seen["stats"] is out
+    assert sync.poll_summary([s for s in out if s["repo"] in (sdk, core)])["ok"] is True
+    assert sync.poll_summary([by[xe]])["ok"] is False and sync.poll_summary([by[dao]])["ok"] is False
+
+    # the next pass: the issue that failed is read, a PR opened since is followed, the cursor moves
+    hub.unread.clear()
+    hub._pulls[xe].append(_pull(511, "Fix the second", "Fixes #502"))
     by = {s["repo"]: s for s in await sync.poll(ctx, db, hub)}
-    assert (by[xe]["issues"], by[xe]["created"], by[xe]["pulls"]) == (2, 0, 0)
-    assert "error" in by[dao] and by[sdk]["created"] == 0
+    assert [by[xe][k] for k in ("issues", "created", "pulls", "failed")] == [3, 1, 1, 0]
+    assert (await tsvc.find_by_source(db, "github", xe, "502")).status == "fixing"
+    assert "error" in by[dao] and by[sdk]["created"] == 0 and by[core]["failed"] == 0
+    assert await cursors() == [stamp, "", stamp, stamp]
+
+    # the worker's job records the pass as it went: not a clean one while a repository fails
+    @asynccontextmanager
+    async def _session():
+        yield db
+
+    async def last_run():
+        q = select(ScheduleRun).where(ScheduleRun.job == "github_poll")
+        return (await db.execute(q)).scalar_one().detail
+
+    monkeypatch.setattr(worker, "session", _session)
+    w = worker.Worker.__new__(worker.Worker)
+    w.ctx, w.gh = ctx, hub
+    await w.job_github_poll()
+    run = await last_run()
+    assert run["ok"] is False and {xe, dao, sdk, core} <= {s["repo"] for s in run["stats"]}
+    hub.broken.clear()
+    await w.job_github_poll()
+    assert (await last_run())["ok"] is True
+
+    # and a pass that raises outright leaves nothing half-done behind the mark it writes
+    async def half_done(ctx, db, client):
+        await sync.set_cursor(db, "half", "done")
+        await db.flush()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sync, "poll", half_done)
+    await w.job_github_poll()
+    assert await last_run() == {"ok": False, "error": "boom"}
+    assert await sync.get_cursor(db, "half") == ""
 
 
 async def test_a_source_moves_a_ticket_once_and_a_persons_status_then_stands(ctx, db):
@@ -1670,7 +1732,7 @@ async def test_a_source_moves_a_ticket_once_and_a_persons_status_then_stands(ctx
     loop = inspect.getsource(sync.import_repo)
     loop = loop[loop.index("async for pull in client.pulls"):]
     assert loop.index("await link_pull(") < loop.index("await db.commit()") < loop.index("set_cursor(")
-    assert loop.count("await db.commit()") == 3
+    assert loop.count("await db.commit()") == 2  # after each PR, and after the cursor
     for fn in (sync._follow_pull_state, sync._follow_internal_state):
         held = inspect.getsource(fn)
         assert 't.kind != "bounty"' in held[held.index("await tsvc.lock(db, t)"):], fn.__name__
