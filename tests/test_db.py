@@ -3411,3 +3411,64 @@ async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
             rsvc.clean_email(bad)
         assert e.value.status_code == 400
     assert rsvc.clean_email(" Ann@Example.org ") == "ann@example.org"
+
+
+async def test_an_internal_ref_has_one_spelling(ctx, db):
+    """The rule: a fact that is a key is stored in one spelling, whoever sets it. `internal_ref` is
+    one (the tracker's state follows `#n`, a class is the tickets sharing it): it is normalised in
+    `tickets.fact_value`, which `set_facts` stores from, and nothing else in desk/ assigns it."""
+    import re
+    from pathlib import Path
+
+    import desk
+
+    p = await _team(ctx, db, roles=("reviewer", "tier"))
+    t, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(63, "Explorer search bar"))
+    others = [
+        await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=f"r{i}", source="web"))
+        for i in range(4)
+    ]
+    for o, spelt in zip(others, ("#1068", " #01068 ", "1068\n", "Faucet#010")):
+        await tsvc.set_facts(ctx, db, p, o, {"internal_ref": spelt})
+    assert [o.internal_ref for o in others] == ["#1068", "#1068", "#1068", "faucet#10"]
+    klass = await tsvc.same_class(db, p, {"#1068"})
+    assert [o.id for o in klass["#1068"]] == sorted(o.id for o in others[:3])  # one class
+    # and the tracker moves a ticket a person linked: under another spelling the issue "also named"
+    # the report and left it alone
+    await tsvc.set_facts(ctx, db, p, t, {"internal_ref": "1070"})
+    assert t.internal_ref == "#1070"
+    stats = await sync.link_internal_issue(ctx, db, _issue(1070, "security: bounty bundle xe#63"))
+    assert (stats["tagged"], stats["linked"], stats["noted"], stats["moved"]) == (1, 0, 0, 1)
+    assert t.status == "accepted"
+    # anything else is a 400, not a row that matches nothing or a value too long for the column
+    refused = (
+        "#", "##1068", "#1068x", "x" * 40, "#" + "9" * 10, "#0", "#\u0661\u0660\u0666\u0668", "#\uff11",
+        "faucet#", "a b#1", "#-1", "#1 #2", 1068, 10.5, True, ["#1"], {"n": 1},
+    )
+    for bad in refused:
+        with pytest.raises(HTTPException) as e:
+            await tsvc.set_facts(ctx, db, p, others[3], {"internal_ref": bad})
+        assert e.value.status_code == 400, bad
+    assert others[3].internal_ref == "faucet#10"
+    await tsvc.set_facts(ctx, db, p, others[3], {"internal_ref": ""})
+    assert others[3].internal_ref == ""
+    # the other key among the facts: a duplicate's target, by its stored id or not at all
+    await tsvc.set_facts(ctx, db, p, others[0], {"duplicate_of": f" {others[1].id.lower()} "})
+    assert others[0].duplicate_of == others[1].id
+    for bad in (others[0].id, "XE-9999", 42, [others[1].id], "x" * 40):
+        with pytest.raises(HTTPException) as e:
+            await tsvc.set_facts(ctx, db, p, others[0], {"duplicate_of": bad})
+        assert e.value.status_code == 400, bad
+    for bad in ("x", "-1", "1e3", 1.0, True, [p.user.id], 999_999_999):
+        with pytest.raises(HTTPException) as e:
+            await tsvc.set_facts(ctx, db, p, others[0], {"assignee_id": bad})
+        assert e.value.status_code == 400, bad
+    await tsvc.set_facts(ctx, db, p, others[0], {"assignee_id": str(p.user.id)})
+    assert others[0].assignee_id == p.user.id
+    root = Path(desk.__file__).parent
+    assigned = [
+        str(f.relative_to(root))
+        for f in root.rglob("*.py")
+        if re.search(r"\.(internal_ref|duplicate_of|assignee_id)\s*=[^=]", f.read_text())
+    ]
+    assert assigned == []

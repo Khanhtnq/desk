@@ -811,6 +811,58 @@ async def leaderboard(db: AsyncSession) -> list[dict]:
 
 # ---- facts ------------------------------------------------------------------------------------------
 
+_INTERNAL_REF = re.compile(r"(?:([a-z0-9][a-z0-9_.-]{0,19})?#)?([0-9]{1,9})")
+
+
+def internal_ref(v: Any) -> str:
+    """An engineering ticket reference as it is stored: `#1064` in the tracker, `faucet#10` in another
+    repository. It is a key (the tracker's state follows `#n`, a class of reports is the tickets that
+    share one, `settings.internal_url` links it), so it has one spelling: `1064`, `#1064`, ` #01064 `
+    and `Faucet#10` are accepted and stored as `#1064` and `faucet#10`; anything else is a 400, where
+    it used to be stored as sent and matched nothing, or was too long for the column and ended as a
+    500. ASCII digits only: `str.isdigit` and `\\d` admit the other scripts' digits."""
+    m = _INTERNAL_REF.fullmatch(v.strip().lower()) if isinstance(v, str) else None
+    if m is None or int(m[2]) == 0:
+        raise HTTPException(400, "internal_ref is a ticket number such as #1064 or faucet#10")
+    return f"{m[1] or ''}#{int(m[2])}"
+
+
+async def fact_value(db: AsyncSession, t: Ticket, k: str, v: Any) -> Any:
+    """One fact as it would be stored on this ticket, or a 400: the vocabulary, the type, the one
+    spelling of a value that is a key, and that what it names exists. `set_facts` stores what this
+    returns, so a bad value never lands however it arrived; a proposal is checked with it when it is
+    made, so an agent meets the 400 and not the person who would have adopted it (XE-1054)."""
+    if k not in FACT_VOCAB:
+        raise HTTPException(400, f"{k} is not a fact field")
+    vocab = FACT_VOCAB[k]
+    if k == "area":
+        vocab = TOPICS if t.kind == "support" else AREAS
+    if v in ("", None):
+        if k == "visibility":
+            raise HTTPException(400, "visibility is public or private")  # NOT NULL (XE-0973)
+        return "" if k == "internal_ref" else None
+    if vocab is not None and v not in vocab:
+        raise HTTPException(400, f"{k} must be one of {list(vocab)}")
+    if k == "claimed_tier" and t.kind != "bounty":
+        raise HTTPException(400, "a support question carries no claimed tier")
+    if k == "internal_ref":
+        return internal_ref(v)
+    if k == "duplicate_of":
+        if not isinstance(v, str) or len(v) > 32:
+            raise HTTPException(400, "duplicate_of is a ticket id such as XE-0042")
+        v = v.strip().upper()
+        if v == t.id:
+            raise HTTPException(400, "a ticket cannot duplicate itself")
+        if await get(db, v) is None:
+            raise HTTPException(400, f"{v} does not exist")
+    if k == "assignee_id":
+        if isinstance(v, bool) or not isinstance(v, (int, str)) or not re.fullmatch(r"[0-9]{1,9}", str(v)):
+            raise HTTPException(400, "assignee_id is a user id")
+        v = int(v)
+        if (await db.execute(select(User.id).where(User.id == v))).scalar_one_or_none() is None:
+            raise HTTPException(400, "no such user")
+    return v
+
 
 async def set_facts(
     ctx: Context,
@@ -829,30 +881,7 @@ async def set_facts(
     await lock(db, t)
     diff: dict[str, Any] = {}
     for k, v in changes.items():
-        if k not in FACT_VOCAB:
-            raise HTTPException(400, f"{k} is not a fact field")
-        vocab = FACT_VOCAB[k]
-        if k == "area":
-            vocab = TOPICS if t.kind == "support" else AREAS
-        if v in ("", None):
-            if k == "visibility":
-                raise HTTPException(400, "visibility is public or private")  # NOT NULL (XE-0973)
-            v = "" if k == "internal_ref" else None
-        elif vocab is not None and v not in vocab:
-            raise HTTPException(400, f"{k} must be one of {list(vocab)}")
-        if k == "claimed_tier" and v is not None and t.kind != "bounty":
-            raise HTTPException(400, "a support question carries no claimed tier")
-        if k == "duplicate_of" and v:
-            v = str(v).upper()
-            if v == t.id:
-                raise HTTPException(400, "a ticket cannot duplicate itself")
-            if await get(db, v) is None:
-                raise HTTPException(400, f"{v} does not exist")
-        if k == "assignee_id" and v is not None:
-            u = (await db.execute(select(User).where(User.id == int(v)))).scalar_one_or_none()
-            if u is None:
-                raise HTTPException(400, "no such user")
-            v = int(v)
+        v = await fact_value(db, t, k, v)
         if k == "visibility" and v == "public" and t.visibility == "private":
             raise HTTPException(400, "use disclose to make a private ticket public")
         old = getattr(t, k)
