@@ -335,6 +335,44 @@ def test_webhook_hmac():
     assert not gh.verify_webhook("s3cret", body, "sha1=abc")
 
 
+async def test_a_write_to_github_is_sent_once_and_not_slept_on():
+    """The rule (XE-0700): the desk asks whether a ticket may be written to straight before the write.
+    A write that waited inside the client for as long as GitHub said (up to five minutes a time) and
+    was then sent had not been asked. A throttled write raises at once and nothing more is written
+    until the wait is over; a write is not sent a second time after a 5xx either."""
+    import httpx
+
+    from desk.services import github as gh
+
+    seen = []
+
+    def answer(request):
+        seen.append((request.method, request.url.path))
+        if request.method == "PUT":
+            return httpx.Response(403, headers={"retry-after": "120"}, json={"message": "slow down"})
+        if request.method == "POST":
+            return httpx.Response(502, json={"message": "bad gateway"})
+        return httpx.Response(200, json={"login": "desk"})
+
+    client = gh.GitHub("token")
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(answer), base_url="https://api.github.test"
+    )
+    with pytest.raises(gh.GitHubBusy):
+        await client.set_labels("xeprotocol/xe", 7, ["accepted"])
+    assert seen == [("PUT", "/repos/xeprotocol/xe/issues/7/labels")]
+    with pytest.raises(gh.GitHubBusy):
+        await client.comment("xeprotocol/xe", 7, "a reply")
+    assert len(seen) == 1  # not sent at all while GitHub's wait stands
+    client.busy_until = 0.0
+    with pytest.raises(gh.GitHubError) as e:
+        await client.comment("xeprotocol/xe", 7, "a reply")
+    assert e.value.status == 502 and not isinstance(e.value, gh.GitHubBusy)
+    assert seen[1:] == [("POST", "/repos/xeprotocol/xe/issues/7/comments")]  # once, not five times
+    await client._client.aclose()
+
+
 def test_what_github_sends_is_made_storable_where_it_is_parsed():
     """The rule (XE-0827, the other way in): no text reaches a statement with a NUL or half a surrogate
     pair in it. From GitHub it is dropped where the JSON is parsed, so no field `sync` copies needs

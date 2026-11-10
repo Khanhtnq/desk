@@ -55,6 +55,13 @@ class GitHubError(RuntimeError):
         self.message = message
 
 
+class GitHubBusy(GitHubError):
+    """GitHub told the desk to wait before a write. The write was not sent again: the caller asked
+    whether the ticket may be written to before it called, and a write that sleeps here for as long
+    as GitHub says (minutes) and is then sent has not been asked. The caller stops its pass; the
+    next one selects, asks and writes afresh."""
+
+
 class GitHub:
     def __init__(self, token: str, base_url: str = API, timeout: float = 30.0):
         headers = {
@@ -66,6 +73,7 @@ class GitHub:
             headers["Authorization"] = f"Bearer {token}"
         self._client = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=timeout)
         self.enabled = bool(token)
+        self.busy_until = 0.0  # time.monotonic() before which GitHub has said not to write
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -75,16 +83,25 @@ class GitHub:
     async def _request(
         self, method: str, path: str, *, params: dict | None = None, json: Any = None
     ) -> httpx.Response:
+        # only a read waits and tries again. A write is sent once: slept on, it would be sent minutes
+        # after its caller asked whether it may be (a ticket sealed meanwhile), and a POST retried
+        # after a 5xx can make the comment or the issue twice
+        read = method.upper() == "GET"
+        if not read and time.monotonic() < self.busy_until:
+            raise GitHubBusy(429, "rate limited; not sent")  # the wait GitHub asked for is not over
         for attempt in range(5):
             r = await self._client.request(method, path, params=params, json=json)
             if r.status_code in (403, 429) and (
                 r.headers.get("x-ratelimit-remaining") == "0" or r.headers.get("retry-after")
             ):
                 wait = self._backoff(r)
+                if not read:
+                    self.busy_until = time.monotonic() + wait
+                    raise GitHubBusy(r.status_code, f"rate limited; try again in {wait}s")
                 log.warning("github rate limit; sleeping %ds", wait)
                 await asyncio.sleep(wait)
                 continue
-            if r.status_code >= 500 and attempt < 4:
+            if r.status_code >= 500 and attempt < 4 and read:
                 await asyncio.sleep(2**attempt)
                 continue
             if r.status_code >= 400:

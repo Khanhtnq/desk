@@ -3078,6 +3078,28 @@ async def test_nothing_about_a_private_ticket_is_written_to_its_channel(ctx, db)
     for loop in loops:
         first_write = min(loop.index("th.send("), loop.index("th.edit("))
         assert loop.index("await ch.writes_to_thread(db, t") < first_write
+    # a long reply is several messages: each is asked for, on the line before it is sent
+    sends = [m.start() for m in re.finditer(r"th\.send\(", loops[0])]
+    assert len(sends) == 1
+    before = loops[0][:sends[0]].rstrip().splitlines()[-4:]
+    assert before[0].strip() == "if not await ch.writes_to_thread(db, t, r):", before
+    assert [ln.strip() for ln in before[1:]] == ["last = None", "break", "last = await"], before
+    # GitHub saying wait is neither a send nor a failure: the reply stays queued for a pass that
+    # asks again, where a failed one is never retried
+    from desk.services.github import GitHubBusy
+
+    class _Throttled(_Recorder):
+        async def comment(self, repo, number, body):
+            raise GitHubBusy(403, "rate limited; try again in 60s")
+
+    _, busy_r = await from_github(143, "Answered while GitHub was throttling")
+    with pytest.raises(GitHubBusy):
+        await sync.mirror_reply(ctx, db, _Throttled(), busy_r)
+    assert busy_r.mirror == "queued"
+    # and nothing is awaited between the disclosure's question and its one write
+    asked = inspect.getsource(sync.open_disclosure)
+    asked = asked[asked.index('t.visibility != "public"'):asked.index("client.create_issue(")]
+    assert asked.count("await") == 1
 
 
 class _Issues:

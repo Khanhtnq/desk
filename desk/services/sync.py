@@ -696,6 +696,8 @@ async def mirror_reply(ctx: Context, db: AsyncSession, client: gh.GitHub, r: Rep
         return False
     try:
         c = await client.comment(t.source_repo, int(t.source_ref), r.body + _footer(ctx, t))
+    except gh.GitHubBusy:
+        raise  # not sent and not failed: it stays queued, and the worker stops its pass
     except gh.GitHubError as e:
         r.mirror = "failed"
         r.mirror_error = str(e)[:2000]
@@ -736,11 +738,12 @@ async def open_disclosure(ctx: Context, db: AsyncSession, client: gh.GitHub, t: 
     `writes_to_issue`, for the issue that does not exist yet)."""
     if not client.enabled:
         return ""
+    # read before the question, so that nothing is awaited between it and the write
+    patches = await thread.patches_for(db, t)
     await tsvc.as_it_is_now(db, t)
     if t.source == "github" or t.visibility != "public":
         return ""
     repo = ctx.config.primary_repo
-    patches = await thread.patches_for(db, t)
     lines = [
         t.body or "",
         "",

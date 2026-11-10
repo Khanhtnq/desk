@@ -277,20 +277,28 @@ class DeskBot(discord.Client):
         async with session() as db:
             for r, t in await ch.queued_replies(db, PLATFORM):
                 th = await self._thread(t.source_ref)
-                if th is None:
-                    await ch.mark_failed(self.ctx, db, r, t, "thread not found")
-                    await db.commit()
-                    continue
                 if not await ch.writes_to_thread(db, t, r):
                     await db.commit()  # sealed, or taken back, since this pass selected it
+                    continue
+                if th is None:  # asked first: a reply the seal took back is not marked failed over it
+                    await ch.mark_failed(self.ctx, db, r, t, "thread not found")
+                    await db.commit()
                     continue
                 try:
                     if th.archived:
                         await th.edit(archived=False)
                     last = None
                     for part in _chunks(ch.reply_text(self.ctx, t, r)):
+                        # asked again straight before each message: the thread may have had to be
+                        # reopened first, and a long reply is several messages
+                        if not await ch.writes_to_thread(db, t, r):
+                            last = None
+                            break
                         last = await th.send(part, suppress_embeds=True)
-                    await ch.mark_mirrored(self.ctx, db, r, t, message_ref=str(last.id), url=last.jump_url)
+                    if last is not None:
+                        await ch.mark_mirrored(
+                            self.ctx, db, r, t, message_ref=str(last.id), url=last.jump_url
+                        )
                 except discord.HTTPException as e:
                     await ch.mark_failed(self.ctx, db, r, t, str(e))
                 await db.commit()

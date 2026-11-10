@@ -113,6 +113,12 @@ class Worker:
                     ok = await sync.mirror_reply(self.ctx, db, self.gh, r)
                     sent += int(ok)
                     failed += int(not ok)
+                except gh.GitHubBusy as e:
+                    # GitHub said wait: this reply and the rest stay queued for the next pass, which
+                    # asks again whether each may be sent
+                    log.warning("outbox: %s", e)
+                    await db.commit()
+                    break
                 except Exception as e:
                     log.warning("mirror reply %s: %s", r.id, e)
                     r.mirror, r.mirror_error = "failed", str(e)[:2000]
@@ -132,7 +138,14 @@ class Worker:
             for t in await sync.tickets_needing_push(db):
                 try:
                     n += int(await sync.push_labels(self.ctx, db, self.gh, t))
+                    await db.commit()  # the label's event is not held across the next request
                     n += int(await sync.push_state(self.ctx, db, self.gh, t))
+                except gh.GitHubBusy as e:
+                    log.warning("push: %s", e)  # the pass stops; the next one asks again
+                    await db.commit()
+                    await mark_run(db, "push", {"changes": n, "stopped": "rate limited"})
+                    await db.commit()
+                    return
                 except gh.GitHubError as e:
                     log.warning("push %s: %s", t.id, e)
                 await db.commit()
@@ -155,6 +168,10 @@ class Worker:
                     if url:
                         log.info("disclosed %s as %s", t.id, url)
                         n += 1
+                except gh.GitHubBusy as e:
+                    log.warning("disclose: %s", e)
+                    await db.commit()
+                    break
                 except gh.GitHubError as e:
                     log.warning("disclose %s: %s", t.id, e)
                 await db.commit()
