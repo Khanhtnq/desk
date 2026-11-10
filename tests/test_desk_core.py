@@ -366,18 +366,22 @@ def test_a_secret_from_a_request_is_compared_as_bytes():
     """The rule (XE-1033): a secret a client sends is compared, never trusted to be ASCII. A header is
     whatever bytes arrived (read as latin-1), and `hmac.compare_digest` raises on a non-ASCII str, so
     each comparison goes through `canonical.same_secret`. Asked of the three there are, and of the
-    tree: a bare `compare_digest` anywhere else in desk/ fails here."""
+    tree: a bare `compare_digest` anywhere else in desk/ or xe/ fails here, and so does a request
+    header the tree did not read before, until someone says here how it is compared."""
+    import re
     from pathlib import Path
     from types import SimpleNamespace
 
     from starlette.requests import Request
 
     import desk
+    import xe
     from desk import auth
     from desk.canonical import same_secret
 
     odd = ("\xe9", "sha256=\xe9", "\u0661\u0662\u0663\u0664\u0665\u0666", "\udc80", "tok\xff")
     assert same_secret("tok", "tok") and not same_secret("tok", "toc")
+    assert same_secret("\udc80", "\udc80") and not same_secret("\udc80", "\\udc80")  # no two strings alike
     for sent in odd:
         assert not same_secret(sent, "tok") and not same_secret("tok", sent)
         # GitHub's signature header on the webhook
@@ -392,8 +396,26 @@ def test_a_secret_from_a_request_is_compared_as_bytes():
         # a TOTP code
         assert totp_verify("JBSWY3DPEHPK3PXP", sent) is None
     root = Path(desk.__file__).parent
-    bare = [str(f.relative_to(root)) for f in root.rglob("*.py") if "compare_digest(" in f.read_text()]
+    files = [*root.rglob("*.py"), *Path(xe.__file__).parent.rglob("*.py")]
+    bare = [f.name for f in files if "compare_digest(" in f.read_text()]
     assert bare == ["canonical.py"]
+    # the headers a request is read for. Three carry a secret: `authorization` and the cookies are
+    # hashed and looked up, `x-desk-csrf` and `x-hub-signature-256` go through `same_secret`
+    read = set()
+    for f in root.rglob("*.py"):
+        if f.name != "github.py":  # what GitHub answers with, not a request
+            read |= {h.lower() for h in re.findall(r'headers\.get\(\s*"([^"]+)"', f.read_text())}
+    assert read == {
+        "authorization", "x-desk-csrf", "x-hub-signature-256", "x-github-delivery", "x-github-event",
+        "last-event-id", "if-none-match", "host", "user-agent", "content-type", "content-length",
+        "transfer-encoding",
+    }
+    # a signed payload is flat: it is hashed before the signature is checked, at any depth it has
+    base = {"timestamp": 1, "pub_key": "ab" * 32, "signature": "cd" * 64}
+    assert auth.SignedRequest(payload={"host": "bounty.test", "n": 1, "x": None}, **base).payload["n"] == 1
+    for nested in ({"a": {}}, {"a": []}, {"a": [[["deep"]]]}, {str(i): i for i in range(17)}):
+        with pytest.raises(ValueError):
+            auth.SignedRequest(payload=nested, **base)
 
 
 # ---- reporters (pure) ---------------------------------------------------------------------------------

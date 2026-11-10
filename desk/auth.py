@@ -33,7 +33,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -737,6 +737,17 @@ class SignedRequest(Body):
     timestamp: int
     pub_key: str = Field(pattern=HEX32, min_length=64, max_length=64)
     signature: str = Field(pattern=HEX64, min_length=128, max_length=128)
+
+    @field_validator("payload")
+    @classmethod
+    def _flat(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """What the desk asks a key to sign is a few plain values (`{"host": ...}`, `{"address":
+        ...}`). The payload is hashed before the signature is checked and read after, and a value
+        nested as deep as the parser took it is deeper than either is sure to go: refused here, so
+        neither is asked."""
+        if len(v) > 16 or any(isinstance(x, (dict, list)) for x in v.values()):
+            raise ValueError("a signed payload is a flat object of at most 16 values")
+        return v
 
 
 @dataclass

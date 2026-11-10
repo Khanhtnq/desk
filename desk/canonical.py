@@ -30,8 +30,9 @@ def same_secret(a: str, b: str) -> bool:
     a str with a non-ASCII character in it, and a header is whatever the client sent, so one byte
     over 0x7f in a signature or token header was a 500 (XE-1033 fixed that for the TOTP code alone).
     Compared as bytes here, for every caller: a value that is not the secret is not equal, and that
-    is all."""
-    return hmac.compare_digest(a.encode("utf-8", "backslashreplace"), b.encode("utf-8", "backslashreplace"))
+    is all. `surrogatepass` encodes any str and no two to the same bytes (escaping half a surrogate
+    pair instead made it equal to its own escape, spelt out)."""
+    return hmac.compare_digest(a.encode("utf-8", "surrogatepass"), b.encode("utf-8", "surrogatepass"))
 
 
 def canonical_json(value: Any) -> bytes:
