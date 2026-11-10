@@ -139,6 +139,53 @@ async def test_log_chain_verifies_and_detects_tamper(ctx, db):
     assert "not signed by the log key" in (await EventLog.verify(db, key))["first_error"]
 
 
+async def test_no_request_replays_the_chain(ctx, db):
+    """The rule (XE-0657): a replay's cost grows with the log, so only the worker runs one; a request is
+    served the worker's last verdict from one row. Walked over every module that answers requests, so a
+    route added later that replays fails here."""
+    import inspect
+
+    from desk import log as desklog
+    from desk import main, og, ui
+    from desk.api import agent, authn, reporter, team
+    from desk.api import public as pub
+
+    for mod in (pub, agent, authn, reporter, team, ui, og, main):
+        src = inspect.getsource(mod)
+        for replay in ("EventLog.verify", ".iter_all(", "replay_and_record"):
+            assert replay not in src, f"{mod.__name__} replays the chain on a request ({replay})"
+    key = ctx.signer.public_key("log")
+    for i in range(3):
+        await ctx.events.append(db, "test", "desk", {"i": i})
+    await db.commit()
+    # before the worker's first replay the route says so; it does not replay to find out
+    first = await pub.log_verify(db)
+    assert first["ok"] is False and "not been replayed" in first["first_error"] and first["count"] == 0
+    await EventLog.replay_and_record(db, key)
+    await db.commit()
+    seen = await pub.log_verify(db)
+    assert seen["ok"] is True and seen["count"] == 3 and seen["checked_at"]
+    assert seen["head"] == (await EventLog.head(db)).hash
+    # the route reads the verdict: a row changed after the replay is found by the next replay, not by a
+    # request (if this read ok=False the route would be replaying)
+    await db.execute(text("UPDATE events SET payload = '{\"i\": 9}'::jsonb WHERE index = 1"))
+    await db.commit()
+    assert (await pub.log_verify(db))["ok"] is True
+    await EventLog.replay_and_record(db, key)
+    await db.commit()
+    found = await pub.log_verify(db)
+    assert found["ok"] is False and "hash mismatch at 1" in found["first_error"] and found["count"] == 1
+    # a verdict the worker has stopped renewing lapses
+    await db.execute(text("UPDATE events SET payload = '{\"i\": 1}'::jsonb WHERE index = 1"))
+    await db.commit()
+    good = await EventLog.replay_and_record(db, key)
+    await db.commit()
+    assert (await EventLog.last_verdict(db))["ok"] is True
+    late = good["checked_at"] + desklog.VERIFY_MAX_AGE_NS + 1
+    lapsed = await EventLog.last_verdict(db, now_ns=late)
+    assert lapsed["ok"] is False and "worker has stopped" in lapsed["first_error"]
+
+
 def test_event_views_hide_operational_fields_from_non_team():
     from desk.log import event_to_dict
     from desk.models import Event

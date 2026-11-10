@@ -264,10 +264,12 @@ async def log_head(db: Db):
 
 @router.get("/log/verify")
 @router.get("/events/verify")
-async def log_verify(ctx: Ctx, db: Db):
-    """Replays the whole chain: every hash recomputed, every signature checked against the published log
-    key, head compared."""
-    return await EventLog.verify(db, ctx.signer.public_key("log") if ctx.signer.has("log") else "")
+async def log_verify(db: Db):
+    """The worker's last replay of the whole chain (every hash recomputed, every signature checked
+    against the published log key, head compared), with the count, head and time it speaks for. The
+    route reads that verdict; it does not replay, because a replay's cost grows with the log and this
+    route is open to anyone (XE-0657)."""
+    return await EventLog.last_verdict(db)
 
 
 @router.get("/log/{index}")

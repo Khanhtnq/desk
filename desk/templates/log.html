@@ -3,7 +3,7 @@
 {% block content %}
 <div class="tag"><span>Log</span></div>
 <h1>Everything the desk does, in a chain.</h1>
-<p class="sub">Each entry hashes the one before it and is signed by the desk's log key. Entries on private tickets are in the chain but not shown here. Head is <a href="/v1/log/head" class="mono">{{ head.hash|short(16) }}</a> at index {{ head.index }}; <a href="/v1/log/verify">verify</a> replays the chain. <a href="/live">Live</a> follows it as it grows.</p>
+<p class="sub">Each entry hashes the one before it and is signed by the desk's log key. Entries on private tickets are in the chain but not shown here. Head is <a href="/v1/log/head" class="mono">{{ head.hash|short(16) }}</a> at index {{ head.index }}; <a href="/v1/log/verify">verify</a> gives the last full replay of the chain, which the desk runs every ten minutes. <a href="/live">Live</a> follows it as it grows.</p>
 {% if kind or ref %}<p class="k">Filtered{% if kind %} to kind <code>{{ kind }}</code>{% endif %}{% if ref %} to <code>{{ ref }}</code>{% endif %}. <a href="/log">Clear</a>.</p>{% endif %}
 <table>
 <thead><tr><th>#</th><th>When</th><th>Kind</th><th>Actor</th><th>Ref</th><th>Summary</th></tr></thead>

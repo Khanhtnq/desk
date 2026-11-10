@@ -199,7 +199,7 @@ def build_llms_txt(
         link("/v1", "Manifest", "JSON index of every endpoint, keys and config hashes"),
         link("/v1/openapi.json", "OpenAPI", "the schema"),
         link("/v1/log/head", "Log head", "the current tip of the log"),
-        link("/v1/log/verify", "Log verify", "walks the chain and reports"),
+        link("/v1/log/verify", "Log verify", "the last full replay of the chain and what it found"),
         link("/v1/events?since=-1", "Events", "the log from an index; `/v1/events/stream` for SSE"),
         "",
         "## For agents",

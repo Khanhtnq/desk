@@ -18,7 +18,7 @@ from sqlalchemy import delete, select
 from .auth import purge_reporter_auth, purge_seen_signatures
 from .context import Context, build_context, set_context
 from .db import session
-from .log import EventLog
+from .log import VERIFY_EVERY_S, VERIFY_JOB, EventLog
 from .models import Anchor, Challenge, HealthCheck, ScheduleRun, Session
 from .services import github as gh
 from .services import notify, sync, tell
@@ -44,6 +44,7 @@ class Worker:
         "outbox": 20,
         "push": 60,
         "health": 300,
+        VERIFY_JOB: VERIFY_EVERY_S,
         "housekeeping": 3600,
         "anchor": 3600,
         "daily": 3600,
@@ -172,6 +173,17 @@ class Worker:
                 await ctx.events.append(db, "health.recovered", "desk", detail)
             await mark_run(db, "health", {"ok": ok})
             await db.commit()
+
+    async def job_log_verify(self):
+        """Replays the chain and leaves the verdict for `/v1/log/verify`, which only reads it (XE-0657):
+        the one place a full replay runs for a reader, on the worker's clock and not on a request's."""
+        ctx = self.ctx
+        async with session() as db:
+            key = ctx.signer.public_key("log") if ctx.signer.has("log") else ""
+            verdict = await EventLog.replay_and_record(db, key)
+            await db.commit()
+        if not verdict["ok"]:
+            log.error("log verify failed at count %s: %s", verdict["count"], verdict["first_error"])
 
     async def job_housekeeping(self):
         async with session() as db:

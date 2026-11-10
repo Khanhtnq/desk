@@ -7,7 +7,9 @@
 
 Appends serialise on a row lock over log_head so two writers can never fork the chain, and refuse rather
 than write unsigned when a log key is configured. `verify()` replays the whole chain, recomputes every
-hash, and checks every signature against the one configured key. Events on private tickets are written with
+hash, and checks every signature against the one configured key. Its cost grows with the log, so no
+request runs it (XE-0657): the worker replays on its own clock (`replay_and_record`) and a request is
+served that verdict from one row (`last_verdict`). Events on private tickets are written with
 public=False: they are in the chain (and, from v2, in the hash) but are not served to the public log.
 Payloads never carry a private body, an attachment, a signature or an address; ids and field values only,
 and `event_to_dict(full=False)` drops the few operational fields (ip) that only the team should see.
@@ -25,10 +27,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from xe.keys import verify_hex_signature
 
 from .canonical import DOMAIN_EVENT, DOMAIN_EVENT_V2, digest
-from .models import Event, LogHead, Ticket
+from .models import Event, LogHead, ScheduleRun, Ticket
 from .signer import Signer, SignerError
 
 ZERO = "0" * 64
+VERIFY_JOB = "log_verify"  # the schedule_runs row the worker leaves its verdict in
+VERIFY_EVERY_S = 600  # how often the worker replays the chain
+VERIFY_MAX_AGE_NS = 3 * VERIFY_EVERY_S * 1_000_000_000  # three missed replays: the verdict has lapsed
 
 
 @dataclass
@@ -277,6 +282,45 @@ class EventLog:
             "head": last_hash,
             "first_error": None if ok else "head row disagrees with chain",
         }
+
+    @staticmethod
+    async def replay_and_record(db: AsyncSession, expected_signer: str = "") -> dict:
+        """The worker's replay: `verify()`, and the verdict left where requests read it. Caller commits."""
+        started = time.time_ns()
+        verdict = await EventLog.verify(db, expected_signer)
+        now = time.time_ns()
+        detail = {**verdict, "checked_at": now, "took_ms": (now - started) // 1_000_000}
+        q = select(ScheduleRun).where(ScheduleRun.job == VERIFY_JOB)
+        row = (await db.execute(q)).scalar_one_or_none()
+        if row is None:
+            db.add(ScheduleRun(job=VERIFY_JOB, last_run_ts=now, detail=detail))
+        else:
+            row.last_run_ts, row.detail = now, detail
+        await db.flush()
+        return detail
+
+    @staticmethod
+    async def last_verdict(db: AsyncSession, *, now_ns: int | None = None) -> dict:
+        """What a request is served (XE-0657): the worker's last replay, read from one row. A request
+        never replays the chain: that cost grows with the log, and a route anyone may call is not where
+        it belongs. `count` and `head` say which chain the verdict is about and `checked_at` when; a
+        verdict older than three missed replays is not ok, since a worker that has stopped vouches for
+        nothing (the /v1/health rule, XE-1443)."""
+        q = select(ScheduleRun).where(ScheduleRun.job == VERIFY_JOB)
+        row = (await db.execute(q)).scalar_one_or_none()
+        d = row.detail if row is not None and isinstance(row.detail, dict) else {}
+        if "ok" not in d:
+            return {
+                "ok": False, "count": 0, "head": ZERO, "checked_at": None, "every_s": VERIFY_EVERY_S,
+                "first_error": "the chain has not been replayed yet",
+            }
+        out = {k: d.get(k) for k in ("ok", "count", "head", "first_error", "checked_at")}
+        out["every_s"] = VERIFY_EVERY_S
+        now = now_ns if now_ns is not None else time.time_ns()
+        if now - int(d.get("checked_at") or 0) > VERIFY_MAX_AGE_NS:
+            out["ok"] = False
+            out["first_error"] = out["first_error"] or "no replay since checked_at: the worker has stopped"
+        return out
 
 
 # Payload keys only a team member sees. Agent tokens and reporters get the event without them; the hash
