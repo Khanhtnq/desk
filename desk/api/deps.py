@@ -21,13 +21,20 @@ async def request_db() -> AsyncIterator[AsyncSession]:
     await notify.mail_owed(get_context(), owed)
 
 
-__all__ = ["Body", "Ctx", "Db", "Who", "current", "request_db"]  # Body: the base of every request model
+# Body: the base of every request model
+__all__ = ["Body", "Ctx", "Db", "Who", "current", "is_multipart", "request_db"]
 
 Ctx = Annotated[Context, Depends(get_context)]
 Db = Annotated[AsyncSession, Depends(request_db)]
 
 
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+def is_multipart(content_type: str | None) -> bool:
+    """Is this the Content-Type of a multipart form? Asked by the body limit, which gives the filing
+    its allowance for nothing else, and by the filing route, which reads nothing else (XE-1905)."""
+    return (content_type or "").split(";", 1)[0].strip().lower() == "multipart/form-data"
 
 
 async def current(db: Db, request: Request) -> Auth:

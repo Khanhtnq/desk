@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__, og
 from .api import agent, authn, public, reporter, team
+from .api.deps import is_multipart
 from .config import lint_public_copy, strip_template
 from .context import get_context
 from .db import session
@@ -98,6 +99,9 @@ class BodyTooLarge(HTTPException):
 class BodyLimit:
     """Pure ASGI. A request body is bounded before anything parses it (XE-0777): a JSON body at 2 MB, a
     filing (the one multipart route) at the attachment count times the attachment size plus the report.
+    The filing's allowance is for the multipart body that route reads, where files go to disk a part
+    at a time; any other body sent to its path (a urlencoded one is parsed whole, in memory) has the
+    2 MB every other route has.
     The bound is on the bytes that arrive, counted as they are read, whatever the method and whatever
     the headers say (XE-1905): the declared length was the only thing checked, so a body that declared
     none and was not chunked, or one behind a proxy that did not hold it to its declaration, was read
@@ -109,8 +113,8 @@ class BodyLimit:
     def __init__(self, app):
         self.app = app
 
-    def limit_for(self, path: str) -> int:
-        if path == "/v1/reporter/tickets":
+    def limit_for(self, path: str, content_type: str = "") -> int:
+        if path == "/v1/reporter/tickets" and is_multipart(content_type):
             st = get_context().settings
             return (st.max_attachments * st.max_attachment_mb << 20) + self.JSON_MAX
         return self.JSON_MAX
@@ -119,7 +123,7 @@ class BodyLimit:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
-        limit = self.limit_for(scope["path"])
+        limit = self.limit_for(scope["path"], headers.get("content-type", ""))
         length = headers.get("content-length", "")
         if not _DIGITS.fullmatch(length):
             if "chunked" in headers.get("transfer-encoding", "").lower():
@@ -134,6 +138,10 @@ class BodyLimit:
             if message["type"] == "http.request":
                 seen += len(message.get("body") or b"")
                 if seen > limit:
+                    if started:
+                        # whatever reads once the response has begun (the event stream) is listening
+                        # for the client leaving: it is told so, and nothing more is read
+                        return {"type": "http.disconnect"}
                     raise BodyTooLarge()
             return message
 

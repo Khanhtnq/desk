@@ -3757,13 +3757,19 @@ async def test_a_request_body_is_bounded_as_it_is_read(ctx, monkeypatch):
     """The rule (XE-0777, XE-1905): no more of a request body is read than its route allows, whatever
     the headers say and whatever the method. Asked of both limits (a JSON body, the filing), of a body
     that declares no length, one that understates it and one whose length is not a number, and of a
-    reader that lets the refusal through (FastAPI) and one that does nothing with it."""
+    reader that lets the refusal through (FastAPI), one that does nothing with it and one that reads
+    on after it has begun to answer. The filing's allowance is for a signed-in reporter's multipart
+    body and nothing else on that path."""
+    from fastapi import params
     from starlette.exceptions import HTTPException as AnyHTTPException
 
     from desk import main
 
     monkeypatch.setattr(main, "get_context", lambda: ctx)
-    assert any(m.cls is main.BodyLimit for m in main.app.user_middleware)
+    # outermost first. What is ahead of BodyLimit reads no body (`security_headers` passes `receive`
+    # through, NoNul never calls it); a middleware added later is outside the limit, and is named here
+    order = [m.cls.__name__ for m in main.app.user_middleware]
+    assert order == ["BaseHTTPMiddleware", "NoNul", "BodyLimit", "MarkdownMirror"]
     json_max = main.BodyLimit.JSON_MAX
     filing_max = (ctx.settings.max_attachments * ctx.settings.max_attachment_mb << 20) + json_max
     chunk = b"x" * (256 << 10)
@@ -3799,21 +3805,77 @@ async def test_a_request_body_is_bounded_as_it_is_read(ctx, monkeypatch):
                 await send({"type": "http.response.start", "status": e.status_code, "headers": []})
                 await send({"type": "http.response.body", "body": b""})
 
+        async def late(scope, receive, send):
+            # the event stream: it has begun to answer and listens for the client leaving
+            nonlocal got
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            while True:
+                m = await receive()
+                if m["type"] == "http.disconnect":
+                    break
+                got += len(m["body"])
+            await send({"type": "http.response.body", "body": b""})
+
         raw = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in headers]
         scope = {"type": "http", "method": method, "path": path, "query_string": b"", "headers": raw}
-        await main.BodyLimit(like_fastapi if reader == "fastapi" else inner)(scope, receive, send)
+        app = {"plain": inner, "fastapi": like_fastapi, "late": late}[reader]
+        await main.BodyLimit(app)(scope, receive, send)
         return out[0]["status"], got
 
-    limits = (("/v1/team/tickets/XE-0001/facts", json_max), ("/v1/reporter/tickets", filing_max))
-    for path, limit in limits:
-        for headers in ((), (("content-length", "10"),), (("content-length", "\u00b2"),)):
+    filing = "/v1/reporter/tickets"
+    limits = (
+        ("/v1/team/tickets/XE-0001/facts", (), json_max),
+        (filing, (("content-type", "Multipart/Form-Data; boundary=x"),), filing_max),
+        # any other body on the filing's path is not the one its allowance is for
+        (filing, (("content-type", "application/x-www-form-urlencoded"),), json_max),
+        (filing, (("content-type", "multipart/form-data-ish"),), json_max),
+        (filing, (), json_max),
+    )
+    for path, base, limit in limits:
+        for extra in ((), (("content-length", "10"),), (("content-length", "\u00b2"),)):
             for reader in ("plain", "fastapi"):
-                status, got = await run(path, limit + 1, headers, reader=reader)
-                assert status == 413 and got <= limit, (path, headers, reader)
-            assert await run(path, limit, headers) == (200, limit)
+                status, got = await run(path, limit + 1, base + extra, reader=reader)
+                assert status == 413 and got <= limit, (path, base, extra, reader)
+            assert await run(path, limit, base + extra) == (200, limit)
         # declared honestly, it is refused before a byte is read; chunked with no length likewise
-        assert await run(path, limit + 1, (("content-length", str(limit + 1)),)) == (413, 0)
-        assert await run(path, 5, (("transfer-encoding", "chunked"),)) == (411, 0)
+        assert await run(path, limit + 1, base + (("content-length", str(limit + 1)),)) == (413, 0)
+        assert await run(path, 5, base + (("transfer-encoding", "chunked"),)) == (411, 0)
     for method in ("GET", "DELETE", "PUT", "PATCH"):
         assert (await run("/v1/x", json_max + 1, method=method))[0] == 413, method
     assert isinstance(main.BodyTooLarge(), HTTPException) and main.BodyTooLarge().status_code == 413
+    # past the limit after the answer has begun, the reader is told the client has gone: no more is
+    # read, and there is no error to surface where no refusal can be sent
+    assert await run("/v1/events/stream", json_max + 1, method="GET", reader="late") == (200, json_max)
+    # and no route has FastAPI read a form for it: a declared body is read before `current` says who
+    # is calling, so the filing reads its own once it knows (the JSON routes have 2 MB at most)
+    forms = [
+        r.path
+        for r in main.app.routes
+        if isinstance(getattr(getattr(r, "body_field", None), "field_info", None), params.Form)
+    ]
+    assert forms == []
+    route = next(r for r in main.app.routes if getattr(r, "path", "") == filing and "POST" in r.methods)
+    assert route.body_field is None
+    # the real stack and the real parser: a JSON route, a body one byte over that declares no length.
+    # FastAPI reads a model's body before any dependency, so no database is touched
+    sent, out = 0, []
+
+    async def receive():
+        nonlocal sent
+        if sent > json_max:
+            await asyncio.Event().wait()  # as a server does: nothing more until the client leaves
+        n = min(len(chunk), json_max + 1 - sent)
+        sent += n
+        return {"type": "http.request", "body": chunk[:n], "more_body": sent < json_max + 1}
+
+    async def send(message):
+        out.append(message)
+
+    scope = {
+        "type": "http", "method": "POST", "path": "/v1/reporter/auth/email", "query_string": b"",
+        "headers": [(b"content-type", b"application/json")], "scheme": "https", "http_version": "1.1",
+        "root_path": "", "raw_path": b"/v1/reporter/auth/email", "server": ("bounty.test", 443),
+        "client": ("203.0.113.9", 4000),
+    }
+    await asyncio.wait_for(main.app(scope, receive, send), 30)
+    assert out[0]["type"] == "http.response.start" and out[0]["status"] == 413

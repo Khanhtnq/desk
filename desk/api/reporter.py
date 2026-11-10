@@ -15,8 +15,9 @@ from collections import defaultdict
 from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from starlette.requests import ClientDisconnect
 
 from .. import auth
 from ..canonical import DOMAIN_LOGIN, DOMAIN_PAYOUT
@@ -24,7 +25,7 @@ from ..models import Challenge, Reporter
 from ..services import channels
 from ..services import reporters as rsvc
 from ..services import tickets as tsvc
-from .deps import Body, Ctx, Db, Who
+from .deps import Body, Ctx, Db, Who, is_multipart
 
 router = APIRouter(prefix="/v1/reporter", tags=["reporter"])
 
@@ -433,37 +434,81 @@ async def me(ctx: Ctx, db: Db, who: Who):
 # ---- filing -----------------------------------------------------------------------------------------
 
 
-@router.post("/tickets")
-async def file_ticket(
-    ctx: Ctx,
-    db: Db,
-    who: Who,
-    request: Request,
-    title: str = Form(...),
-    body: str = Form(...),
-    kind: str = Form("bounty"),
-    area: str | None = Form(None),
-    claimed_tier: str | None = Form(None),
-    private: bool = Form(False),
-    notify_email: str | None = Form(None),
-    files: list[UploadFile] = File(default=[]),
-):
+_TEXT = {"type": "string"}
+FILING_FORM = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["title", "body"],
+                    "properties": {
+                        "title": _TEXT,
+                        "body": _TEXT,
+                        "kind": {"type": "string", "default": "bounty"},
+                        "area": _TEXT,
+                        "claimed_tier": _TEXT,
+                        "private": {"type": "boolean", "default": False},
+                        "notify_email": _TEXT,
+                        "files": {"type": "array", "items": {"type": "string", "format": "binary"}},
+                    },
+                }
+            }
+        },
+    }
+}
+_YES, _NO = frozenset({"true", "1", "on", "yes"}), frozenset({"false", "0", "off", "no"})
+
+
+def _form_text(form, name: str, *, required: bool = False) -> str | None:
+    """One text field of the filing form. An empty value is no value, as it was when FastAPI read it."""
+    v = form.get(name)
+    if v is not None and not isinstance(v, str):
+        raise HTTPException(422, f"{name} is text, not a file")
+    if not v:
+        if required:
+            raise HTTPException(422, f"{name} is required")
+        return None
+    return v
+
+
+@router.post("/tickets", openapi_extra=FILING_FORM)
+async def file_ticket(ctx: Ctx, db: Db, who: Who, request: Request):
     """Multipart, so attachments ride along. Returns the ticket id and URL; the page redirects there.
     `notify_email`, on an account with no email yet, gets a confirmation link; once confirmed, replies
-    are announced there."""
+    are announced there.
+
+    The form is read here, once the caller is known and counted, and not through `Form` parameters:
+    FastAPI reads a declared body before it resolves who is calling, so the filing's allowance (its
+    attachments' worth, where every other route has 2 MB) was read and parsed for anyone who sent
+    one (XE-1905). The route declares no body, so nothing is read for a caller who is refused."""
     r = _reporter(who, request)
     _limit(request, _filings, FILE_LIMIT, FILE_WINDOW, "reports")
-    f = rsvc.Filing(
-        kind=kind,
-        title=title,
-        body=body,
-        area=area or None,
-        claimed_tier=claimed_tier or None,
-        private=private,
-        files=[u for u in files if u.filename],
-    )
-    t = await rsvc.file_ticket(ctx, db, r, f)
-    await db.commit()
+    if not is_multipart(request.headers.get("content-type")):
+        raise HTTPException(415, "a report is filed as multipart/form-data")
+    try:
+        form = await request.form()
+    except ClientDisconnect:
+        raise HTTPException(400, "the upload was cut off") from None
+    try:
+        private = (_form_text(form, "private") or "false").strip().lower()
+        if private not in _YES | _NO:
+            raise HTTPException(422, "private is true or false")
+        f = rsvc.Filing(
+            kind=_form_text(form, "kind") or "bounty",
+            title=_form_text(form, "title", required=True),
+            body=_form_text(form, "body", required=True),
+            area=_form_text(form, "area"),
+            claimed_tier=_form_text(form, "claimed_tier"),
+            private=private in _YES,
+            files=[u for u in form.getlist("files") if not isinstance(u, str) and u.filename],
+        )
+        notify_email = _form_text(form, "notify_email")
+        t = await rsvc.file_ticket(ctx, db, r, f)
+        await db.commit()
+    finally:
+        await form.close()
     url = tsvc.ticket_url(ctx, t)
     notify = None
     if notify_email and notify_email.strip() and not r.email:
