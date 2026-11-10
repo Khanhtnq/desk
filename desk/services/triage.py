@@ -334,19 +334,26 @@ def _principal_for(tok: AgentToken) -> Principal:
 # and it may still move one nobody has taken past triage. A ticket at `accepted` or beyond got there by a
 # person's click, an internal ticket or a PR after the sheet was written; re-importing the sheet does not
 # undo that (it once moved four awarded tickets back to accepted).
+#
+# Facts follow the same line (XE-2051). While the ticket is still in these statuses the sheet's value is
+# written over the ticket's; past them the sheet only fills a fact that is still empty, so a tier, a
+# verdict, a gate or a tracker link ruled since the sheet was written is not rolled back by importing it
+# again. An empty cell never erases anything, at any status.
 IMPORT_MOVES_FROM = ("new", "triaging", "needs-info")
+EMPTY = ("", None)
 
 
 async def import_rows(
     ctx: Context, db: AsyncSession, rows: list[Row], *, email_bodies: dict[str, str] | None = None
 ) -> dict:
     """Apply the rows. Tickets that the GitHub import created are updated; tickets it did not (no
-    token, or the three emails) are created. Re-running is safe: facts are compared before writing,
-    notes are added once, and a status a person or GitHub has moved on since is left where it is."""
+    token, or the three emails) are created. Re-running is safe: notes are added once, and a status or
+    a fact a person or GitHub has moved on since is left where it is (`IMPORT_MOVES_FROM`)."""
     tok = await triage_token(ctx, db)
     agent = _principal_for(tok)
     stats = {
-        "rows": len(rows), "created": 0, "updated": 0, "notes": 0, "patches": 0, "skipped": 0, "status_kept": 0
+        "rows": len(rows), "created": 0, "updated": 0, "notes": 0, "patches": 0, "skipped": 0,
+        "status_kept": 0, "facts_kept": 0,
     }
     by_key: dict[str, Ticket] = {}
 
@@ -361,6 +368,7 @@ async def import_rows(
     # pass 2: facts, status, notes, patches
     for r in rows:
         t = by_key[r.key]
+        owned = t.status in IMPORT_MOVES_FROM  # as the ticket stands before this row moves it
         changes: dict = {
             "area": r.area,
             "claimed_tier": r.claimed_tier,
@@ -374,7 +382,13 @@ async def import_rows(
             changes["duplicate_of"] = by_key[r.duplicate_of_key].id
             if not r.internal_ref:
                 changes["internal_ref"] = by_key[r.duplicate_of_key].internal_ref
-        if r.kind != t.kind:
+        said = {k: v for k, v in changes.items() if v not in EMPTY}
+        if r.kind != t.kind and not owned:
+            said.pop("area", None)  # moved to the other door since, and that door has its own areas
+        changes = {k: v for k, v in said.items() if owned or getattr(t, k) in EMPTY}
+        if any(getattr(t, k) != v for k, v in said.items() if k not in changes):
+            stats["facts_kept"] += 1
+        if r.kind != t.kind and owned:
             await ctx.events.append(
                 db,
                 "ticket.kind",
