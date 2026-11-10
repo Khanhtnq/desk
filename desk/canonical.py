@@ -6,6 +6,7 @@ Same conventions as the DAO harness. The protocol's own formats live in `xe/`.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from typing import Any
 
@@ -22,6 +23,15 @@ DOMAINS = {
     "xe/desk/payout/v1": DOMAIN_PAYOUT,
     "xe/desk/withdraw/v1": DOMAIN_WITHDRAW,
 }
+
+
+def same_secret(a: str, b: str) -> bool:
+    """Constant-time equality of two secrets given as text. `hmac.compare_digest` raises TypeError on
+    a str with a non-ASCII character in it, and a header is whatever the client sent, so one byte
+    over 0x7f in a signature or token header was a 500 (XE-1033 fixed that for the TOTP code alone).
+    Compared as bytes here, for every caller: a value that is not the secret is not equal, and that
+    is all."""
+    return hmac.compare_digest(a.encode("utf-8", "backslashreplace"), b.encode("utf-8", "backslashreplace"))
 
 
 def canonical_json(value: Any) -> bytes:

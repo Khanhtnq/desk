@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from xe.keys import KeyError_, derive_address, verify_hex_signature
 
 from .authz import Principal
-from .canonical import digest
+from .canonical import digest, same_secret
 from .models import (
     AGENT_SCOPES,
     AgentToken,
@@ -307,7 +307,7 @@ def client_ip(request: Request | None) -> str:
 
 def check_csrf(request: Request, session: Session | ReporterSession) -> None:
     sent = request.headers.get("x-desk-csrf", "")
-    if not sent or not hmac.compare_digest(sent, session.csrf):
+    if not sent or not same_secret(sent, session.csrf):
         raise HTTPException(403, "missing or stale CSRF token; reload the page")
 
 
@@ -375,7 +375,7 @@ def totp_verify(secret_b32: str, code: str, window: int = 1, after_step: int = 0
         return None
     step = int(time.time()) // 30
     for i in range(-window, window + 1):
-        if hmac.compare_digest(totp_code(secret_b32, (step + i) * 30), code):
+        if same_secret(totp_code(secret_b32, (step + i) * 30), code):
             return step + i if step + i > after_step else None
     return None
 

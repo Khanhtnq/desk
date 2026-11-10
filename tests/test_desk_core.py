@@ -335,6 +335,40 @@ def test_webhook_hmac():
     assert not gh.verify_webhook("s3cret", body, "sha1=abc")
 
 
+def test_a_secret_from_a_request_is_compared_as_bytes():
+    """The rule (XE-1033): a secret a client sends is compared, never trusted to be ASCII. A header is
+    whatever bytes arrived (read as latin-1), and `hmac.compare_digest` raises on a non-ASCII str, so
+    each comparison goes through `canonical.same_secret`. Asked of the three there are, and of the
+    tree: a bare `compare_digest` anywhere else in desk/ fails here."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    import desk
+    from desk import auth
+    from desk.canonical import same_secret
+
+    odd = ("\xe9", "sha256=\xe9", "\u0661\u0662\u0663\u0664\u0665\u0666", "\udc80", "tok\xff")
+    assert same_secret("tok", "tok") and not same_secret("tok", "toc")
+    for sent in odd:
+        assert not same_secret(sent, "tok") and not same_secret("tok", sent)
+        # GitHub's signature header on the webhook
+        assert not gh.verify_webhook("s3cret", b"{}", "sha256=" + sent)
+        # the CSRF header on a cookie write: a 403 like any other wrong token
+        headers = [(b"x-desk-csrf", sent.encode("latin-1", "replace"))]
+        scope = {"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": headers}
+        request = Request(scope)
+        with pytest.raises(HTTPException) as e:
+            auth.check_csrf(request, SimpleNamespace(csrf="tok"))
+        assert e.value.status_code == 403
+        # a TOTP code
+        assert totp_verify("JBSWY3DPEHPK3PXP", sent) is None
+    root = Path(desk.__file__).parent
+    bare = [str(f.relative_to(root)) for f in root.rglob("*.py") if "compare_digest(" in f.read_text()]
+    assert bare == ["canonical.py"]
+
+
 # ---- reporters (pure) ---------------------------------------------------------------------------------
 
 

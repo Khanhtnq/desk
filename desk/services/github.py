@@ -18,6 +18,8 @@ from urllib.parse import quote
 
 import httpx
 
+from ..canonical import same_secret
+
 log = logging.getLogger("desk.github")
 API = "https://api.github.com"
 LINK_NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
@@ -193,7 +195,7 @@ def verify_webhook(secret: str, body: bytes, signature_header: str) -> bool:
     if not secret or not signature_header.startswith("sha256="):
         return False
     want = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(want, signature_header[7:])
+    return same_secret(want, signature_header[7:])
 
 
 # ---- text helpers -----------------------------------------------------------------------------------
