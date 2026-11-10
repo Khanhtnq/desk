@@ -348,7 +348,10 @@ HELD_PAYLOAD_KEYS = {
     "proposal.adopted": frozenset({"reason"}),
     "proposal.rejected": frozenset({"reason"}),
     "ticket.internal_predates": frozenset({"internal_ref"}),
-    "ticket.award": frozenset({"tier", "step"}),  # a step and an amount give the tier away
+    # an award is published by `awarded`, on the ticket (`tickets.shown_award`, XE-0735); the log says
+    # that an award was set or approved and not what it is. The steps are a published table, so the
+    # amount alone names the tier while it is held, and the step after
+    "ticket.award": frozenset({"tier", "step", "award_xe", "approved"}),
 }
 
 # What a reporter is shown of their own private ticket's log: the record of what happened to it, not the

@@ -344,6 +344,27 @@ def sees_assessment(p: Principal) -> bool:
     return p.is_agent and can(p, "read:notes")
 
 
+# `awarded` is what publishes an award (XE-0735): the amount, and whether it is approved. Before that
+# both are the team's working layer, as the assessment is while it is held, and for longer: a
+# patched ticket shows its tier, and the steps are a published table, so an amount set on it and
+# not yet awarded names a judgement nobody has announced and a treasurer may still change. The
+# reporter is told by the `awarded` reply and not by reading it early off their own ticket. The rule
+# is spelled here, for a row (`shown_award`), and in `log.HELD_PAYLOAD_KEYS` for the log, which has no
+# row to ask.
+AWARD_STATUSES = ("awarded", "paid")
+
+
+def award_published(t: Ticket) -> bool:
+    return t.kind == "bounty" and t.status in AWARD_STATUSES
+
+
+def shown_award(t: Ticket, p: Principal) -> tuple[int | None, bool]:
+    """The award a reader is shown, as (micro-units or None, approved)."""
+    if sees_assessment(p) or award_published(t):
+        return t.award_xe, bool(t.award_approved_at)
+    return None, False
+
+
 def shown_tier(t: Ticket, p: Principal) -> str | None:
     """The tier a reader is shown: the assessment, or the reporter's claim while the assessment is held."""
     if t.assessed_tier and (sees_assessment(p) or not assessment_held(t)):
@@ -827,7 +848,8 @@ async def leaderboard(db: AsyncSession) -> list[dict]:
         )
         .join(Ticket, Ticket.reporter_id == Reporter.id)
         .where(
-            Ticket.status.in_(("awarded", "paid")),
+            Ticket.kind == "bounty",
+            Ticket.status.in_(AWARD_STATUSES),  # `award_published`, as a filter
             Ticket.award_approved_at.isnot(None),
             Ticket.visibility == "public",  # a private award is the team's business until disclosure
         )
@@ -1085,9 +1107,6 @@ async def _unseal(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> No
     )
 
 
-AWARD_STATUSES = ("awarded", "paid")
-
-
 def _award_is_public(t: Ticket, *, status: str | None = None, visibility: str | None = None) -> None:
     """An awarded or paid ticket is public (XE-2250, XE-0911). `awarded` is the step that lists the
     reporter on the leaderboard and puts the ticket on the payment list, and from it the only move is
@@ -1332,6 +1351,7 @@ def to_dict(
     cfg = ctx.config
     full = sees_assessment(p)
     shown = full or not assessment_held(t)
+    award_xe, award_approved = shown_award(t, p)
     d: dict[str, Any] = {
         "id": t.id,
         "kind": t.kind,
@@ -1354,8 +1374,8 @@ def to_dict(
         "closed_reason": t.closed_reason,
         "github_state": t.github_state,
         "disclosed_at": _iso(t.disclosed_at),
-        "award_xe": t.award_xe,
-        "award_approved": bool(t.award_approved_at),
+        "award_xe": award_xe,
+        "award_approved": award_approved,
         "paid_ref": t.paid_ref,
         "created_at": _iso(t.created_at),
         "updated_at": _iso(t.updated_at),

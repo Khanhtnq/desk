@@ -621,9 +621,8 @@ async def test_the_live_stream_serves_only_what_the_log_read_path_serves(ctx, db
 async def test_held_facts_stay_out_of_public_payloads(ctx, db):
     from desk.log import public_payload
 
-    assert public_payload("ticket.award", {"ticket": "XE-0001", "award_xe": 5, "tier": "high"}) == {
-        "ticket": "XE-0001", "award_xe": 5,
-    }  # XE-0604
+    staged = {"ticket": "XE-0001", "award_xe": 5, "approved": True, "tier": "high", "step": "standard"}
+    assert public_payload("ticket.award", staged) == {"ticket": "XE-0001"}  # XE-0604, XE-0735
     assert public_payload("ticket.status", {"via": "internal:xeprotocol/core#12", "reason": "x"}) == {
         "via": "internal",
     }  # XE-0612
@@ -2394,6 +2393,84 @@ async def test_a_check_on_a_ticket_is_made_on_the_row_as_it_is_now(ctx, db):
     assert out["filled"] == [] and out["skipped"] == [{"ticket": t.id, "why": "already has an amount"}]
     assert t.award_xe == 7_000_000
     await db.commit()
+
+
+async def test_awarded_is_what_publishes_an_award(ctx, db):
+    """The rule (XE-0735): an award's amount, and whether it is approved, are published by `awarded`.
+    Before that they are served to whoever sees the assessment (the team, the agents that work the
+    queue) and to nobody else, the reporter included: the steps are a published table, so an amount
+    set on a patched ticket names a judgement nobody has announced. Asked of each way a reader
+    outside the team gets a ticket's award: the row as the API and the pages serialise it, the
+    social card, the leaderboard, the log, and the templates that are not the team's."""
+    from desk import og, ui
+    from desk.log import event_to_dict
+
+    team = await _team(ctx, db)
+    agent = await _agent(ctx, db, team.user)
+    linker = await _agent(ctx, db, team.user, scopes=("write:patch-refs",))  # a token outside the queue
+    r = await rsvc.from_email(ctx, db, "olga@example.org", link_to=None)
+    own = authz.Principal(kind="reporter", reporter_id=r.id)
+    body = "What I did, what happened, what I expected; enough words to pass the body check."
+    f = rsvc.Filing(kind="bounty", title="Ledger accepts a negative lease", body=body, claimed_tier="medium")
+    t = await rsvc.file_ticket(ctx, db, r, f)
+    await tsvc.set_facts(ctx, db, team, t, {"assessed_tier": "high", "verdict": "valid"})
+    for status in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, team, t, status)
+    inside, outside = (team, agent), (authz.ANON, own, linker)
+    amount, nothing = 5_000_000, (None, False)
+
+    def served(p):
+        d = tsvc.to_dict(ctx, t, p)
+        assert (d["award_xe"], d["award_approved"]) == tsvc.shown_award(t, p)
+        return d["award_xe"], d["award_approved"]
+
+    def card():
+        return [text for text, _style in og.ticket_spec(ctx, t)["chips"] if text.endswith(" XE")]
+
+    async def logged():
+        evs = [e for e in await EventLog.page(db, 0, 50, ref=t.id) if e.kind == "ticket.award"]
+        assert evs and all(e.public for e in evs)
+        return [event_to_dict(e, full=False)["payload"] for e in evs]
+
+    # patched, with an amount set and then approved: the tier is public by now, the award is not
+    assert tsvc.to_dict(ctx, t, authz.ANON)["assessed_tier"] == "high"
+    await tsvc.set_award(ctx, db, team, t, amount, step="standard")
+    assert [served(p) for p in inside] == [(amount, False)] * 2
+    assert [served(p) for p in outside] == [nothing] * 3
+    await tsvc.set_award(ctx, db, team, t, None, approve=True)
+    assert t.status == "patched" and t.award_approved_at is not None and not tsvc.award_published(t)
+    assert [served(p) for p in inside] == [(amount, True)] * 2
+    assert [served(p) for p in outside] == [nothing] * 3
+    assert card() == [] and await tsvc.leaderboard(db) == []
+    # the log says an award was set and approved, and not what it is
+    assert await logged() == [{"ticket": t.id}] * 2
+    full = [e.payload for e in await EventLog.page(db, 0, 50, ref=t.id) if e.kind == "ticket.award"]
+    assert {p["award_xe"] for p in full} == {amount} and {p["tier"] for p in full} == {"high"}
+
+    # `awarded` publishes it: the row, the card and the leaderboard carry it; the log still does not
+    await tsvc.set_status(ctx, db, team, t, "awarded")
+    assert tsvc.award_published(t)
+    assert [served(p) for p in inside + outside] == [(amount, True)] * 5
+    assert card() == ["5 XE"]
+    assert [(row["reporter_id"], row["award_xe"]) for row in await tsvc.leaderboard(db)] == [(r.id, amount)]
+    assert await logged() == [{"ticket": t.id}] * 2
+    # a question is never awarded, whatever its row says
+    t.kind = "support"
+    assert not tsvc.award_published(t) and served(authz.ANON) == nothing
+    t.kind = "bounty"
+
+    # the templates: outside the team's own pages an award is read from `shown_award` (the ticket
+    # page's `award`) or behind `award_published`; the leaderboard's rows are awarded ones already
+    pages = ROOT / "desk" / "templates"
+    for page in sorted(pages.rglob("*.html")):
+        if "team" in page.relative_to(pages).parts or page.name == "leaderboard.html":
+            continue
+        for n, line in enumerate(page.read_text().splitlines(), 1):
+            if re.search(r"\.award_xe|\.award_approved", line):
+                assert "award_published(t)" in line, f"{page.name}:{n}"
+    ticket_page = (pages / "ticket.html").read_text()
+    assert "award[0]" in ticket_page and "t.award_" not in ticket_page
+    assert "tsvc.shown_award(t, p)" in inspect.getsource(ui.ticket_page)
 
 
 async def test_a_withdrawn_report_keeps_its_assessment_held(ctx, db):

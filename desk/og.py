@@ -296,7 +296,7 @@ def ticket_spec(c, t) -> dict:
         chips.append((c.config.tier_label(t.assessed_tier), _tier_style(t.assessed_tier)))
     status = labels.get(t.status, t.status)
     chips.append((status, {"outline": brand.STROKE_STRONG, "colour": brand.TEXT_MEDIUM}))
-    if t.kind == "bounty" and t.award_xe is not None and t.status in ("awarded", "paid"):
+    if t.award_xe is not None and tsvc.award_published(t):
         chips.append((f"{_xe(t.award_xe)} XE", {"outline": brand.BRAND, "colour": brand.BRAND}))
     return {"kicker": t.id, "title": t.title, "chips": chips}
 

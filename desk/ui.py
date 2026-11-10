@@ -93,6 +93,7 @@ ASSET_V = _asset_version()
 templates.env.globals["asset"] = lambda path: f"{path}?v={ASSET_V}"
 templates.env.globals["brand"] = brand
 templates.env.globals["held"] = tsvc.assessment_held  # the assessment is published from patched on
+templates.env.globals["award_published"] = tsvc.award_published  # and an award by `awarded`
 templates.env.filters["esc"] = escape
 
 
@@ -783,6 +784,7 @@ async def ticket_page(request: Request, tid: str):
             "p": p,
             "csrf": csrf,
             "t": t,
+            "award": tsvc.shown_award(t, p),  # (amount, approved) as this reader is shown them
             "og": og,
             "body": body,
             "messages": messages,

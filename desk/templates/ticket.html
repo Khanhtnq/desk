@@ -50,10 +50,10 @@
     <dt>Assignee</dt><dd><span class="show">{% for u in team_users if u.id == t.assignee_id %}{{ u.name or u.email }}{% else %}—{% endfor %}</span>
       <select class="edit" name="assignee_id"><option value="">—</option>{% for u in team_users %}<option value="{{ u.id }}" {{ "selected" if t.assignee_id == u.id }}>{{ u.name or u.email }}</option>{% endfor %}</select></dd>
     {% endif %}
-    {% if t.kind == "bounty" and (t.award_xe is not none or can_award) %}
-    <dt>Award</dt><dd><span class="show">{% if t.award_xe is not none %}{{ t.award_xe|xe }} XE {% if t.award_approved_at %}<span class="pill paid">approved</span>{% else %}<span class="pill pending">proposed</span>{% endif %}{% else %}—{% endif %}
+    {% if t.kind == "bounty" and (award[0] is not none or can_award) %}
+    <dt>Award</dt><dd><span class="show">{% if award[0] is not none %}{{ award[0]|xe }} XE {% if award[1] %}<span class="pill paid">approved</span>{% else %}<span class="pill pending">proposed</span>{% endif %}{% else %}—{% endif %}
       {% if t.assessed_tier and shown %}<span class="k">· ceiling {{ cfg.ceiling_micro(t.assessed_tier)|xe }}</span>{% endif %}
-      {% if team and t.award_approved_at and t.status not in ("awarded", "paid") %}<br><span class="k">Not yet awarded: {{ award_step }}.</span>{% endif %}</span></dd>
+      {% if team and award[1] and t.status not in ("awarded", "paid") %}<br><span class="k">Not yet awarded: {{ award_step }}.</span>{% endif %}</span></dd>
     {% endif %}
     {% if t.status == "paid" %}<dt>Paid</dt><dd class="mono">{{ t.paid_ref }}</dd>{% endif %}
     {% if team and t.payout_address %}<dt>Payout</dt><dd class="mono">{{ t.payout_address }}</dd>{% endif %}
@@ -78,13 +78,13 @@
   </div>
   {% if can_award and t.kind == "bounty" %}
   <div class="row" style="margin-top:12px">
-    <input type="number" id="award-xe" placeholder="XE" value="{{ (t.award_xe // 1000000) if t.award_xe is not none else '' }}" style="max-width:140px" {{ "disabled" if t.award_approved_at }}>
-    <button class="ghost mini" id="save-award" type="button" {{ "disabled" if t.award_approved_at }}>Set award</button>
-    {% if t.award_approved_at %}
+    <input type="number" id="award-xe" placeholder="XE" value="{{ (award[0] // 1000000) if award[0] is not none else '' }}" style="max-width:140px" {{ "disabled" if award[1] }}>
+    <button class="ghost mini" id="save-award" type="button" {{ "disabled" if award[1] }}>Set award</button>
+    {% if award[1] %}
     <button class="ghost mini" id="unapprove-award" type="button" {{ "disabled" if t.status in ("awarded", "paid") }}>Take approval back</button>
     {% else %}
     <button class="mini" id="approve-award" type="button" {{ "disabled" if award_block }} {% if award_block %}title="{{ award_block }}"{% endif %}>Approve</button>
-    {% if award_block and t.award_xe is not none %}<span class="k">{{ award_block }}</span>{% endif %}
+    {% if award_block and award[0] is not none %}<span class="k">{{ award_block }}</span>{% endif %}
     {% endif %}
   </div>
   {% if t.status == "awarded" %}
