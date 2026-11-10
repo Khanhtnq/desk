@@ -428,12 +428,16 @@ async def import_repo(
 async def poll(ctx: Context, db: AsyncSession, client: gh.GitHub) -> list[dict]:
     out = []
     for repo in ctx.config.repos:
-        # one repo's bad day does not stop the others or the tracker being read (XE-1160)
+        # one repo's bad day does not stop the others or the tracker being read (XE-1160): what it
+        # left uncommitted is rolled back and the poll goes on. Not a savepoint: `import_repo` commits
+        # as it goes, a commit inside a savepoint's block closes it, and the session then refuses the
+        # next statement, so every repo's poll ended at the statement after its first commit and its
+        # cursor was never written (XE-1806)
         try:
-            async with db.begin_nested():
-                since = await get_cursor(db, f"github:{repo}:issues")
-                out.append(await import_repo(ctx, db, client, repo, since=since or None))
+            since = await get_cursor(db, f"github:{repo}:issues")
+            out.append(await import_repo(ctx, db, client, repo, since=since or None))
         except Exception as e:
+            await db.rollback()
             log.exception("poll of %s failed: %s", repo, e)
             out.append({"repo": repo, "error": str(e)[:200]})
     if ctx.config.internal_repo:

@@ -1450,6 +1450,59 @@ async def test_a_strangers_fork_pull_links_but_moves_nothing_until_merged(ctx, d
     assert t2.status == "fixing"
 
 
+class _Hub:
+    """GitHub as the poll reads it: each repository's issues and pulls, or a repository that fails."""
+
+    enabled = True
+
+    def __init__(self, issues, pulls=None, broken=()):
+        self._issues, self._pulls, self.broken = issues, pulls or {}, set(broken)
+
+    async def issues(self, repo, since=None):
+        if repo in self.broken:
+            raise GitHubError(502, "bad gateway")
+        for issue in self._issues.get(repo, []):
+            yield issue
+
+    async def comments(self, repo, number, since=None):
+        for comment in ():
+            yield comment
+
+    async def pulls(self, repo):
+        for pull in self._pulls.get(repo, []):
+            yield pull
+
+
+async def test_a_poll_reads_every_repository_and_one_that_fails_stops_none(ctx, db):
+    """The rule (XE-1160, XE-1806): a poll reads every repository and the tracker, each to its end,
+    and one that fails loses only what it had not committed. The import commits as it goes; wrapped in
+    a savepoint, its first commit closed the savepoint and the session refused the next statement, so
+    no repository got past its first issue and no cursor was ever written. Asked through `poll`
+    itself, which nothing else here calls, with more than one issue in a repository."""
+    xe, dao, sdk = ctx.config.repos
+    hub = _Hub(
+        {xe: [_issue(501, "First of two"), _issue(502, "Second of two")], sdk: [_issue(7, "In the SDK")]},
+        pulls={xe: [_pull(510, "Fix the first", "Fixes #501")]},
+        broken={dao},
+    )
+    by = {s["repo"]: s for s in await sync.poll(ctx, db, hub)}
+    assert (by[xe]["issues"], by[xe]["created"], by[xe]["pulls"]) == (2, 2, 1)
+    assert "error" in by[dao] and "issues" not in by[dao]
+    assert (by[sdk]["issues"], by[sdk]["created"]) == (1, 1)
+    assert by[ctx.config.internal_repo]["issues"] == 0  # the tracker is read after a repository failed
+    stamp = "2026-10-20T10:00:00Z"
+    cursors = [await sync.get_cursor(db, f"github:{r}:issues") for r in (xe, dao, sdk)]
+    assert cursors == [stamp, "", stamp]
+    first = await tsvc.find_by_source(db, "github", xe, "501")
+    assert first.status == "fixing"
+    assert await tsvc.find_by_source(db, "github", xe, "502") is not None
+    assert await tsvc.find_by_source(db, "github", sdk, "7") is not None
+    # the next poll starts from the cursor and finds what is there
+    by = {s["repo"]: s for s in await sync.poll(ctx, db, hub)}
+    assert (by[xe]["issues"], by[xe]["created"], by[xe]["pulls"]) == (2, 0, 0)
+    assert "error" in by[dao] and by[sdk]["created"] == 0
+
+
 async def test_a_source_moves_a_ticket_once_and_a_persons_status_then_stands(ctx, db):
     """The rule (XE-2080): a follower acts on a change at its source, once. A PR or a tracker issue
     read again in the state it was last acted on moves nothing, so a status a person set since stands;
