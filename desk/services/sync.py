@@ -559,9 +559,18 @@ def _footer(ctx: Context, t: Ticket) -> str:
     return f"\n\n{DESK_MARK}\n<sub>{t.id} · {tsvc.ticket_url(ctx, t)}</sub>"
 
 
+def writes_to_issue(t: Ticket) -> bool:
+    """The desk writes to a ticket's GitHub issue only while the ticket is public (XE-0299, XE-0700).
+    A report the team sealed keeps its issue, which was public before the desk saw it; what the desk
+    then decides about it (accepted, fixing, patched, closed and why, what it tells the reporter) is the
+    sealed part, and a label or a closed issue would publish it. Every function below that writes to
+    GitHub about a ticket asks this first; the selectors that feed them only save the work."""
+    return t.source == "github" and bool(t.source_repo) and t.visibility == "public"
+
+
 async def push_labels(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticket) -> bool:
     """Make the issue's status label match the ticket. Other labels are left as they are."""
-    if t.source != "github" or not t.source_repo or not client.enabled:
+    if not writes_to_issue(t) or not client.enabled:
         return False
     cfg = ctx.config
     want = cfg.label_for(t.status, t.closed_reason)
@@ -581,7 +590,7 @@ async def push_labels(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Tick
 
 async def push_state(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticket) -> bool:
     """Close the issue when the desk closes the ticket; reopen when the desk reopens it."""
-    if t.source != "github" or not t.source_repo or not client.enabled:
+    if not writes_to_issue(t) or not client.enabled:
         return False
     want = "closed" if t.status in ("closed", "paid") else "open"
     if t.github_state == want:
@@ -603,7 +612,7 @@ async def push_state(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticke
 
 async def mirror_reply(ctx: Context, db: AsyncSession, client: gh.GitHub, r: Reply) -> bool:
     t = await tsvc.get(db, r.ticket_id)
-    if t is None or t.source != "github" or not t.source_repo or t.visibility != "public":
+    if t is None or not writes_to_issue(t):
         # a ticket made private after the reply was queued keeps the reply at home
         r.mirror = "none"
         return False
@@ -647,8 +656,10 @@ async def queued_replies(db: AsyncSession, limit: int = 50) -> list[Reply]:
 
 async def open_disclosure(ctx: Context, db: AsyncSession, client: gh.GitHub, t: Ticket) -> str:
     """A disclosed private ticket gets a public issue in the primary repo and becomes a GitHub-sourced
-    ticket from then on, so labels and replies flow like any other."""
-    if t.source == "github" or not client.enabled:
+    ticket from then on, so labels and replies flow like any other. Only while it is public: one sealed
+    again after its disclosure and before the worker came round gets no issue (the same rule as
+    `writes_to_issue`, for the issue that does not exist yet)."""
+    if t.source == "github" or t.visibility != "public" or not client.enabled:
         return ""
     repo = ctx.config.primary_repo
     patches = await thread.patches_for(db, t)
@@ -680,7 +691,9 @@ async def open_disclosure(ctx: Context, db: AsyncSession, client: gh.GitHub, t: 
 
 
 async def tickets_needing_push(db: AsyncSession) -> list[Ticket]:
-    """GitHub-sourced tickets whose status label or state may differ from the issue. Cheap filter here;
-    push_* compare properly."""
-    q = select(Ticket).where(Ticket.source == "github", Ticket.status != "new")
+    """GitHub-sourced public tickets whose status label or state may differ from the issue. Cheap filter
+    here; push_* compare properly, and ask `writes_to_issue` themselves."""
+    q = select(Ticket).where(
+        Ticket.source == "github", Ticket.status != "new", Ticket.visibility == "public"
+    )
     return list((await db.execute(q)).scalars().all())

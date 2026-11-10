@@ -120,7 +120,9 @@ class Worker:
                 (
                     await db.execute(
                         select(tsvc.Ticket).where(
-                            tsvc.Ticket.status == "disclosed", tsvc.Ticket.source != "github"
+                            tsvc.Ticket.status == "disclosed",
+                            tsvc.Ticket.source != "github",
+                            tsvc.Ticket.visibility == "public",
                         )
                     )
                 )

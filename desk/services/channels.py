@@ -305,8 +305,11 @@ async def mark_failed(ctx: Context, db: AsyncSession, r: Reply, t: Ticket, error
 
 async def needing_state_push(db: AsyncSession, platform: str) -> list[Ticket]:
     """Tickets whose desk status and channel state disagree: closed here but the thread is open, or the
-    reverse after a reopen."""
-    q = select(Ticket).where(Ticket.source == platform, Ticket.source_ref != "")
+    reverse after a reopen. Public ones only: what the desk decides about a sealed ticket is not written
+    to its thread, as its replies are not (`queued_replies`; XE-0700)."""
+    q = select(Ticket).where(
+        Ticket.source == platform, Ticket.source_ref != "", Ticket.visibility == "public"
+    )
     out = []
     for t in (await db.execute(q)).scalars():
         want = "closed" if t.status in ("closed", "paid") else "open"

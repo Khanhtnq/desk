@@ -2454,6 +2454,102 @@ async def test_desk_reply_is_queued_for_the_bot_not_the_worker(ctx, db):
     assert await channels.queued_replies(db, "discord") == []
 
 
+class _Recorder:
+    """A GitHub client that takes every write the desk makes and keeps a list of them."""
+
+    enabled = True
+
+    def __init__(self):
+        self.writes: list[str] = []
+
+    async def set_labels(self, repo, number, names):
+        self.writes.append("labels")
+        return list(names)
+
+    async def set_state(self, repo, number, state, state_reason=None):
+        self.writes.append("state")
+        return {}
+
+    async def comment(self, repo, number, body):
+        self.writes.append("comment")
+        url = f"https://github.com/{repo}/issues/{number}#issuecomment-1"
+        return {"id": 9500 + len(self.writes), "html_url": url, "created_at": "2026-11-09T10:00:00Z"}
+
+    async def create_issue(self, repo, title, body, labels):
+        self.writes.append("issue")
+        return {"number": 4000 + len(self.writes), "html_url": f"https://github.com/{repo}/issues/4000"}
+
+
+async def test_nothing_about_a_private_ticket_is_written_to_its_channel(ctx, db):
+    """The rule (XE-0299, XE-0700): the desk writes to a ticket's GitHub issue, and to its chat thread,
+    only while the ticket is public. Asked of every outbound write the worker and the bot make (label,
+    state, reply, the disclosure issue, the thread's closed mark), each beside a public twin that is
+    written, so a harness that writes nothing would fail too; and of the source, so a write added to
+    `sync` later without the question fails here."""
+    import inspect
+    import re
+
+    team = await _team(ctx, db)
+    client = _Recorder()
+
+    async def outbound(t, r):
+        client.writes.clear()
+        await sync.push_labels(ctx, db, client, t)
+        await sync.push_state(ctx, db, client, t)
+        await sync.mirror_reply(ctx, db, client, r)
+        await sync.open_disclosure(ctx, db, client, t)
+        return list(client.writes)
+
+    async def from_github(n, title):
+        t, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(n, title, body="b"))
+        await tsvc.set_status(ctx, db, team, t, "triaging")
+        r = await thread.add_reply(ctx, db, team, t, "Not a bug: the tip is read from the cache.")
+        await tsvc.set_status(ctx, db, team, t, "closed", closed_reason="invalid")
+        return t, r
+
+    async def disclosed(title):
+        spec = tsvc.NewTicket(kind="bounty", title=title, body="the exploit", visibility="private")
+        t = await tsvc.create(ctx, db, team.actor, spec)
+        for st in ("triaging", "accepted", "patched"):
+            await tsvc.set_status(ctx, db, team, t, st)
+        await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref=t.id[-4:], kind="pr")
+        await tsvc.set_status(ctx, db, team, t, "disclosed")
+        return t, await thread.add_reply(ctx, db, team, t, "Disclosed today.")
+
+    # a GitHub issue the team sealed after closing it: no label, no closed state, no comment
+    open_t, open_r = await from_github(140, "Public and closed")
+    sealed_t, sealed_r = await from_github(141, "Sealed after it was filed")
+    await tsvc.set_facts(ctx, db, team, sealed_t, {"visibility": "private"})
+    assert not sync.writes_to_issue(sealed_t) and sync.writes_to_issue(open_t)
+    assert [t.id for t in await sync.tickets_needing_push(db)] == [open_t.id]
+    assert await outbound(sealed_t, sealed_r) == []
+    assert (sealed_t.github_state, sealed_t.github_labels, sealed_r.mirror) == ("open", [], "none")
+    assert await outbound(open_t, open_r) == ["labels", "state", "comment"]
+    # a private report disclosed and then sealed again before the worker came round: no issue is opened
+    back_t, back_r = await disclosed("Disclosed, then sealed again")
+    await tsvc.set_facts(ctx, db, team, back_t, {"visibility": "private"})
+    out_t, out_r = await disclosed("Disclosed and left so")
+    assert await outbound(back_t, back_r) == [] and back_t.source == "web"
+    assert await outbound(out_t, out_r) == ["issue"] and out_t.source == "github"
+    # a chat thread: the closed mark is not pushed for a sealed ticket
+    chat = await channels.open_from_channel(ctx, db, _post(thread_ref="778", title="Lost my key"))
+    twin = await channels.open_from_channel(ctx, db, _post(thread_ref="779", title="Which port is it"))
+    for t in (chat, twin):
+        await tsvc.set_status(ctx, db, team, t, "triaging")
+        await tsvc.set_status(ctx, db, team, t, "closed", closed_reason="answered")
+    await tsvc.set_facts(ctx, db, team, chat, {"visibility": "private"})
+    assert [t.id for t in await channels.needing_state_push(db, "discord")] == [twin.id]
+    assert await channels.queued_replies(db, "discord") == []
+    # every function in sync that writes to GitHub about a ticket asks the question
+    writers = []
+    for name, fn in inspect.getmembers(sync, inspect.iscoroutinefunction):
+        src = inspect.getsource(fn)
+        if re.search(r"client\.(set_labels|set_state|comment|create_issue)\(", src):
+            writers.append(name)
+            assert "writes_to_issue(" in src or 't.visibility != "public"' in src, name
+    assert sorted(writers) == ["mirror_reply", "open_disclosure", "push_labels", "push_state"]
+
+
 class _Issues:
     """GitHub's comment endpoint as the worker's client sees it: takes the comment, or refuses it."""
 
