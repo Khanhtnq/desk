@@ -624,16 +624,8 @@ async def mirror_reply(ctx: Context, db: AsyncSession, client: gh.GitHub, r: Rep
         )
         return False
     r.mirror, r.mirror_ref, r.mirror_error, r.sent_at = "sent", c.get("html_url") or "", "", utcnow()
-    await thread.add_message(
-        ctx,
-        db,
-        t,
-        source="github",
-        source_ref=str(c["id"]),
-        author=r.author_name,
-        body=r.body,
-        created_at=_dt(c.get("created_at")),
-        is_team=True,
+    await thread.reply_carried(
+        ctx, db, t, r, source="github", source_ref=str(c["id"]), created_at=_dt(c.get("created_at"))
     )
     await ctx.events.append(
         db, "reply.mirrored", "desk", {"ticket": t.id, "reply": r.id, "url": r.mirror_ref}, ref=t.id

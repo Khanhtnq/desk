@@ -146,7 +146,7 @@ What agents are good at here: duplicates (once they have read the whole desk, wh
 
 Templates live in `config/copy/public.yaml` and are filled with the ticket's facts: `patched`, `duplicate`, `accepted`, `awarded`, `needs_info`, `invalid`, `notice`. Four are sent by the desk itself. Two go under the person making the move: `duplicate` when a close-as-duplicate is adopted (§6) and `awarded` when a ticket is marked awarded (§3). Two go under the desk's own name when nobody has written first: `accepted` and `patched` (§4, the outbox). Pick one on the ticket page, edit, send. Tone: plain, specific, short, the reporter's name on it. A reply is the public record of how XE treats people who report bugs; it is read by the next hundred reporters.
 
-Where it goes: GitHub-sourced tickets get a comment on the issue (the worker posts it within a minute; the mirror state shows on the ticket); desk tickets get it on the page and by email where the reporter has one; private tickets get the fact and a link by email, never the text.
+Where it goes: GitHub-sourced tickets get a comment on the issue (the worker posts it within a minute; the mirror state shows on the ticket). The reply is on the desk's own thread from the moment it is sent, so one the channel refuses (`failed`) is still there for the reporter to read; desk tickets get it on the page and by email where the reporter has one; private tickets get the fact and a link by email, never the text.
 
 ## 8. GitHub, labels and the webhook
 

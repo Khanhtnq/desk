@@ -39,6 +39,7 @@ from desk.services import channels
 from desk.services import reporters as rsvc
 from desk.services import notify, sync, tell, thread, triage, users
 from desk.services import tickets as tsvc
+from desk.services.github import GitHubError
 from desk.services.tickets import utcnow
 from desk.settings import Settings
 from desk.signer import Signer
@@ -2121,7 +2122,9 @@ async def test_making_a_ticket_private_seals_what_arrived_while_public(ctx, db, 
     await tsvc.set_facts(ctx, db, team, t, {"visibility": "private"})
     msgs = await thread.messages_for(db, t)
     assert all(m.body == "" and m.body_sealed for m in msgs)
-    assert thread.message_body(ctx, t, msgs[0]) == "hi"
+    # the reply pulled back from the mirror is sealed with the rest, and still on the thread
+    said = sorted(thread.message_body(ctx, t, m) for m in msgs)
+    assert said == ["hi", "queued for github", "we read it"]
     await db.refresh(r)
     assert r.mirror == "none"
     assert await sync.queued_replies(db) == [] or r not in await sync.queued_replies(db)
@@ -2208,6 +2211,101 @@ async def test_desk_reply_is_queued_for_the_bot_not_the_worker(ctx, db):
     assert r.mirror == "sent" and r.mirror_ref == "https://discord.com/x"
     assert [x.source_ref for x in await thread.messages_for(db, t)][-1] == "d9"
     assert await channels.queued_replies(db, "discord") == []
+
+
+class _Issues:
+    """GitHub's comment endpoint as the worker's client sees it: takes the comment, or refuses it."""
+
+    enabled = True
+
+    def __init__(self):
+        self.n, self.refuse = 9000, False
+
+    async def comment(self, repo, number, body):
+        if self.refuse:
+            raise GitHubError(422, "Validation Failed IssueComment.data: unprocessable")
+        self.n += 1
+        url = f"https://github.com/{repo}/issues/{number}#issuecomment-{self.n}"
+        return {"id": self.n, "html_url": url, "created_at": "2026-11-09T10:00:00Z"}
+
+
+async def test_a_reply_is_on_the_thread_whatever_the_channel_does(ctx, db):
+    # the rule: a reply is on its ticket's thread from the moment it is sent, and once only, whatever
+    # the channel then does with it: nothing to mirror, still queued, carried, echoed back, refused,
+    # pulled back when the ticket goes private. Every mirror (the worker's, the bot's) goes through it.
+    repo = "xeprotocol/xe"
+    team = await _team(ctx, db)
+    ctx.settings.github_bot_login = "xe-desk-bot"
+    client = _Issues()
+
+    async def on_thread(t):
+        msgs = await thread.messages_for(db, t)
+        rows = [(m.source, m.source_ref, m.author_is_team, thread.message_body(ctx, t, m)) for m in msgs]
+        return sorted(rows)
+
+    def bot_says(n, body):
+        return {"id": n, "user": {"login": "xe-desk-bot"}, "body": body}
+
+    # a desk ticket: nothing to mirror
+    web = await tsvc.create(ctx, db, team.actor, tsvc.NewTicket(kind="bounty", title="filed on the desk"))
+    r = await thread.add_reply(ctx, db, team, web, "Read.")
+    assert r.mirror == "none" and await on_thread(web) == [("desk", f"reply:{r.id}", True, "Read.")]
+
+    # a GitHub ticket: there while queued, and the same row under the comment's id once carried
+    t, _ = await sync.upsert_issue(ctx, db, repo, _issue(130, "Carried"))
+    r = await thread.add_reply(ctx, db, team, t, "On its way.")
+    assert r.mirror == "queued" and await on_thread(t) == [("desk", f"reply:{r.id}", True, "On its way.")]
+    assert await sync.mirror_reply(ctx, db, client, r) is True
+    assert r.mirror == "sent" and await on_thread(t) == [("github", "9001", True, "On its way.")]
+    # the webhook's echo of that comment is that row, not a second copy
+    assert await sync.upsert_comment(ctx, db, t, bot_says(9001, "On its way.")) is False
+    assert len(await on_thread(t)) == 1
+
+    # the echo arriving before the worker has recorded the comment: its row stands, the desk's goes
+    t2, _ = await sync.upsert_issue(ctx, db, repo, _issue(131, "Echo first"))
+    r = await thread.add_reply(ctx, db, team, t2, "Seen twice?")
+    assert await sync.upsert_comment(ctx, db, t2, bot_says(9002, "Seen twice?")) is True
+    assert len(await on_thread(t2)) == 2
+    assert await sync.mirror_reply(ctx, db, client, r) is True
+    assert await on_thread(t2) == [("github", "9002", True, "Seen twice?")]
+
+    # refused by GitHub: failed, and still readable here
+    t3, _ = await sync.upsert_issue(ctx, db, repo, _issue(132, "Refused"))
+    r = await thread.add_reply(ctx, db, team, t3, "GitHub will not take this.")
+    client.refuse = True
+    assert await sync.mirror_reply(ctx, db, client, r) is False
+    client.refuse = False
+    assert r.mirror == "failed" and "422" in r.mirror_error
+    assert await on_thread(t3) == [("desk", f"reply:{r.id}", True, "GitHub will not take this.")]
+
+    # pulled back when the ticket goes private: sealed with the rest of the thread, still on it
+    t4, _ = await sync.upsert_issue(ctx, db, repo, _issue(133, "Goes private"))
+    r = await thread.add_reply(ctx, db, team, t4, "Before it was sealed.")
+    await tsvc.set_facts(ctx, db, team, t4, {"visibility": "private"})
+    await db.refresh(r)
+    assert r.mirror == "none" and (await thread.messages_for(db, t4))[0].body == ""
+    assert await on_thread(t4) == [("desk", f"reply:{r.id}", True, "Before it was sealed.")]
+
+    # a reply queued before replies were threaded on sending has no row; carried, it gets its one
+    t5, _ = await sync.upsert_issue(ctx, db, repo, _issue(134, "Queued before"))
+    r = await thread.add_reply(ctx, db, team, t5, "From before.")
+    for m in await thread.messages_for(db, t5):
+        await db.delete(m)
+    await db.flush()
+    assert await sync.mirror_reply(ctx, db, client, r) is True
+    assert await on_thread(t5) == [("github", "9003", True, "From before.")]
+
+    # a chat thread: the same, by the bot's hand
+    q = await channels.open_from_channel(ctx, db, _post())
+    r = await thread.add_reply(ctx, db, team, q, "There is no announced date.")
+    assert await on_thread(q) == [("desk", f"reply:{r.id}", True, "There is no announced date.")]
+    await channels.mark_mirrored(ctx, db, r, q, message_ref="d9")
+    assert await on_thread(q) == [("discord", "d9", True, "There is no announced date.")]
+    r = await thread.add_reply(ctx, db, team, q, "And a second word.")
+    await channels.mark_failed(ctx, db, r, q, "thread not found")
+    assert r.mirror == "failed" and [x[:2] for x in await on_thread(q)] == [
+        ("desk", f"reply:{r.id}"), ("discord", "d9")
+    ]
 
 
 async def test_reporter_with_an_email_is_told_of_team_replies(ctx, db, monkeypatch):

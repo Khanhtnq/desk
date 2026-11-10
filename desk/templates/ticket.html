@@ -221,7 +221,7 @@
       <button id="send-reply" type="button">Send reply</button>
     </div>
     <div class="msg" id="reply-msg" style="display:none"></div>
-    {% for r in replies if r.mirror in ("queued", "failed") %}<p class="k">Reply {{ r.id }} <span class="pill {{ r.mirror }}">{{ r.mirror }}</span> {{ r.mirror_error }}</p>{% endfor %}
+    {% for r in replies if r.mirror in ("queued", "failed") %}<p class="k">Reply {{ r.id }} <span class="pill {{ r.mirror }}">{{ r.mirror }}</span> {{ r.mirror_error }}{% if r.mirror == "failed" %} It did not reach the source channel; it is on the thread on this page.{% endif %}</p>{% endfor %}
   </div>
 {% elif mine %}
   <div class="compose reporter" style="margin-top:28px" data-ticket="{{ t.id }}">

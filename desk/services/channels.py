@@ -289,16 +289,7 @@ async def mark_mirrored(
     ctx: Context, db: AsyncSession, r: Reply, t: Ticket, *, message_ref: str, url: str = ""
 ) -> None:
     r.mirror, r.mirror_ref, r.mirror_error, r.sent_at = "sent", url or message_ref, "", utcnow()
-    await thread.add_message(
-        ctx,
-        db,
-        t,
-        source=t.source,
-        source_ref=str(message_ref),
-        author=r.author_name,
-        body=r.body,
-        is_team=True,
-    )
+    await thread.reply_carried(ctx, db, t, r, source=t.source, source_ref=str(message_ref))
     t.last_public_at = utcnow()
     await ctx.events.append(
         db, "reply.mirrored", "desk", {"ticket": t.id, "reply": r.id, "url": r.mirror_ref}, ref=t.id

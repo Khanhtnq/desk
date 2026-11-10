@@ -201,12 +201,12 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
     mark_told(t)
     t.draft = ""
     await db.flush()
-    # a reply is part of the public thread. When it is mirrored, the worker adds the GitHub comment
-    # itself (with the comment id, so the webhook echo is not a second copy); otherwise it goes in now.
-    if mirror == "none":
-        await add_message(
-            ctx, db, t, source="desk", source_ref=f"reply:{r.id}", author=author, body=body, is_team=True
-        )
+    # a reply is on the ticket's thread from the moment it is sent, whatever the channel then does with
+    # it: a mirror that is still queued, that fails, or that is pulled back leaves it readable here.
+    # When the channel does carry it, this row takes the channel's id for it (`reply_carried`).
+    await add_message(
+        ctx, db, t, source="desk", source_ref=_reply_ref(r), author=author, body=body, is_team=True
+    )
     await ctx.events.append(
         db,
         "reply.sent",
@@ -216,6 +216,38 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
         public=t.visibility == "public",
     )
     return r
+
+
+def _reply_ref(r: Reply) -> str:
+    return f"reply:{r.id}"
+
+
+async def reply_carried(
+    ctx: Context, db: AsyncSession, t: Ticket, r: Reply, *, source: str, source_ref: str, created_at=None
+) -> None:
+    """The channel took the reply (a comment on the issue, a message in the chat thread). The reply's
+    row on the thread now answers to the channel's own id for it, so the channel's echo of it (a
+    webhook, the next poll) is that same row and not a second copy. If the echo got here first, its
+    row stands and the desk's goes. Every mirror reports success through here."""
+    q = select(Message).where(Message.source == "desk", Message.source_ref == _reply_ref(r))
+    mine = (await db.execute(q)).scalar_one_or_none()
+    q = select(Message).where(Message.source == source, Message.source_ref == source_ref)
+    echo = (await db.execute(q)).scalar_one_or_none()
+    if echo is not None:
+        if mine is not None:
+            await db.delete(mine)
+            await db.flush()
+        return
+    if mine is None:  # a reply sent before replies were threaded on sending, mirrored only now
+        await add_message(
+            ctx, db, t, source=source, source_ref=source_ref, author=r.author_name, body=reply_body(ctx, r),
+            created_at=created_at, is_team=True,
+        )
+        return
+    mine.source, mine.source_ref = source, source_ref
+    if created_at is not None:
+        mine.created_at = created_at  # it sits in the thread where the channel shows it
+    await db.flush()
 
 
 def reply_body(ctx: Context, r: Reply) -> str:
