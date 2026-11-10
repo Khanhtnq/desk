@@ -38,8 +38,11 @@ BLOCKED_MARK = "[comment from a blocked account removed]"
 
 
 def login_blocked(ctx: Context, login: str) -> bool:
-    """An account on GITHUB_BLOCKED_LOGINS: its pull requests are not linked and its comments are not
-    mirrored, so nothing it writes reaches a ticket page or a payout decision (XE-0128)."""
+    """An account on GITHUB_BLOCKED_LOGINS: nothing it writes on GitHub reaches the desk, so none of it
+    reaches a ticket page or a payout decision (XE-0128). Asked wherever GitHub names an author: an
+    issue it opens is not a ticket and gets no reporter row, an issue it opened before the block is
+    not rewritten by its edits (XE-1876), its comments are not mirrored and its pull requests are
+    not linked."""
     return bool(login) and login.lower() in ctx.settings.blocked_logins
 
 
@@ -52,8 +55,8 @@ def _dt(s: str | None) -> datetime | None:
 # ---- reporters --------------------------------------------------------------------------------------
 
 
-async def reporter_for(db: AsyncSession, user: dict | None) -> Reporter | None:
-    if not user or user.get("type") == "Bot":
+async def reporter_for(ctx: Context, db: AsyncSession, user: dict | None) -> Reporter | None:
+    if not user or user.get("type") == "Bot" or login_blocked(ctx, user.get("login") or ""):
         return None
     gid, login = user.get("id"), user.get("login") or ""
     r = None
@@ -79,9 +82,12 @@ async def reporter_for(db: AsyncSession, user: dict | None) -> Reporter | None:
 
 async def upsert_issue(
     ctx: Context, db: AsyncSession, repo: str, issue: dict, *, first_touch: bool = True
-) -> tuple[Ticket, bool]:
+) -> tuple[Ticket | None, bool]:
     """Create or refresh the ticket for a GitHub issue. Returns (ticket, created). Only GitHub-owned
-    facts are refreshed: title, body (while editable), github state and labels, source times."""
+    facts are refreshed: title, body (while editable), github state and labels, source times. An issue
+    opened by a blocked account is not a ticket: (None, False). One it opened before it was blocked
+    keeps its ticket, which the team rules on like any other, and takes no more of its edits."""
+    blocked = login_blocked(ctx, (issue.get("user") or {}).get("login") or "")
     number = str(issue["number"])
     t = await tsvc.find_by_source(db, "github", repo, number)
     body = issue.get("body") or ""
@@ -89,8 +95,10 @@ async def upsert_issue(
     state = issue.get("state") or "open"
     labels = sorted(label["name"] for label in issue.get("labels") or [])
     created = False
+    if t is None and blocked:
+        return None, False
     if t is None:
-        reporter = await reporter_for(db, issue.get("user"))
+        reporter = await reporter_for(ctx, db, issue.get("user"))
         spec = NewTicket(
             kind="bounty",
             title=title,
@@ -121,7 +129,8 @@ async def upsert_issue(
             await thread.add_note(ctx, db, SYSTEM, t, f"Imported from {repo}#{number}. First touch pending.")
     else:
         if (
-            t.body_editable
+            not blocked
+            and t.body_editable
             and t.visibility == "public"
             and t.status in EDITABLE_STATUSES
             and (t.title != title or t.body != body)
@@ -378,7 +387,7 @@ async def import_repo(
         t, created = await upsert_issue(ctx, db, repo, issue)
         stats["issues"] += 1
         stats["created"] += int(created)
-        if comments and (issue.get("comments") or 0) > 0:
+        if t is not None and comments and (issue.get("comments") or 0) > 0:
             async for c in client.comments(repo, issue["number"], since=since):
                 stats["comments"] += int(await upsert_comment(ctx, db, t, c))
         newest = max(newest, issue.get("updated_at") or "")
@@ -560,11 +569,15 @@ async def handle_webhook(ctx: Context, db: AsyncSession, event: str, payload: di
     action = payload.get("action") or ""
     if event == "issues" and "issue" in payload:
         t, created = await upsert_issue(ctx, db, repo, payload["issue"])
+        if t is None:
+            return {"ignored": "blocked account"}
         return {"ticket": t.id, "created": created, "action": action}
     if event == "issue_comment" and "issue" in payload and "comment" in payload:
         if "pull_request" in payload["issue"]:
             return {"ignored": "pr comment"}
         t, _ = await upsert_issue(ctx, db, repo, payload["issue"])
+        if t is None:
+            return {"ignored": "blocked account"}
         if action in ("created", "edited"):
             added = await upsert_comment(ctx, db, t, payload["comment"], update=action == "edited")
             return {"ticket": t.id, "comment": added}

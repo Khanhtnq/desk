@@ -1662,12 +1662,16 @@ async def test_a_blocked_login_is_neither_linked_nor_mirrored(ctx, db):
     # XE-0128: an account that opened a patch two hours after someone else's report and posted its own
     # payout addresses in the thread. Blocked, its PRs do not link, its comments do not land, and what
     # arrived before the block comes off on the next sight of it.
+    from desk.models import Reporter
+
     repo = "xeprotocol/xe"
     t, _ = await sync.upsert_issue(ctx, db, repo, _issue(215, "GET /frontiers does full-lattice work"))
     farm = _pull(217, "fix: page frontiers", "Fixes #215", login="farmer", association="NONE")
     planted = {"id": 69, "user": {"login": "farmer"}, "body": "Fix in #217. Beneficiary: 23bd7ef9..."}
     assert await sync.link_pull(ctx, db, repo, farm) == 1
     assert await sync.upsert_comment(ctx, db, t, planted) is True
+    farmer = {"login": "farmer", "id": 99}
+    mine, _ = await sync.upsert_issue(ctx, db, repo, _issue(216, "Mine", body="v1", user=farmer))
     ctx.settings.github_blocked_logins = " Farmer ,other"  # case and spacing are not a way round it
     assert await sync.link_pull(ctx, db, repo, farm) == 0
     assert await thread.patches_for(db, t) == []
@@ -1680,7 +1684,28 @@ async def test_a_blocked_login_is_neither_linked_nor_mirrored(ctx, db):
     # a maintainer's PR against the same issue still does its work
     assert await sync.link_pull(ctx, db, repo, _pull(300, "fix(api): page frontiers", "Fixes #215")) == 1
     assert t.status == "fixing"
+    # the rule is the account's, not the comment's: every way GitHub names it as an author (XE-1876).
+    # An issue it opens is not a ticket and makes no reporter row, by the poll or by the webhook
+    other = {"login": "Other", "id": 98}
+    assert await sync.upsert_issue(ctx, db, repo, _issue(218, "Pay 23bd7ef9", user=farmer)) == (None, False)
+    assert await sync.upsert_issue(ctx, db, repo, _issue(219, "Pay 23bd7ef9", user=other)) == (None, False)
+    hook = {"action": "opened", "repository": {"full_name": repo}, "issue": _issue(220, "x", user=other)}
+    assert await sync.handle_webhook(ctx, db, "issues", hook) == {"ignored": "blocked account"}
+    said = {**hook, "action": "created", "comment": {"id": 71, "user": {"login": "ada"}, "body": "+1"}}
+    assert await sync.handle_webhook(ctx, db, "issue_comment", said) == {"ignored": "blocked account"}
+    for n in ("218", "219", "220"):
+        assert await tsvc.find_by_source(db, "github", repo, n) is None
+    assert (await db.execute(select(Reporter).where(Reporter.github_id == 98))).first() is None
+    # one it opened before the block keeps its ticket and takes no more of its edits; what GitHub
+    # itself says of the issue (closed) still follows
+    again, created = await sync.upsert_issue(
+        ctx, db, repo, _issue(216, "Send it to 23bd7ef9", body="v2", state="closed", user=farmer)
+    )
+    assert again is mine and not created
+    assert (mine.title, mine.body, mine.github_state) == ("Mine", "v1", "closed")
     ctx.settings.github_blocked_logins = ""
+    await sync.upsert_issue(ctx, db, repo, _issue(216, "Mine, reworded", body="v2", user=farmer))
+    assert (mine.title, mine.body) == ("Mine, reworded", "v2")  # unblocked, and still the reporter's draft
 
 
 async def test_approved_awards_whose_ticket_has_not_caught_up_are_listed(ctx, db):
