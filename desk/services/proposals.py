@@ -47,6 +47,12 @@ async def propose(
             raise HTTPException(400, f"closing a {t.kind} ticket needs closed_reason from {reasons}")
         if status != "closed" and closed_reason:
             raise HTTPException(400, "closed_reason goes with status closed only")
+    if field in tsvc.FACT_VOCAB:
+        # a fact: checked as set_facts will check it and kept as set_facts would store it. The value is
+        # a key before anyone adopts it (the family of a canonical is the pending duplicate_of proposals
+        # equal to its id), so `xe-0142` filed its ticket under a family of its own; and a value no
+        # ticket could hold waited for a person to click into the 400 (XE-1054)
+        value = await tsvc.fact_value(db, t, field, value)
     if field == "reply_draft" and not isinstance(value, str):
         raise HTTPException(400, "a reply draft is a string")
     if field == "award_xe":

@@ -1001,7 +1001,7 @@ async def test_bulk_decisions_skip_the_refused_and_keep_the_rest(ctx, db):
     bad_path = await psvc.propose(ctx, db, agent, b, "status", "fixing", "no path from paid")
     bad_role = await psvc.propose(ctx, db, agent, c, "assessed_tier", "high", "reviewer lacks tier")
     ok2 = await psvc.propose(ctx, db, agent, c, "verdict", "valid", "reproduced too")
-    gone = await psvc.propose(ctx, db, agent, a, "effort_eng", "s", "to be rejected")
+    gone = await psvc.propose(ctx, db, agent, a, "effort_eng", "<1h", "to be rejected")
     with pytest.raises(HTTPException):
         await psvc.decide_many(ctx, db, agent, [ok1.id], [])  # a person rules, never a token
     bp, br, b_id, c_id = bad_path.id, bad_role.id, b.id, c.id  # read before the savepoints roll back
@@ -3472,3 +3472,49 @@ async def test_an_internal_ref_has_one_spelling(ctx, db):
         if re.search(r"\.(internal_ref|duplicate_of|assignee_id)\s*=[^=]", f.read_text())
     ]
     assert assigned == []
+
+
+async def test_a_proposal_is_checked_as_the_fact_it_would_set(ctx, db):
+    """The rule (XE-1054, for every field): a proposal holds a value the desk could apply, in the
+    spelling it would store. Checked by the function `set_facts` stores from, so a fact added to
+    one is checked in the other; asserted for every proposal field that is a fact."""
+    from desk.models import PROPOSAL_FIELDS
+
+    p = await _team(ctx, db, roles=("reviewer", "tier"))
+    agent = await _agent(ctx, db, p.user)
+
+    def mk(title, kind="bounty"):
+        return tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind=kind, title=title, source="web"))
+
+    canon, t, question = await mk("first"), await mk("again"), await mk("how do I", "support")
+    facts = [f for f in PROPOSAL_FIELDS if f not in ("status", "reply_draft", "award_xe")]
+    assert set(facts) <= set(tsvc.FACT_VOCAB) and len(facts) == 7
+    bad = {
+        "assessed_tier": ("High", "urgent", 3, ["high"]),
+        "verdict": ("bogus", {"verdict": "valid"}),
+        "duplicate_of": ("XE-9999", t.id, t.id.lower(), 42, [canon.id], "x" * 40),
+        "internal_ref": ("x" * 40, "##1064", "#\u0661", 1064, ["#1"]),
+        "mainnet_gate": ("soon", 1),
+        "effort_eng": ("s", 4),
+        "area": ("nowhere", "getting-started"),  # a support topic is not a bounty area
+    }
+    assert set(bad) == set(facts)
+    for field, values in bad.items():
+        for value in values:
+            with pytest.raises(HTTPException) as e:
+                await psvc.propose(ctx, db, agent, t, field, value, "no")
+            assert e.value.status_code == 400, (field, value)
+    with pytest.raises(HTTPException) as e:
+        await psvc.propose(ctx, db, agent, question, "area", "consensus", "no")
+    assert e.value.status_code == 400
+    topic = await psvc.propose(ctx, db, agent, question, "area", "getting-started", "a first question")
+    assert topic.value == {"value": "getting-started"}
+    # the stored value is the stored spelling: the family of a canonical finds it before it is adopted
+    dup = await psvc.propose(ctx, db, agent, t, "duplicate_of", f" {canon.id.lower()} ", "same defect")
+    ref = await psvc.propose(ctx, db, agent, t, "internal_ref", "01064", "tracked there")
+    assert (dup.value, ref.value) == ({"value": canon.id}, {"value": "#1064"})
+    assert [(o.id, pr.id) for o, pr in await psvc.pending_duplicates_of(db, canon.id)] == [(t.id, dup.id)]
+    out = await psvc.decide(ctx, db, p, ref, True)
+    assert out["diff"]["internal_ref"]["to"] == "#1064" and t.internal_ref == "#1064"
+    out = await psvc.decide(ctx, db, p, dup, True)
+    assert t.duplicate_of == canon.id
