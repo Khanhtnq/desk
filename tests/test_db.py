@@ -3387,15 +3387,17 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     # lock for its links, the member's row for a member's invites
     for fn in (auth.consume_reporter_link, auth.drop_reporter_links):
         assert "family_lock(" in inspect.getsource(fn), fn.__name__
-    for fn in (auth.consume_invite, users.set_active):
+    for fn in (auth.consume_invite, users.set_active, users.set_email):
         assert "member_lock(" in inspect.getsource(fn), fn.__name__
     # the lock is the first thing taken, not only present: before the owner's row is written. A
     # sign-in takes the lock and then writes the row, so a writer in the other order is the other
     # half of the same deadlock
     for fn, lock, write in (
         (users.set_active, "member_lock(", "u.active ="),
+        (users.set_email, "member_lock(", "u.email ="),
         (rsvc.unlink, "drop_reporter_links(", 'r.email = ""'),
         (rsvc.merge, "drop_reporter_links(", "t.reporter_id = into.id"),
+        (rsvc.from_email, "identity_lock(", "r.email = email"),
     ):
         src = inspect.getsource(fn)
         assert -1 < src.index(lock) < src.index(write), fn.__name__
@@ -3934,9 +3936,29 @@ async def test_a_link_does_not_outlive_the_identity_it_was_sent_to(ctx, db):
     sent = await auth.create_reporter_link(db, "kept@example.org", None, "/my")
     await rsvc.unlink(ctx, db, kept, "email")
     assert kept.email == "" and await auth.consume_reporter_link(db, sent) is None
-    # nothing else in the service clears an address
-    cleared = re.findall(r"\.email\s*(?:,[^=\n]*)?=[^=\n]*\"\"", inspect.getsource(rsvc))
-    assert len(cleared) == 2, cleared
+    # written over by another address, through a link bound to the account: the same
+    acct = await rsvc.from_email(ctx, db, "first@example.org", link_to=None)
+    stale = await auth.create_reporter_link(db, "first@example.org", None, "/my")
+    again = await rsvc.from_email(ctx, db, "second@example.org", link_to=acct)
+    assert again.id == acct.id and acct.email == "second@example.org"
+    assert await auth.consume_reporter_link(db, stale) is None
+    # the team's table: an invite is keyed on the member and mailed to the member's address; it does
+    # not sign anyone in once the address has changed, and is untouched when it has not
+    team = await _team(ctx, db)
+    invite = await auth.create_invite(db, team.user)
+    await users.set_email(ctx, db, "test", team.user, "moved@xe.network")
+    assert team.user.email == "moved@xe.network" and await auth.consume_invite(db, invite) is None
+    fresh = await auth.create_invite(db, team.user)
+    await users.set_email(ctx, db, "test", team.user, "moved@xe.network")
+    assert (await auth.consume_invite(db, fresh)).id == team.user.id
+    # every assignment to an account's address in the services is one of these, each read above: a
+    # new one fails here and is asked the rule
+    assigns = re.compile(r"\.email\s*(?:,[^=\n]*)?=[^=]")
+    written = {
+        mod.__name__.rsplit(".", 1)[-1]: len(assigns.findall(inspect.getsource(mod)))
+        for mod in (rsvc, channels, users)
+    }
+    assert written == {"reporters": 5, "channels": 1, "users": 1}, written
 
 
 async def test_a_request_body_is_bounded_as_it_is_read(ctx, monkeypatch):

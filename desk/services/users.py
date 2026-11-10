@@ -82,9 +82,13 @@ async def set_email(ctx: Context, db: AsyncSession, actor: str, u: User, email: 
     other = await by_email(db, email)
     if other is not None and other.id != u.id:
         raise HTTPException(409, "another member has that email")
+    await auth.member_lock(db, u.id)
     old = u.email
     if old == email:
         return
+    # an invite is keyed on the member and was mailed to the old address: it does not sign anyone in
+    # as the member once the address is no longer theirs (XE-1904, on the team's table)
+    await auth.drop_invites(db, u.id)
     u.email = email
     await ctx.events.append(db, "user.email", actor, {"user": u.id, "from": old, "to": email}, public=False)
 

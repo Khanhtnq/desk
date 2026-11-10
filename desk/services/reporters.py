@@ -218,7 +218,10 @@ async def from_github(
 
 async def from_email(ctx: Context, db: AsyncSession, email: str, *, link_to: Reporter | None) -> Reporter:
     email = clean_email(email)
-    await identity_lock(db, f"email:{email}")
+    # an address written over another takes the old one off the account, as an unlink does: the
+    # links mailed to it stop with it (XE-1904). Both addresses' locks, in one order, before a row
+    old = link_to.email if link_to is not None and link_to.email != email else ""
+    await identity_lock(db, *sorted(f"email:{e}" for e in (email, old) if e))
     existing = await by_email(db, email)
     r = link_to or existing
     if r is None:
@@ -230,6 +233,8 @@ async def from_email(ctx: Context, db: AsyncSession, email: str, *, link_to: Rep
     if existing is not None and existing.id != r.id:
         # the clicker proved the mailbox, not the other account: mail never merges
         raise HTTPException(409, "that address is already on another account; sign in there to use it")
+    if old:
+        await drop_reporter_links(db, email=old)
     r.email = email
     return r
 
