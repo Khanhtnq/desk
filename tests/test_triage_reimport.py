@@ -18,9 +18,8 @@ async def test_reimport_leaves_a_ticket_a_person_has_moved_on(ctx, db, triage_te
     first = await triage.import_rows(ctx, db, rows, email_bodies={"E1": "e1", "E2": "e2", "E3": "e3"})
     await db.commit()
     assert first["status_kept"] == 0
-    by_ref = {r.key: r for r in rows}
-    row = next(r for r in rows if r.status()[0] == "accepted")
-    t = await triage._find(db, by_ref[row.key])
+    found = [await triage._find(db, r) for r in rows if r.status()[0] == "accepted"]
+    t = next(x for x in found if x.visibility == "public")  # an award is public (XE-2250)
     assert t.status == "accepted"
     # the team takes it to awarded after the sheet was written
     for st in ("patched", "awarded"):

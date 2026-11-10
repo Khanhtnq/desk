@@ -1970,12 +1970,12 @@ async def test_disclosing_by_any_route_unseals_and_publishes(ctx, db):
     for st in ("triaging", "accepted", "patched"):
         await tsvc.set_status(ctx, db, team, t, st)
     await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref="9", kind="pr")
-    # the leaderboard never shows a private award (XE-0310)
+    # a private report is not awarded, by force either: it is disclosed first (XE-0310, XE-2250)
     t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
     await tsvc.set_award(ctx, db, team, t, 5_000_000, approve=True)
-    await tsvc.set_status(ctx, db, team, t, "awarded", force=True)
-    assert await tsvc.leaderboard(db) == []
-    await tsvc.set_status(ctx, db, team, t, "patched", force=True)
+    with pytest.raises(HTTPException):
+        await tsvc.set_status(ctx, db, team, t, "awarded", force=True)
+    assert t.status == "patched" and await tsvc.leaderboard(db) == []
     # a walked path (what a proposal adopts) reaches disclosed through set_status, which is the one
     # disclosure path: visibility flips, the body leaves the vault, the public event is written (XE-0210)
     path = await tsvc.set_status_via_path(ctx, db, team, t, "disclosed", via="proposal:1")
@@ -1988,6 +1988,59 @@ async def test_disclosing_by_any_route_unseals_and_publishes(ctx, db):
         await thread.add_patch_ref(
             ctx, db, team, t, repo="xeprotocol/xe", ref="10", kind="pr", url="javascript:1"
         )
+
+
+async def test_an_award_is_public(ctx, db):
+    """The rule (XE-2250, XE-0911): an awarded or paid ticket is public. Asked of every way a status is
+    written (the ticket page, force, a walked path, an adopted proposal, the desk itself) and of the one
+    way a ticket goes private; settle, which discloses first, is the way through."""
+    team = await _team(ctx, db)
+    agent = await _agent(ctx, db, team.user)
+    upto = ("triaging", "accepted", "patched")
+
+    async def mk(title, last="patched"):
+        spec = tsvc.NewTicket(
+            kind="bounty", title=title, body="the exploit", visibility="private", source="web"
+        )
+        t = await tsvc.create(ctx, db, team.actor, spec)
+        for st in upto[: upto.index(last) + 1]:
+            await tsvc.set_status(ctx, db, team, t, st)
+        t.assessed_tier = "medium"
+        if last == "patched":
+            await thread.add_patch_ref(ctx, db, team, t, repo="xeprotocol/xe", ref=t.id[-4:], kind="pr")
+            await tsvc.set_award(ctx, db, team, t, 5_000_000, approve=True)
+        return t
+
+    sealed, early = await mk("sealed, patched, approved"), await mk("sealed, accepted", last="accepted")
+    pr = await psvc.propose(ctx, db, agent, sealed, "status", "awarded", "fix merged, award approved")
+    moves = {
+        "the ticket page": lambda: tsvc.set_status(ctx, db, team, sealed, "awarded"),
+        "by force": lambda: tsvc.set_status(ctx, db, team, sealed, "awarded", force=True),
+        "the desk itself": lambda: tsvc.set_status(ctx, db, authz.SYSTEM, sealed, "awarded"),
+        "a walked path": lambda: tsvc.set_status_via_path(ctx, db, team, sealed, "awarded"),
+        "a walked path from further back": lambda: tsvc.set_status_via_path(ctx, db, team, early, "awarded"),
+        "an adopted proposal": lambda: psvc.decide(ctx, db, team, pr, True),
+    }
+    for name, move in moves.items():
+        with pytest.raises(HTTPException) as e:
+            await move()
+        assert e.value.status_code == 409 and "disclose it first" in e.value.detail, name
+        # refused before anything moved: the walk from accepted did not stop at patched
+        assert (sealed.status, sealed.visibility, early.status) == ("patched", "private", "accepted"), name
+    assert pr.state == "pending" and await rsvc.payout_rows(db) == []
+    # the way through: disclosed, then awarded
+    assert await tsvc.settle(ctx, db, team, sealed) == ["disclose", "awarded"]
+    assert (sealed.status, sealed.visibility) == ("awarded", "public")
+    assert [r["ticket"] for r in await rsvc.payout_rows(db)] == [sealed.id]
+    # and it stays public: awarded or paid, it is not sealed again
+    for status in tsvc.AWARD_STATUSES:
+        if status == "paid":
+            await tsvc.mark_paid(ctx, db, team, sealed, "tx-1")
+        assert sealed.status == status
+        with pytest.raises(HTTPException) as e:
+            await tsvc.set_facts(ctx, db, team, sealed, {"visibility": "private"})
+        assert e.value.status_code == 409 and sealed.visibility == "public", status
+    assert sealed.body == "the exploit" and sealed.body_sealed is None
 
 
 async def test_settling_walks_a_patched_report_to_awarded_through_the_same_paths(ctx, db):

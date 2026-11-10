@@ -796,6 +796,7 @@ async def set_facts(
         if k == "assessed_tier" and t.status in ("awarded", "paid"):
             raise HTTPException(409, f"the ticket is {t.status}; the tier behind the award stands")
         if k == "visibility" and v == "private":
+            _award_is_public(t, visibility="private")
             text = t.body
             t.visibility = "private"
             set_body(ctx, t, text)
@@ -850,6 +851,7 @@ async def set_status(
     if status not in STATUSES:
         raise HTTPException(400, f"unknown status {status!r}")
     await lock(db, t)
+    _award_is_public(t, status=status)
     allowed = TRANSITIONS[t.kind].get(t.status, set())
     if not force and status != t.status and status not in allowed:
         raise HTTPException(409, f"{t.kind} ticket cannot go from {t.status} to {status}")
@@ -922,6 +924,25 @@ async def set_status(
         await _tell_awarded(ctx, db, p, t)
 
 
+AWARD_STATUSES = ("awarded", "paid")
+
+
+def _award_is_public(t: Ticket, *, status: str | None = None, visibility: str | None = None) -> None:
+    """An awarded or paid ticket is public (XE-2250, XE-0911). `awarded` is the step that lists the
+    reporter on the leaderboard and puts the ticket on the payment list, and from it the only move is
+    `paid`, so a report awarded while sealed could never be disclosed; one sealed after its award left
+    the leaderboard and stayed payable. Asked by the two writers that could break it, with what each is
+    about to write: `set_status` (every path to a status, force included) and `set_facts` (the only
+    path to private). A row that was both before this rule is left to be paid."""
+    if (visibility or t.visibility) != "private" or (status or t.status) not in AWARD_STATUSES:
+        return
+    if t.visibility == "private" and t.status in AWARD_STATUSES:
+        return
+    if visibility:
+        raise HTTPException(409, f"the ticket is {t.status}; an award is public and stays public")
+    raise HTTPException(409, "the report is private; disclose it first, then mark it awarded")
+
+
 async def _tell_awarded(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> None:
     """A ticket just marked `awarded` tells its reporter: the programme's `awarded` reply, under the
     person who marked it, on the thread and out through the ticket's own channel (a GitHub comment, the
@@ -984,6 +1005,7 @@ async def set_status_via_path(
     raised before anything moves."""
     if status not in STATUSES:
         raise HTTPException(400, f"unknown status {status!r}")
+    _award_is_public(t, status=status)  # before the first hop, not at the last one
     path = status_path(t.kind, t.status, status)
     if path is None:
         raise HTTPException(409, f"{t.kind} ticket cannot go from {t.status} to {status}")
