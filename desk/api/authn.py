@@ -135,6 +135,10 @@ async def totp_login(ctx: Ctx, db: Db, request: Request, response: Response, bod
         except Exception:
             raise HTTPException(503, "the vault key is not loaded; codes cannot be checked") from None
         step = auth.totp_verify(secret, body.code, after_step=u.totp_last_step or 0)
+        # a code is accepted once (XE-0820): the step is claimed in one statement, so a second request
+        # with the same code, however close behind, is the one that fails (XE-1735)
+        if step is not None and not await auth.claim_totp_step(db, u, step):
+            step = None
     if step is None:
         if u is not None:
             await ctx.events.append(
@@ -146,7 +150,6 @@ async def totp_login(ctx: Ctx, db: Db, request: Request, response: Response, bod
             )
             await db.commit()
         raise HTTPException(401, "that address and code do not match")
-    u.totp_last_step = step  # a code is accepted once (XE-0820)
     return await _sign_in(ctx, db, request, response, u, "totp")
 
 
@@ -169,7 +172,7 @@ async def totp_setup(ctx: Ctx, db: Db, who: Who, request: Request):
 @router.post("/totp/confirm")
 async def totp_confirm(ctx: Ctx, db: Db, who: Who, request: Request, body: TotpConfirmIn):
     _session(who, request)
-    ch = await auth._take_challenge(db, body.challenge_id, "totp")
+    ch = await auth.take_challenge(db, body.challenge_id, "totp")
     u = who.principal.user
     if ch.user_id != u.id:
         raise HTTPException(400, "that setup belongs to another sign-in")

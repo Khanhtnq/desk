@@ -2496,6 +2496,59 @@ async def test_one_time_links_are_claimed_once_and_burn_their_siblings(ctx, db):
     assert auth.safe_next(ctx.settings, "/\\evil.com") == "/my"  # XE-1092
 
 
+async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
+    """The rule (XE-0709, XE-0837, XE-2053, XE-1735): a credential that works once is claimed by one
+    conditional write, so of two concurrent uses the second waits on the first and then fails. Checked
+    for every single-use credential the desk has, with two connections: the first claims and has not
+    committed when the second tries. A claim that reads, checks and then writes lets the second read
+    past the first, and fails here (it does not wait, and it succeeds)."""
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+    team = await _team(ctx, db)
+    uid = team.user.id
+    await db.commit()
+
+    async def raced(use):
+        """`use(session)` twice: once here, uncommitted, and once on another connection."""
+        async def quiet(s):
+            try:
+                return await use(s)
+            except HTTPException:
+                return None
+
+        async with sm() as other:
+            first = await quiet(db)
+            second = asyncio.create_task(quiet(other))
+            await asyncio.sleep(0.3)
+            waited = not second.done()
+            await db.commit()
+            got = await second
+            await other.rollback()
+        return first, waited, got
+
+    # challenges, every kind: the passkey ceremonies, TOTP setup, and both OAuth states
+    for kind in ("register", "login", "totp", "oauth", "oauth-discord"):
+        cid = await auth._store_challenge(db, kind, b"c", uid)
+        await db.commit()
+        with pytest.raises(HTTPException):
+            await auth.take_challenge(db, cid, "another-kind")  # the wrong kind takes nothing
+        first, waited, got = await raced(lambda s: auth.take_challenge(s, cid, kind))
+        assert first is not None and first.kind == kind and first.user_id == uid, kind
+        assert waited and got is None, kind
+    # a team invite and a reporter's email link
+    invite = await auth.create_invite(db, team.user)
+    link = await auth.create_reporter_link(db, "race@example.org", None, "/my")
+    await db.commit()
+    for use in (lambda s: auth.consume_invite(s, invite), lambda s: auth.consume_reporter_link(s, link)):
+        first, waited, got = await raced(use)
+        assert first is not None and waited and got is None
+    # a TOTP code: the step it matched is taken once, and nothing at or before it is taken afterwards
+    first, waited, got = await raced(lambda s: auth.claim_totp_step(s, team.user, 1000))
+    assert first is True and waited and got is False
+    assert await auth.claim_totp_step(db, team.user, 999) is False
+    assert await auth.claim_totp_step(db, team.user, 1001) is True
+    await db.commit()
+
+
 async def test_first_sign_ins_converge_on_one_row_and_names_fit(ctx, db):
     # a provider-verified email lands on the row that already holds it (XE-1012)
     r = await rsvc.from_email(ctx, db, "kim@example.org", link_to=None)

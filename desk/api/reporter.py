@@ -18,7 +18,6 @@ import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
 
 from .. import auth
 from ..canonical import DOMAIN_LOGIN, DOMAIN_PAYOUT
@@ -107,7 +106,10 @@ async def github_start(ctx: Ctx, db: Db, who: Who, request: Request, next: str |
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{q}", status_code=302)
 
 
-def _link_target(ch: Challenge, who: Who) -> int | None:
+OAUTH_EXPIRED = "sign-in expired or state mismatch; start again"
+
+
+def _link_target(ch: auth.TakenChallenge, who: Who) -> int | None:
     """The account a sign-in adds its identity to: only the one the asking browser is still signed in as.
     A state handed to another browser (login CSRF) is a plain sign-in there, never a merge."""
     want = ch.detail.get("link_to")
@@ -120,10 +122,7 @@ def _link_target(ch: Challenge, who: Who) -> int | None:
 async def github_callback(
     ctx: Ctx, db: Db, who: Who, request: Request, code: str = "", state: str = "", error: str = ""
 ):
-    ch = (await db.execute(select(Challenge).where(Challenge.id == state))).scalar_one_or_none()
-    if ch is None or ch.kind != "oauth" or ch.expires_at < auth.now():
-        raise HTTPException(400, "sign-in expired or state mismatch; start again")
-    await db.execute(delete(Challenge).where(Challenge.id == state))
+    ch = await auth.take_challenge(db, state, "oauth", OAUTH_EXPIRED)
     if error or not code:
         raise HTTPException(400, f"GitHub did not sign you in: {error or 'no code'}")
     async with httpx.AsyncClient(timeout=15) as client:
@@ -202,10 +201,7 @@ async def discord_start(ctx: Ctx, db: Db, who: Who, request: Request, next: str 
 async def discord_callback(
     ctx: Ctx, db: Db, who: Who, request: Request, code: str = "", state: str = "", error: str = ""
 ):
-    ch = (await db.execute(select(Challenge).where(Challenge.id == state))).scalar_one_or_none()
-    if ch is None or ch.kind != "oauth-discord" or ch.expires_at < auth.now():
-        raise HTTPException(400, "sign-in expired or state mismatch; start again")
-    await db.execute(delete(Challenge).where(Challenge.id == state))
+    ch = await auth.take_challenge(db, state, "oauth-discord", OAUTH_EXPIRED)
     if error or not code:
         raise HTTPException(400, f"Discord did not sign you in: {error or 'no code'}")
     async with httpx.AsyncClient(timeout=15) as client:

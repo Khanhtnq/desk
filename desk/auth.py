@@ -369,13 +369,44 @@ async def _store_challenge(db: AsyncSession, kind: str, challenge: bytes, user_i
     return cid
 
 
-async def _take_challenge(db: AsyncSession, cid: str, kind: str) -> Challenge:
-    cid = clean_lookup(cid, 64)
-    ch = (await db.execute(select(Challenge).where(Challenge.id == cid))).scalar_one_or_none()
-    if ch is None or ch.kind != kind or ch.expires_at < now():
-        raise HTTPException(400, "challenge expired; try again")
-    await db.execute(delete(Challenge).where(Challenge.id == cid))
-    return ch
+@dataclass
+class TakenChallenge:
+    kind: str
+    user_id: int | None
+    challenge: bytes
+    detail: dict
+
+
+async def take_challenge(
+    db: AsyncSession, cid: str, kind: str, missing: str = "challenge expired; try again"
+) -> TakenChallenge:
+    """A challenge is used once, and the claim is one statement (XE-2053): DELETE ... RETURNING, so of
+    two concurrent finishes of one ceremony the second waits on the first and then finds nothing. Read,
+    check, then delete let both read the row before either committed. Every kind is taken here: passkey
+    registration and sign-in, TOTP setup, and the OAuth states of the reporter sign-ins. A 400 when
+    there is no challenge of that kind under that id, or it has expired."""
+    res = await db.execute(
+        delete(Challenge)
+        .where(Challenge.id == clean_lookup(cid, 64), Challenge.kind == kind, Challenge.expires_at >= now())
+        .returning(Challenge.kind, Challenge.user_id, Challenge.challenge, Challenge.detail)
+    )
+    row = res.first()
+    if row is None:
+        raise HTTPException(400, missing)
+    return TakenChallenge(kind=row[0], user_id=row[1], challenge=row[2], detail=row[3] or {})
+
+
+async def claim_totp_step(db: AsyncSession, user: User, step: int) -> bool:
+    """A code is accepted once (XE-0820), and the claim is one statement (XE-1735): a conditional UPDATE
+    moves the member's last accepted step forward, and only the request whose UPDATE moved it signs in.
+    Reading the step, comparing and then writing it let two requests with one code both pass."""
+    res = await db.execute(
+        update(User)
+        .where(User.id == user.id, User.totp_last_step < step)
+        .values(totp_last_step=step)
+        .returning(User.id)
+    )
+    return res.first() is not None
 
 
 async def passkey_begin_registration(db: AsyncSession, settings: Settings, user: User) -> dict:
@@ -409,7 +440,7 @@ async def passkey_finish_registration(
 ) -> Passkey:
     from webauthn import verify_registration_response
 
-    ch = await _take_challenge(db, challenge_id, "register")
+    ch = await take_challenge(db, challenge_id, "register")
     if ch.user_id != user.id:
         raise HTTPException(400, "challenge belongs to another sign-in")
     try:
@@ -470,7 +501,7 @@ async def passkey_finish_login(
     from webauthn import verify_authentication_response
     from webauthn.helpers import parse_authentication_credential_json
 
-    ch = await _take_challenge(db, challenge_id, "login")
+    ch = await take_challenge(db, challenge_id, "login")
     try:
         parsed = parse_authentication_credential_json(credential)
     except Exception as e:
