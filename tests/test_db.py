@@ -2356,6 +2356,35 @@ async def test_an_award_is_public(ctx, db):
             await tsvc.set_facts(ctx, db, team, sealed, {"visibility": "private"})
         assert e.value.status_code == 409 and sealed.visibility == "public", status
     assert sealed.body == "the exploit" and sealed.body_sealed is None
+    # paid is an award status too: not reached on a sealed report, by force either
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_status(ctx, db, team, early, "paid", force=True)
+    assert e.value.status_code == 409 and (early.status, early.visibility) == ("accepted", "private")
+    # a report sealed again after its disclosure is not stranded: the page says disclose, not award;
+    # awarding is refused; disclosing again unseals it, and settle walks both steps
+    again = await mk("disclosed, then sealed again")
+    await tsvc.disclose(ctx, db, team, again)
+    await tsvc.set_facts(ctx, db, team, again, {"visibility": "private"})
+    assert (again.status, again.visibility, again.body) == ("disclosed", "private", "")
+    told = again.status_changed_at
+    assert tsvc.award_next_step(again)[1] is None and tsvc.settle_steps(again) == ["disclose", "awarded"]
+    with pytest.raises(HTTPException) as e:
+        await tsvc.set_status(ctx, db, team, again, "awarded")
+    assert e.value.status_code == 409 and "disclose it first" in e.value.detail
+    await tsvc.disclose(ctx, db, team, again)
+    assert (again.status, again.visibility, again.body) == ("disclosed", "public", "the exploit")
+    assert again.status_changed_at == told  # the status did not move, so nobody is owed a word for it
+    assert tsvc.award_next_step(again)[1] == "awarded"
+    await tsvc.set_facts(ctx, db, team, again, {"visibility": "private"})
+    assert await tsvc.settle(ctx, db, team, again) == ["disclose", "awarded"]
+    assert (again.status, again.visibility) == ("awarded", "public")
+    # a row that was awarded and private before the rule is left to be paid, and to nothing else
+    old = await mk("awarded while sealed, before the rule")
+    old.status = "awarded"
+    await tsvc.mark_paid(ctx, db, team, old, "tx-2")
+    assert (old.status, old.visibility) == ("paid", "private")
+    # and no ticket is born at any status but new: `create` takes none
+    assert "status" not in inspect.signature(tsvc.create).parameters
 
 
 async def test_settling_walks_a_patched_report_to_awarded_through_the_same_paths(ctx, db):

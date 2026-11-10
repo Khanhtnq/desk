@@ -206,9 +206,9 @@ def born_private(spec: NewTicket, tier: str | None) -> bool:
     return spec.kind == "bounty" and tier in PRIVATE_TIERS and not on_github
 
 
-async def create(
-    ctx: Context, db: AsyncSession, actor: str, spec: NewTicket, *, status: str = "new"
-) -> Ticket:
+async def create(ctx: Context, db: AsyncSession, actor: str, spec: NewTicket) -> Ticket:
+    """A new ticket, at `new`. It took a status once, which no caller passed: a second writer of a
+    status that asked none of `set_status`'s questions (a private ticket born awarded)."""
     if spec.kind not in KINDS or spec.visibility not in VISIBILITIES or spec.source not in SOURCES:
         raise HTTPException(400, "bad kind, visibility or source")
     tier = claimed(spec.claimed_tier)
@@ -228,7 +228,7 @@ async def create(
         title=clean_text(spec.title, one_line=True)[:512],
         area=(spec.area or None) and spec.area[:32],
         claimed_tier=tier,
-        status=status,
+        status="new",
         source_created_at=spec.source_created_at,
         github_state=spec.github_state,
     )
@@ -734,10 +734,11 @@ def award_next_step(t: Ticket) -> tuple[str, str | None]:
     """What has to happen for an approved award to become `awarded`: (text, status to set now or None)."""
     if t.status in ("awarded", "paid"):
         return "done", None
-    if t.status == "disclosed" or (t.status == "patched" and t.visibility == "public"):
+    if t.status in ("patched", "disclosed") and t.visibility == "public":
         step = "set the status to awarded; this publishes it and lists the reporter on the leaderboard"
         return step, "awarded"
-    if t.status == "patched":
+    if t.status in ("patched", "disclosed"):
+        # `disclosed` and private: sealed again after its disclosure; disclosing it again unseals it
         return "disclose the report first (it is private), then set awarded", None
     if t.status == "closed":
         return "closed with an approved award: reopen it, or take the approval back", None
@@ -933,6 +934,11 @@ async def set_status(
         raise HTTPException(409, "an awarded ticket is paid or closed, not walked back")
     old, old_reason = t.status, t.closed_reason
     if old == status and old_reason == closed_reason:
+        if status == "disclosed" and t.visibility == "private":
+            # sealed again after its disclosure (`set_facts` allows that): disclosing it again unseals
+            # it, so the award that follows has a way through (the XE-2250 sweep). The status has not
+            # moved, so nothing else is touched.
+            await _unseal(ctx, db, p, t)
         return
     t.status = status
     t.closed_reason = closed_reason if status == "closed" else None
@@ -941,17 +947,7 @@ async def set_status(
     if status == "disclosed" and t.disclosed_at is None:
         t.disclosed_at = utcnow()
     if status == "disclosed" and t.visibility == "private":
-        # the one disclosure path, whoever called: the body leaves the vault and the ticket goes public
-        # here, so a proposal, a walked path or a force can never leave a sealed ticket at "disclosed"
-        try:
-            text = ctx.vault.open_text(t.body_sealed) if t.body_sealed else ""
-        except VaultError as e:
-            raise HTTPException(503, f"the sealed body did not open: {e}") from e
-        t.visibility = "public"
-        t.body, t.body_sealed = text, None
-        await ctx.events.append(
-            db, "ticket.disclosed", p.actor, {"ticket": t.id, "title": t.title}, ref=t.id, public=True
-        )
+        await _unseal(ctx, db, p, t)
     await ctx.events.append(
         db,
         "ticket.status",
@@ -970,6 +966,20 @@ async def set_status(
     )
     if status == "awarded":
         await _tell_awarded(ctx, db, p, t)
+
+
+async def _unseal(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> None:
+    """The one disclosure path, whoever called: the body leaves the vault and the ticket goes public
+    here, so a proposal, a walked path or a force can never leave a sealed ticket at "disclosed"."""
+    try:
+        text = ctx.vault.open_text(t.body_sealed) if t.body_sealed else ""
+    except VaultError as e:
+        raise HTTPException(503, f"the sealed body did not open: {e}") from e
+    t.visibility = "public"
+    t.body, t.body_sealed = text, None
+    await ctx.events.append(
+        db, "ticket.disclosed", p.actor, {"ticket": t.id, "title": t.title}, ref=t.id, public=True
+    )
 
 
 AWARD_STATUSES = ("awarded", "paid")
