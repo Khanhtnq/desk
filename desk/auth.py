@@ -10,7 +10,8 @@ Three ways in, none of them a password:
             under `xe/desk/login/v1`. Its own cookie and table (`reporter_sessions`), so a reporter session
             can never be read as a team one. The routes are in api/reporter.py.
 
-Team writes from the browser carry the session's CSRF token in `X-Desk-CSRF`; cookies are SameSite=Lax.
+A write from a browser session, the team's or a reporter's, carries that session's CSRF token in
+`X-Desk-CSRF`; the check is made once, for every route, in `api/deps.current`. Cookies are SameSite=Lax.
 """
 
 from __future__ import annotations

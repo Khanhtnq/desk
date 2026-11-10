@@ -1,4 +1,5 @@
-"""Team-only JSON, called from the pages' small scripts with the session cookie and the CSRF header.
+"""Team-only JSON, called from the pages' small scripts with the session cookie and the CSRF header
+(checked for every cookie write in `deps.current`).
 Every route refuses tokens through the authorisation layer. Mutations commit here."""
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from ..auth import check_csrf
 from ..authz import can, require, require_field
 from ..services import proposals as psvc
 from ..services import reporters as rsvc
@@ -22,11 +22,10 @@ router = APIRouter(prefix="/v1/team", tags=["team"])
 
 
 def _team(who: Who, request: Request) -> None:
+    """A signed-in team member. The CSRF check on a cookie write is `deps.current`'s, for every route."""
     p = who.principal
     if p.kind != "user" or not p.roles:
         raise HTTPException(401 if p.kind == "anon" else 403, "team sign-in required")
-    if who.session is not None and request.method not in ("GET", "HEAD"):
-        check_csrf(request, who.session)
 
 
 class FactsIn(BaseModel):

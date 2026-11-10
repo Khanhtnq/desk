@@ -2510,3 +2510,69 @@ async def test_first_sign_ins_converge_on_one_row_and_names_fit(ctx, db):
     assert len(e.display_name) == 128
     h = await rsvc.from_github(ctx, db, {"id": 78, "login": "x", "name": "N" * 200}, "", link_to=None)
     assert len(h.display_name) == 128
+
+
+async def test_a_cookie_write_carries_the_csrf_token(ctx, db):
+    """The rule (XE-1545, XE-2101, XE-2139): a write driven by a session cookie carries that session's
+    CSRF token. It lives in `deps.current`, the one place a route learns who is asking, so the test is
+    over every write route the app has: each either goes through it or is on the short list of routes
+    that read no session at all. A write route added later without it fails here."""
+    from fastapi.routing import APIRoute
+    from starlette.requests import Request
+
+    from desk.api import deps
+    from desk.main import app
+
+    def calls(dep):
+        out = {dep.call}
+        for d in dep.dependencies:
+            out |= calls(d)
+        return out
+
+    no_session = {
+        "/v1/github/webhook",  # GitHub's HMAC over the body; no cookie is read
+        "/v1/auth/passkey/login/begin",  # the team's sign-ins: nobody is signed in yet
+        "/v1/auth/passkey/login/finish",
+        "/v1/auth/totp/login",
+        "/v1/auth/invite/accept",
+    }
+    writes = [r for r in app.routes if isinstance(r, APIRoute) and r.methods - set(deps.SAFE_METHODS)]
+    assert len(writes) >= 40
+    assert {r.path for r in writes if deps.current not in calls(r.dependant)} == no_session
+
+    def req(method, cookie="", csrf="", bearer=""):
+        headers = []
+        if cookie:
+            headers.append((b"cookie", cookie.encode()))
+        if csrf:
+            headers.append((b"x-desk-csrf", csrf.encode()))
+        if bearer:
+            headers.append((b"authorization", f"Bearer {bearer}".encode()))
+        scope = {"type": "http", "method": method, "path": "/", "query_string": b"", "headers": headers}
+        return Request(scope)
+
+    team = await _team(ctx, db)
+    ts, traw = await auth.create_session(db, team.user)
+    r = await rsvc.from_email(ctx, db, "cy@example.org", link_to=None)
+    rs, rraw = await auth.create_reporter_session(db, r, "email")
+    await db.commit()
+    for name, raw, held in ((auth.SESSION_COOKIE, traw, ts), (auth.REPORTER_COOKIE, rraw, rs)):
+        cookie = f"{name}={raw}"
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            for sent in ("", "x" * 32):
+                with pytest.raises(HTTPException) as e:
+                    await deps.current(db, req(method, cookie, sent))
+                assert e.value.status_code == 403
+            a = await deps.current(db, req(method, cookie, held.csrf))
+            assert (a.session or a.reporter_session).id == held.id
+        assert (await deps.current(db, req("GET", cookie))).csrf == held.csrf  # a read needs no token
+    # one session's token is no use with another's cookie
+    with pytest.raises(HTTPException) as e:
+        await deps.current(db, req("POST", f"{auth.REPORTER_COOKIE}={rraw}", ts.csrf))
+    assert e.value.status_code == 403
+    # with no session there is nothing to forge: a signed-out write and a bearer token pass through
+    assert (await deps.current(db, req("POST"))).principal.kind == "anon"
+    admin = authz.Principal(kind="user", user=team.user, roles={"admin"})
+    _tok, secret = await users.issue(ctx, db, admin, team.user, "m", "t", ["read:public"], 30)
+    a = await deps.current(db, req("POST", f"{auth.SESSION_COOKIE}={traw}", "", secret))
+    assert a.principal.kind == "token" and a.session is None

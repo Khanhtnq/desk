@@ -1,8 +1,9 @@
 """The reporter side of /v1: sign in three ways, bind a payout address, file, follow, reply, withdraw.
 
-Sessions are the `desk_reporter` cookie; browser writes carry `X-Desk-CSRF` like the team's. Every
-route that touches a ticket checks ownership here, since the authorisation matrix only gives a reporter
-read access to their own private tickets and nothing else.
+Sessions are the `desk_reporter` cookie; browser writes carry `X-Desk-CSRF` like the team's, checked
+for every cookie write in `deps.current`. Every route that touches a ticket checks ownership here,
+since the authorisation matrix only gives a reporter read access to their own private tickets and
+nothing else.
 """
 
 from __future__ import annotations
@@ -45,11 +46,12 @@ def _limit(request: Request, table=_attempts, limit=LIMIT, window=WINDOW, what="
     table[ip] = hits
 
 
-def _reporter(who: Who, request: Request, *, write: bool = True) -> Reporter:
+def _reporter(who: Who, request: Request) -> Reporter:
+    """The signed-in reporter. The CSRF check on a cookie write is `deps.current`'s, for every route:
+    it used to be made here, and the two routes that did not call this (adding a key to a signed-in
+    account, and sign-out) went without it (XE-2101, XE-2139)."""
     if who.reporter is None or who.reporter_session is None:
         raise HTTPException(401, "sign in first")
-    if write and request.method not in ("GET", "HEAD", "OPTIONS"):
-        auth.check_csrf(request, who.reporter_session)
     return who.reporter
 
 
@@ -286,8 +288,6 @@ async def _email_link(ctx: Ctx, db, who: Who, email: str, next_path: str) -> boo
 async def email_start(ctx: Ctx, db: Db, who: Who, request: Request, body: EmailIn):
     """Send a one-time link. Signed out, the response is the same whether or not the address is known."""
     _limit(request)
-    if who.reporter is not None:
-        _reporter(who, request)  # adding an address to an account is a write: CSRF applies
     sent = await _email_link(ctx, db, who, rsvc.clean_email(body.email), _safe_next(ctx, body.next))
     note = None if sent else "mail is not configured on this desk; ask the team"
     return {"ok": True, "sent": sent, "note": note}
@@ -320,7 +320,8 @@ async def email_finish(ctx: Ctx, db: Db, who: Who, request: Request, token: str)
 async def xe_login(ctx: Ctx, db: Db, who: Who, request: Request, response: Response, req: auth.SignedRequest):
     """A signed request under xe/desk/login/v1. Payload: {"host": <this host>}, and it is checked, so a
     signature made for another deployment is no use here. The address the key derives to is the identity.
-    Signed in already: adds the address to that account."""
+    Signed in already: adds the address to that account, which is a cookie write like any other and
+    carries the CSRF token (`deps.current`, XE-2101)."""
     _limit(request)
     v = await auth.verify_signed(db, req, DOMAIN_LOGIN)
     if str(v.payload.get("host") or "").lower() not in {h.lower() for h in ctx.settings.hosts.values()}:

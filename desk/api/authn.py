@@ -266,7 +266,6 @@ async def session_info(db: Db, who: Who):
 
 
 def _session(who: Who, request: Request) -> None:
+    """A team member in a browser session. The CSRF check on the write is `deps.current`'s."""
     if who.principal.kind != "user" or who.session is None:
         raise HTTPException(401, "sign in first")
-    if request.method not in ("GET", "HEAD"):
-        auth.check_csrf(request, who.session)

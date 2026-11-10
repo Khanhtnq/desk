@@ -11,7 +11,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from ..auth import check_csrf
 from ..authz import require
 from ..brief import build_agent_brief, fix_brief
 from ..services import proposals as psvc
@@ -43,13 +42,6 @@ class PatchIn(BaseModel):
     title: str = Field(default="", max_length=512)
     url: str = Field(default="", max_length=512)
     note: str = Field(default="", max_length=128)
-
-
-def _writer(who: Who, request: Request) -> None:
-    """A write from a browser session carries the CSRF header like every other cookie write (XE-1545);
-    a bearer token has no cookie to protect."""
-    if who.session is not None:
-        check_csrf(request, who.session)
 
 
 def _storable(v: Any, depth: int = 0) -> None:
@@ -91,7 +83,6 @@ async def list_notes(db: Db, who: Who, tid: str):
 
 @router.post("/tickets/{tid}/notes", status_code=201)
 async def add_note(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: NoteIn):
-    _writer(who, request)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:notes", t)
     n = await thread.add_note(ctx, db, who.principal, t, body.body, body.checked)
@@ -108,7 +99,6 @@ async def list_proposals(db: Db, who: Who, tid: str):
 
 @router.post("/tickets/{tid}/proposals", status_code=201)
 async def propose(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: ProposalIn):
-    _writer(who, request)
     _storable(body.value)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:proposals", t)
@@ -120,7 +110,6 @@ async def propose(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: 
 @router.post("/tickets/{tid}/proposals/bulk", status_code=201)
 async def propose_bulk(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: list[ProposalIn]):
     """Several fields at once, one transaction; the usual shape after reading a new ticket."""
-    _writer(who, request)
     if len(body) > 12:
         raise HTTPException(400, "at most 12 proposals per call")
     for b in body:
@@ -139,7 +128,6 @@ async def propose_bulk(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, b
 
 @router.post("/tickets/{tid}/patch-refs", status_code=201)
 async def add_patch(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: PatchIn):
-    _writer(who, request)
     t = await tsvc.get_for(db, who.principal, tid)
     require(who.principal, "write:patch-refs", t)
     repo, ref = body.repo, body.ref
