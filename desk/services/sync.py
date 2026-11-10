@@ -493,9 +493,13 @@ async def _follow_internal_state(ctx: Context, db: AsyncSession, t: Ticket, issu
             await _accept(ctx, db, t, f"internal {ref} open", via)
             return True
         return False
-    if reason == "not_planned":
+    if reason not in ("", "completed"):
+        # only a close that says the work was done is a fix. `not_planned`, `duplicate` and whatever
+        # GitHub adds next are a note: patched puts the report in the outbox, and the reporter is told
+        # it was fixed fifteen minutes later
+        why = reason.replace("_", " ")[:32]
         return await _note_once(
-            ctx, db, t, f"Internal ticket {ref} was closed as not planned; the public verdict is yours."
+            ctx, db, t, f"Internal ticket {ref} was closed as {why}; the public verdict is yours."
         )
     if t.status in ("accepted", "fixing"):
         await tsvc.set_status(ctx, db, SYSTEM, t, "patched", reason=f"internal {ref} closed", via=via)

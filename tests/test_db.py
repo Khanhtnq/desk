@@ -1483,6 +1483,18 @@ async def test_a_source_moves_a_ticket_once_and_a_persons_status_then_stands(ctx
     await pull(163, 154, state="closed", merged=True)
     assert t5.status == "triaging"
 
+    # only a close that says the work was done patches; any other reason is a note for a person
+    t7, _ = await sync.upsert_issue(ctx, db, repo, _issue(156, "Closed for another reason"))
+    bundle = "security: bundle xe#156"
+    await sync.link_internal_issue(ctx, db, _issue(1082, bundle))
+    for why in ("not_planned", "duplicate", "some_reason_github_adds_later"):
+        await sync.link_internal_issue(ctx, db, _issue(1082, bundle, state="closed", state_reason=why))
+        assert t7.status == "accepted", why
+    notes = [n.body for n in await thread.notes_for(db, t7)]
+    assert sum("was closed as" in body for body in notes) == 3 and any("as duplicate;" in b for b in notes)
+    await sync.link_internal_issue(ctx, db, _issue(1082, bundle, **done))
+    assert t7.status == "patched"
+
 
 async def test_the_teams_own_words_on_the_thread_tell_the_reporter(ctx, db):
     # the rule: a reporter is told when the team writes on the ticket's own thread: a desk reply, a
