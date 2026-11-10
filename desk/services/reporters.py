@@ -7,7 +7,8 @@ the reporter has shown they control; nothing here is ever pasted into a thread.
 
 Filing: a bounty report with a claimed tier of Critical or Severe, or the "keep it private" box ticked,
 is private: body and attachments sealed with the vault key, nothing mirrored to GitHub until a Reviewer
-discloses it. The reporter gets the ticket id at once.
+discloses it. The box is the reporter's and is read here; the tier rule is `tickets.create`'s, for every
+writer. The reporter gets the ticket id at once.
 """
 
 from __future__ import annotations
@@ -29,14 +30,13 @@ from xe.keys import KeyError_, KeyPair, derive_address
 from ..auth import Verified, clean_lookup
 from ..authz import Principal
 from ..context import Context
-from ..models import AREAS, TIERS, TOPICS, Attachment, Reporter, ReporterLink, ReporterSession, Ticket
+from ..models import AREAS, TOPICS, Attachment, Reporter, ReporterLink, ReporterSession, Ticket
 from . import thread
 from . import tickets as tsvc
 from .tickets import NewTicket, utcnow
 
 log = logging.getLogger("desk.reporters")
 
-PRIVATE_TIERS = ("critical", "severe")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 OPEN_FOR_REPORTER = ("new", "triaging", "needs-info", "accepted", "fixing")
@@ -425,10 +425,6 @@ class Filing:
     files: list[UploadFile] = field(default_factory=list)
 
 
-def must_be_private(f: Filing) -> bool:
-    return f.kind == "bounty" and (f.private or (f.claimed_tier in PRIVATE_TIERS))
-
-
 async def file_ticket(ctx: Context, db: AsyncSession, r: Reporter, f: Filing) -> Ticket:
     title = (f.title or "").strip()
     body = (f.body or "").strip()
@@ -443,10 +439,7 @@ async def file_ticket(ctx: Context, db: AsyncSession, r: Reporter, f: Filing) ->
     if f.kind not in ("bounty", "support"):
         raise HTTPException(400, "kind must be bounty or support")
     area = f.area if f.area in (TOPICS if f.kind == "support" else AREAS) else None
-    tier = f.claimed_tier if f.claimed_tier in TIERS and f.claimed_tier != "none" else None
-    private = must_be_private(f)
-    if private and not ctx.vault.available:
-        raise HTTPException(503, "private reports cannot be taken right now: the vault key is not loaded")
+    tier = tsvc.claimed(f.claimed_tier) if f.kind == "bounty" else None
     if len(f.files) > ctx.settings.max_attachments:
         raise HTTPException(400, f"at most {ctx.settings.max_attachments} attachments")
     t = await tsvc.create(
@@ -457,11 +450,13 @@ async def file_ticket(ctx: Context, db: AsyncSession, r: Reporter, f: Filing) ->
             kind=f.kind,
             title=title,
             body=body,
-            visibility="private" if private else "public",
+            # the box is the reporter's choice; Critical and Severe are private whatever it says, and
+            # that is `create`'s rule (XE-1932)
+            visibility="private" if f.kind == "bounty" and f.private else "public",
             source="web",
             reporter_id=r.id,
             area=area,
-            claimed_tier=tier if f.kind == "bounty" else None,
+            claimed_tier=None if tier == "none" else tier,
         ),
     )
     if f.kind == "bounty" and r.xe_address:

@@ -1660,17 +1660,56 @@ async def test_reporter_files_private_report_with_sealed_attachment(ctx, db, tmp
     assert not rsvc.owns(None, t)
 
 
-async def test_critical_claim_forces_private(ctx, db):
+async def test_a_critical_or_severe_claim_is_born_private_whoever_writes_it(ctx, db):
+    """The rule (XE-1932, XE-2166, XE-2123): a bounty report claiming Critical or Severe is private from
+    its first write. It is `tickets.create`'s, so it is asked of every writer of a new ticket: the
+    reporter's form, the team's API, a bare `create` (what an import calls); however the tier is
+    spelled; and a spelling the desk does not know is refused, not filed public with no tier."""
+    from desk.api import team as team_api
+
     r = await rsvc.from_email(ctx, db, "bob@example.org", link_to=None)
-    f = rsvc.Filing(
-        kind="bounty",
-        title="Unauthorized mint via vault",
-        body="A long enough description of how the mint can be triggered without authorisation here.",
-        claimed_tier="critical",
-        private=False,
+    team = await _team(ctx, db)
+    who = auth.Auth(principal=team)
+    body = "A long enough description of how the mint can be triggered without authorisation here."
+
+    async def by_form(tier, title):
+        f = rsvc.Filing(kind="bounty", title=title, body=body, claimed_tier=tier, private=False)
+        return await rsvc.file_ticket(ctx, db, r, f)
+
+    async def by_team_api(tier, title):
+        out = await team_api.create_ticket(
+            ctx, db, who, None, team_api.NewTicketIn(title=title, body=body, claimed_tier=tier)
+        )
+        return await tsvc.get(db, out["id"])
+
+    async def by_create(tier, title):
+        spec = tsvc.NewTicket(kind="bounty", title=title, body=body, source="email", claimed_tier=tier)
+        return await tsvc.create(ctx, db, "desk", spec)
+
+    writers = {"the form": by_form, "the team API": by_team_api, "create": by_create}
+    for name, write in writers.items():
+        for tier in ("critical", "severe", "Critical", " SEVERE ", "severe\n"):
+            t = await write(tier, f"Unauthorized mint via vault ({name})")
+            assert (t.visibility, t.claimed_tier) == ("private", tier.strip().lower()), (name, tier)
+            assert t.body == "" and tsvc.body_for(ctx, t) == body, (name, tier)
+        t = await write("High", f"Something smaller ({name})")
+        assert (t.visibility, t.claimed_tier, t.body) == ("public", "high", body), name
+        for unknown in ("crit", "critical\u200b", "\uff43ritical"):
+            with pytest.raises(HTTPException) as e:
+                await write(unknown, f"Spelled some other way ({name})")
+            assert e.value.status_code == 400, (name, unknown)
+    # the ticket for a GitHub issue follows the issue, which is public where it was filed
+    hub, _ = await sync.upsert_issue(
+        ctx, db, "xeprotocol/xe", _issue(88, "Mint without a key", body="Severity: critical\n" + body)
     )
-    t = await rsvc.file_ticket(ctx, db, r, f)
-    assert t.visibility == "private"
+    assert (hub.visibility, hub.claimed_tier) == ("public", "critical")
+    # without the vault key a private report is refused, not stored in the clear
+    full, ctx.vault = ctx.vault, Vault(Signer({"log": KeyPair.generate()}, {"log": {"event.sign"}}))
+    for name, write in writers.items():
+        with pytest.raises(HTTPException) as e:
+            await write("critical", f"No vault key loaded ({name})")
+        assert e.value.status_code == 503, name
+    ctx.vault = full
 
 
 async def test_a_reporter_past_the_daily_cap_is_queued_not_refused(ctx, db):

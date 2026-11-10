@@ -178,16 +178,48 @@ class NewTicket:
     github_state: str = ""
 
 
+PRIVATE_TIERS = ("critical", "severe")
+
+
+def claimed(tier: str | None) -> str | None:
+    """A claimed tier as it is stored: one of TIERS, or None when none was given. Case and the space
+    around it are the sender's and are dropped; anything else is refused. A tier the desk did not
+    recognise used to be stored as no claim, and the report it came with was filed public (XE-1932,
+    XE-2123)."""
+    t = (tier or "").strip().lower()
+    if not t:
+        return None
+    if t not in TIERS:
+        raise HTTPException(400, f"claimed_tier must be one of {list(TIERS)}")
+    return t
+
+
+def born_private(spec: NewTicket, tier: str | None) -> bool:
+    """A bounty report claiming Critical or Severe is private from its first write, whoever writes it:
+    the reporter's form, the team's API, an import (XE-1932, XE-2166). Asked by `create`, which every
+    writer goes through, so no route has to remember it. The one exception is the ticket made for a
+    GitHub issue: the issue is public where it was filed, and the desk's copy follows it until a person
+    seals it. `source: github` with no issue behind it (typed in by the team) is not that."""
+    if spec.visibility == "private":
+        return True
+    on_github = spec.source == "github" and bool(spec.source_repo and spec.source_ref)
+    return spec.kind == "bounty" and tier in PRIVATE_TIERS and not on_github
+
+
 async def create(
     ctx: Context, db: AsyncSession, actor: str, spec: NewTicket, *, status: str = "new"
 ) -> Ticket:
     if spec.kind not in KINDS or spec.visibility not in VISIBILITIES or spec.source not in SOURCES:
         raise HTTPException(400, "bad kind, visibility or source")
+    tier = claimed(spec.claimed_tier)
+    visibility = "private" if born_private(spec, tier) else "public"
+    if visibility == "private" and not ctx.vault.available:
+        raise HTTPException(503, "private reports cannot be taken right now: the vault key is not loaded")
     tid = await next_id(db, spec.kind)
     t = Ticket(
         id=tid,
         kind=spec.kind,
-        visibility=spec.visibility,
+        visibility=visibility,
         source=spec.source,
         source_repo=spec.source_repo,
         source_ref=spec.source_ref,
@@ -195,7 +227,7 @@ async def create(
         reporter_id=spec.reporter_id,
         title=clean_text(spec.title, one_line=True)[:512],
         area=(spec.area or None) and spec.area[:32],
-        claimed_tier=(spec.claimed_tier or None) and spec.claimed_tier[:16],
+        claimed_tier=tier,
         status=status,
         source_created_at=spec.source_created_at,
         github_state=spec.github_state,

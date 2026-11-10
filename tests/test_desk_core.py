@@ -339,13 +339,28 @@ def test_webhook_hmac():
 
 
 def test_filing_privacy_rule():
-    from desk.services import reporters as rsvc
+    from desk.services import tickets as tsvc
 
-    assert rsvc.must_be_private(rsvc.Filing(kind="bounty", private=True))
-    assert rsvc.must_be_private(rsvc.Filing(kind="bounty", claimed_tier="critical", private=False))
-    assert rsvc.must_be_private(rsvc.Filing(kind="bounty", claimed_tier="severe", private=False))
-    assert not rsvc.must_be_private(rsvc.Filing(kind="bounty", claimed_tier="minor", private=False))
-    assert not rsvc.must_be_private(rsvc.Filing(kind="support", claimed_tier="critical", private=True))
+    def born(**kw):
+        spec = tsvc.NewTicket(title="t", **kw)
+        return tsvc.born_private(spec, tsvc.claimed(spec.claimed_tier))
+
+    assert born(kind="bounty", visibility="private")
+    assert born(kind="support", visibility="private")  # asked for by the writer (an email import)
+    assert born(kind="bounty", claimed_tier="critical")
+    assert born(kind="bounty", claimed_tier=" Severe\n")
+    assert not born(kind="bounty", claimed_tier="minor")
+    assert not born(kind="bounty")
+    assert not born(kind="support", claimed_tier="critical")
+    # the ticket for a GitHub issue follows the issue; "github" typed in with no issue behind it does not
+    issue = {"source": "github", "source_repo": "xeprotocol/xe", "source_ref": "5"}
+    assert not born(kind="bounty", claimed_tier="critical", **issue)
+    assert born(kind="bounty", claimed_tier="critical", source="github")
+    assert tsvc.claimed(None) is None and tsvc.claimed("  ") is None and tsvc.claimed("HIGH") == "high"
+    for unknown in ("crit", "critical\u200b", "\uff43ritical", "critical,severe", "0"):
+        with pytest.raises(HTTPException) as e:
+            tsvc.claimed(unknown)
+        assert e.value.status_code == 400
 
 
 def test_email_cleaning_and_address_checks():
