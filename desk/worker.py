@@ -41,7 +41,8 @@ async def daily_counts(ctx, db) -> dict:
     """The numbers in the daily note, which is a public event with no ticket behind it: counted as an
     anonymous reader would count them. Counted with the desk's own eyes they included the private
     tickets, and the note minus `/v1/tickets/counts` was the number of sealed reports at each status,
-    day by day; with one of them moving, that is where it stands (XE-0700 sweep)."""
+    day by day; with one of them moving, that is where it stands (XE-0700 sweep). `/stats` does
+    count sealed reports, and only as reports filed: how many and when, never at which status."""
     from .authz import ANON
 
     return {

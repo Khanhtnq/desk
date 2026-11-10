@@ -20,6 +20,7 @@ from ..log import REPORTER_KINDS, EventLog, event_to_dict
 from ..models import HealthCheck, SeenDelivery
 from ..services import github as gh
 from ..services import proposals as psvc
+from ..services import stats as ssvc
 from ..services import sync, thread, triage
 from ..services import tickets as tsvc
 from .deps import Ctx, Db, Who
@@ -49,6 +50,7 @@ async def manifest(ctx: Ctx, db: Db):
             "ticket": "/v1/tickets/{id}",
             "thread": "/v1/tickets/{id}/thread",
             "leaderboard": "/v1/leaderboard",
+            "stats": "/v1/stats",
             "log": "/v1/log",
             "log_head": "/v1/log/head",
             "log_verify": "/v1/log/verify",
@@ -228,6 +230,12 @@ async def ticket_log(db: Db, who: Who, tid: str, offset: int = 0, limit: int = Q
 @router.get("/leaderboard")
 async def leaderboard(db: Db):
     return {"leaderboard": await tsvc.leaderboard(db)}
+
+
+@router.get("/stats")
+async def stats(db: Db):
+    """The programme in numbers, as `/stats` draws them: the same for every caller, a minute old at most."""
+    return await ssvc.snapshot(db)
 
 
 @router.get("/export/triage.md", response_class=PlainTextResponse)

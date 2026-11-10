@@ -30,6 +30,24 @@ def test_card_is_1200_by_630_png():
     assert img.getpixel((600, 2)) == brand.BRAND  # accent bar
 
 
+def test_stats_card_carries_the_figures_over_the_bars():
+    figures = [("3,935", "reports"), ("412", "researchers"), ("218", "fixes shipped"), ("1.2M", "XE awarded")]
+    card = dict(programme="Bounty programme", host="bounty.xe.network", title="The bounty in numbers")
+    png = og.draw_stats_card(**card, figures=figures, bars=[0, 3, 12, 151, 40])
+    img = Image.open(io.BytesIO(png))
+    assert img.format == "PNG" and img.size == (og.W, og.H)
+    assert img.getpixel((600, 2)) == brand.BRAND  # accent bar
+    # five bars across the 1040px between the margins, each 208px apart: the fourth is the tallest and
+    # stands full height on the hairline at 478; the first is a day with nothing, and nothing is drawn
+    assert img.getpixel((800, 440)) == brand.BRAND and img.getpixel((800, 477)) == brand.BRAND
+    assert img.getpixel((180, 440)) == brand.BG and img.getpixel((800, 390)) == brand.BG
+    # a desk with nothing filed still has a card, and a figure too wide for its column is drawn smaller
+    wide = [("1,234,567,890", "reports")] * 4
+    for figs, bars in ((figures, []), (figures, [0, 0]), (wide, [1])):
+        empty = Image.open(io.BytesIO(og.draw_stats_card(**card, figures=figs, bars=bars)))
+        assert empty.size == (og.W, og.H)
+
+
 def test_wrap_ellipsises_long_titles():
     f = og._font("Geist-Bold", 60)
     lines = og._wrap("word " * 80, f, 1040, 2)

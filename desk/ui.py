@@ -27,6 +27,7 @@ from .mirror import build_llms_txt, md_path
 from .models import Reporter
 from .services import proposals as psvc
 from .services import reporters as rsvc
+from .services import stats as ssvc
 from .services import thread, users
 from .services import tickets as tsvc
 from .services.tickets import Filters
@@ -130,7 +131,7 @@ async def principal(db, request: Request) -> tuple[Principal, str]:
 
 # Which social card a page gets. Anything not listed, and every team page, gets the site card.
 OG_PAGES = {"/": "index", "/scope": "scope", "/leaderboard": "leaderboard", "/log": "log", "/agent": "agent"}
-OG_PAGES |= {"/report": "report", "/ask": "ask", "/live": "live"}
+OG_PAGES |= {"/report": "report", "/ask": "ask", "/live": "live", "/stats": "stats"}
 
 
 def og_default(c, request: Request, site: str, copy: dict) -> dict:
@@ -333,6 +334,25 @@ async def leaderboard(request: Request):
         p, csrf = await principal(db, request)
         rows = await tsvc.leaderboard(db)
     return render(request, "leaderboard.html", {"p": p, "csrf": csrf, "rows": rows})
+
+
+@router.get("/stats", response_class=HTMLResponse)
+async def stats(request: Request):
+    """The programme in numbers. One snapshot for every reader (`services/stats.py` says what it counts),
+    so the page a team member sees is the page a link to it shows anyone else."""
+    if r := other_site(request, "bounty", "/stats"):
+        return r
+    c = get_context()
+    async with session() as db:
+        p, csrf = await principal(db, request)
+        snap = await ssvc.snapshot(db)
+    # the card carries the numbers, so its address changes when they do and a new post gets a new card
+    og = {
+        "description": ssvc.headline(snap),
+        "image": f"{site_url(c, 'bounty')}/og/page/stats.png?v={ssvc.card_version(snap)}",
+    }
+    ctx = {"p": p, "csrf": csrf, "s": snap, "ch": ssvc.charts(snap, c.config), "og": og}
+    return render(request, "stats.html", ctx)
 
 
 @router.get("/log", response_class=HTMLResponse)

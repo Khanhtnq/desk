@@ -26,6 +26,7 @@ from . import brand
 from .authz import ANON, can_see
 from .context import get_context
 from .db import session
+from .services import stats as ssvc
 from .services import tickets as tsvc
 from .ui import site_for
 
@@ -38,7 +39,7 @@ TICKET_ID = re.compile(r"X[ES]-\d{4,}", re.IGNORECASE)
 SLUG = re.compile(r"[a-z][a-z0-9-]{0,31}")
 
 # Pages that have a card of their own. Anything else gets the site card ("index").
-PAGES = ("index", "scope", "leaderboard", "log", "agent", "report", "ask", "live")
+PAGES = ("index", "scope", "stats", "leaderboard", "log", "agent", "report", "ask", "live")
 
 _fonts: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 _lock = threading.Lock()
@@ -208,6 +209,29 @@ def _tier_style(tier: str) -> dict:
 
 # ---- the card ---------------------------------------------------------------------------------------
 
+HAIRLINE = (37, 37, 37)
+
+
+def _canvas(programme: str, host: str) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    """What every card carries: the accent bar, the mark beside the programme's name, and the host
+    under a hairline at the foot."""
+    img = Image.new("RGB", (W, H), brand.BG)
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, W, 6), fill=brand.BRAND)
+    mark = _mark(44, brand.BRAND)
+    img.paste(mark, (PAD, PAD), mark)
+    pf = _font("Geist-Medium", 30)
+    d.text((PAD + mark.width + 18, PAD + 22), programme, font=pf, fill=brand.TEXT_HIGH, anchor="lm")
+    d.line((PAD, H - PAD - 44, W - PAD, H - PAD - 44), fill=HAIRLINE, width=1)
+    d.text((PAD, H - PAD + 6), host, font=_font("GeistMono-Regular", 24), fill=brand.TEXT_LOW, anchor="ls")
+    return img, d
+
+
+def _png(img: Image.Image) -> bytes:
+    out = io.BytesIO()
+    img.save(out, "PNG", optimize=True)
+    return out.getvalue()
+
 
 def draw_card(
     *,
@@ -220,17 +244,7 @@ def draw_card(
 ) -> bytes:
     """One PNG. `kicker` sits above the title (a ticket id); `line` below it (a page description);
     `chips` are (text, style) pills under the title."""
-    img = Image.new("RGB", (W, H), brand.BG)
-    d = ImageDraw.Draw(img)
-
-    # accent bar
-    d.rectangle((0, 0, W, 6), fill=brand.BRAND)
-
-    # lockup: mark + programme
-    mark = _mark(44, brand.BRAND)
-    img.paste(mark, (PAD, PAD), mark)
-    pf = _font("Geist-Medium", 30)
-    d.text((PAD + mark.width + 18, PAD + 22), programme, font=pf, fill=brand.TEXT_HIGH, anchor="lm")
+    img, d = _canvas(programme, host)
 
     # body: a ticket starts high to make room for its chips; a page sits lower, nearer the middle
     y = 212 if kicker else 262
@@ -254,14 +268,40 @@ def draw_card(
         for ln in _wrap(line, lf, W - PAD * 2, 2):
             d.text((PAD, y), ln, font=lf, fill=brand.TEXT_MEDIUM, anchor="la")
             y += int(lf.size * 1.4)
+    return _png(img)
 
-    # footer: host, and a hairline above it
-    d.line((PAD, H - PAD - 44, W - PAD, H - PAD - 44), fill=(37, 37, 37), width=1)
-    d.text((PAD, H - PAD + 6), host, font=_font("GeistMono-Regular", 24), fill=brand.TEXT_LOW, anchor="ls")
 
-    out = io.BytesIO()
-    img.save(out, "PNG", optimize=True)
-    return out.getvalue()
+def draw_stats_card(
+    *, programme: str, host: str, title: str, figures: list[tuple[str, str]], bars: list[int]
+) -> bytes:
+    """The `/stats` card: the title, the figures in a row with what each one counts under it, and the
+    reports per day as bars along the foot. The figures are the page's own, so the card is as public
+    as the page."""
+    img, d = _canvas(programme, host)
+    d.text((PAD, 158), _clean(title), font=_font("Geist-Bold", 54), fill=brand.TEXT_HIGH, anchor="la")
+
+    col = (W - PAD * 2) // max(len(figures), 1)
+    for i, (figure, label) in enumerate(figures):
+        x = PAD + i * col
+        size = 68
+        while size > 36 and _font("Geist-Bold", size).getlength(figure) > col - 28:
+            size -= 6
+        colour = brand.BRAND if i == 0 else brand.TEXT_HIGH
+        d.text((x, 330), figure, font=_font("Geist-Bold", size), fill=colour, anchor="ls")
+        d.text((x, 364), label.upper(), font=_font("GeistMono-Regular", 20), fill=brand.TEXT_LOW, anchor="ls")
+
+    # the bars stand on a hairline, between the figures and the footer
+    foot, tall, most = 478, 78, max(bars, default=0)
+    d.line((PAD, foot, W - PAD, foot), fill=HAIRLINE, width=1)
+    if most > 0:
+        slot = (W - PAD * 2) / len(bars)
+        wide = max(int(slot * 0.7), 2)
+        for i, n in enumerate(bars):
+            if n <= 0:
+                continue
+            x = int(PAD + slot * i + (slot - wide) / 2)
+            d.rectangle((x, foot - max(int(tall * n / most), 2), x + wide, foot - 1), fill=brand.BRAND)
+    return _png(img)
 
 
 # ---- what goes on which card ------------------------------------------------------------------------
@@ -356,6 +396,19 @@ async def page_card(request: Request, slug: str):
     site, host = _site_host(request)
     spec = page_spec(c, site, slug)
     key = slug if slug in PAGES else "index"  # every unknown slug is the one site card (XE-1274)
+    if key == "stats" and site == "bounty":
+        # the page's own numbers, from the snapshot the page is drawn from
+        async with session() as db:
+            snap = await ssvc.snapshot(db)
+        figures, bars = ssvc.figures(snap), ssvc.spark(snap)
+        etag = _etag("stats", spec["title"], figures, bars)
+
+        def make_stats():
+            return draw_stats_card(
+                programme=_programme(site), host=host, title=spec["title"], figures=figures, bars=bars
+            )
+
+        return await run_in_threadpool(_respond, request, etag, make_stats)
     etag = _etag("page", site, key, spec, c.config.hashes.get("copy/public.yaml", ""))
 
     def make():

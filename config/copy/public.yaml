@@ -18,6 +18,9 @@ cards:
   scope:
     title: Scope and tiers
     line: What is in scope, how severity is tiered, and the ceiling each tier pays in XE.
+  stats:
+    title: The bounty in numbers
+    line: Reports filed, the researchers behind them, fixes shipped and XE awarded, counted live.
   leaderboard:
     title: Leaderboard
     line: Researchers ranked by XE awarded for valid, fixed findings.
@@ -85,6 +88,7 @@ labels:
   leaderboard: Leaderboard
   log: Log
   scope: Scope
+  stats: Stats
   triage: Triage
   release: Release view
   awards: Awards

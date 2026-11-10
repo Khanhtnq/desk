@@ -54,7 +54,7 @@ Pure tests (no database, no network): wire-format checks, signed requests, the a
 
 ```sh
 docker compose run --rm --no-deps -v $PWD/tests:/app/tests app \
-  sh -c "pip install -q pytest pytest-asyncio && pytest -q tests/test_xe_wire.py tests/test_desk_core.py tests/test_triage.py tests/test_templates.py"
+  sh -c "pip install -q pytest pytest-asyncio && pytest -q tests/test_xe_wire.py tests/test_desk_core.py tests/test_triage.py tests/test_templates.py tests/test_og.py tests/test_stats.py"
 ```
 
 Database tests (a scratch database the tests wipe). Build first: `docker compose run` uses the image as last built, and only `tests/` is mounted in, so without a build the new tests run against the old code.

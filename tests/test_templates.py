@@ -86,7 +86,7 @@ def test_llms_txt_shape(config):
     txt = build_llms_txt(config, "https://bounty.xe.network", "testnet-0005")
     assert txt.startswith("# XE Bounty") and "> " in txt
     assert "https://bounty.xe.network/index.md" in txt and "/v1/events/stream" in txt
-    assert "/scope.md" in txt and "/leaderboard.md" in txt
+    assert "/scope.md" in txt and "/leaderboard.md" in txt and "/stats.md" in txt
     assert "/v1/agent/fix.md" in txt, "whoever fixes is pointed at the fix brief"
     assert lint_public_copy(config, [txt]) == []
     # the support door has its own list: no scope, no tiers, no leaderboard, a pointer to the bounty
@@ -100,6 +100,7 @@ def test_llms_txt_shape(config):
     assert sup.startswith("# XE Support")
     assert "https://support.xe.network/index.md" in sup and "kind=support" in sup
     assert "/scope.md" not in sup and "/leaderboard.md" not in sup and "https://bounty.xe.network" in sup
+    assert "/stats" not in sup
     assert "area=wallet-keys" in sup and "/ask" in sup and "seed" in sup
     assert lint_public_copy(config, [sup]) == []
 

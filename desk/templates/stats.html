@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.labels.stats }}{% endblock %}
+{# Every number here is the same for every reader: see desk/services/stats.py for what is counted. #}
+{% macro tip(text) %}data-tip="{{ text }}"><title>{{ text }}</title>{% endmacro %}
+
+{% macro linechart(c, id, tone, label) %}
+<div class="st-scroll">
+<svg class="st-svg" viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="{{ label }}">
+  <defs><linearGradient id="st-g-{{ id }}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="st-stop-a {{ tone }}"/><stop offset="1" class="st-stop-b {{ tone }}"/></linearGradient></defs>
+  {% for g in c.grid %}<line class="st-rule" x1="{{ c.left }}" x2="{{ c.right }}" y1="{{ g.y }}" y2="{{ g.y }}"/><text class="st-ax" x="{{ c.left - 8 }}" y="{{ g.y }}" dy="4" text-anchor="end">{{ g.l }}</text>
+  {% endfor %}
+  <path class="st-area" d="{{ c.area }}" fill="url(#st-g-{{ id }})"/>
+  <path class="st-line {{ tone }}" d="{{ c.line }}" pathLength="1"/>
+  <circle class="st-end {{ tone }}" cx="{{ c.end.x }}" cy="{{ c.end.y }}" r="4"/>
+  {% for t in c.ticks %}<text class="st-ax" x="{{ t.x }}" y="{{ c.base + 18 }}" text-anchor="middle">{{ t.label }}</text>
+  {% endfor %}
+  {% for col in c.cols %}<g class="st-col"><circle class="st-dot {{ tone }}" cx="{{ col.cx }}" cy="{{ col.cy }}" r="4"/><rect class="st-hit" x="{{ col.x }}" y="{{ c.top }}" width="{{ col.w }}" height="{{ c.base - c.top }}" {{ tip(col.tip) }}</rect></g>
+  {% endfor %}
+</svg>
+</div>
+{% endmacro %}
+
+{% macro hbars(rows, cls) %}
+<ul class="st-bars {{ cls }}">
+  {% for r in rows %}<li class="b-{{ r.key }}"><span class="st-bl">{{ r.label }}</span> <span class="st-bt"><i style="width:{{ r.pct }}%"></i></span> <span class="st-bn num">{{ r.said }}</span></li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+{% block content %}
+<div class="stats">
+<div class="tag"><span>{{ copy.labels.stats }}</span></div>
+<h1>The bounty in numbers.</h1>
+<p class="sub">Reports filed, the researchers behind them, fixes shipped and XE awarded. Read from the desk itself and counted again every minute.</p>
+
+<div class="st-kpis">
+  <div class="st-kpi lead"><b data-count="{{ s.reports }}">{{ s.reports|n }}</b> <span>Reports filed</span> <i>{{ s.last_7_days|n }} in the last 7 days</i></div>
+  <div class="st-kpi"><b data-count="{{ s.researchers }}">{{ s.researchers|n }}</b> <span>Researchers</span> <i>with a public report</i></div>
+  <div class="st-kpi"><b data-count="{{ s.public.fixed }}">{{ s.public.fixed|n }}</b> <span>Fixes shipped</span> <i>of {{ s.public.reports|n }} public report{{ "" if s.public.reports == 1 else "s" }}</i></div>
+  <div class="st-kpi"><b>{{ s.awards.xe|xe }}</b> <span>XE awarded</span> <i>to {{ s.awards.researchers|n }} researcher{{ "" if s.awards.researchers == 1 else "s" }}</i></div>
+  <div class="st-kpi"><b data-count="{{ s.busiest.reports }}">{{ s.busiest.reports|n }}</b> <span>Busiest day</span> <i>{{ ch.busiest }}</i></div>
+  <div class="st-kpi"><b data-count="{{ s.log_entries }}">{{ s.log_entries|n }}</b> <span>Signed log entries</span> <i><a href="/log">every action, hash-chained</a></i></div>
+</div>
+
+{% set dc = ch.daily %}
+<section class="st-card st-hero">
+  <div class="st-head">
+    <div><h2>Reports filed</h2><p class="k">{{ "Per week" if ch.weekly else "Per day" }} as bars, in all as the line. Every report counts, sealed or public.</p></div>
+    <div class="st-keys" aria-hidden="true"><span><i class="kb"></i>{{ "per week" if ch.weekly else "per day" }}</span> <span><i class="kl"></i>in all</span></div>
+  </div>
+  <div class="st-scroll">
+  <svg class="st-svg" viewBox="0 0 {{ dc.w }} {{ dc.h }}" role="img" aria-label="Reports filed since {{ ch.since }}: {{ s.reports|n }} in all, {{ s.last_7_days|n }} of them in the last 7 days. The busiest day was {{ ch.busiest }}, with {{ s.busiest.reports|n }}.">
+    <defs><linearGradient id="st-g-daily" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="st-stop-a ink"/><stop offset="1" class="st-stop-b ink"/></linearGradient></defs>
+    {% for g in dc.grid %}<line class="st-rule" x1="{{ dc.left }}" x2="{{ dc.right }}" y1="{{ g.y }}" y2="{{ g.y }}"/><text class="st-ax" x="{{ dc.left - 8 }}" y="{{ g.y }}" dy="4" text-anchor="end">{{ g.l }}</text><text class="st-ax" x="{{ dc.right + 8 }}" y="{{ g.y }}" dy="4">{{ g.r }}</text>
+    {% endfor %}
+    {% for b in dc.bars %}<g class="st-col"><rect class="st-bar" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" style="animation-delay:{{ loop.index0 * 6 }}ms"/><rect class="st-hit" x="{{ b.slot_x }}" y="{{ dc.top }}" width="{{ b.slot_w }}" height="{{ dc.base - dc.top }}" {{ tip(b.tip) }}</rect></g>
+    {% endfor %}
+    <path class="st-area" d="{{ dc.area }}" fill="url(#st-g-daily)"/>
+    <path class="st-line ink" d="{{ dc.line }}" pathLength="1"/>
+    {% for t in dc.ticks %}<text class="st-ax" x="{{ t.x }}" y="{{ dc.base + 18 }}" text-anchor="middle">{{ t.label }}</text>
+    {% endfor %}
+  </svg>
+  </div>
+</section>
+
+<div class="st-two">
+  <section class="st-card">
+    <h2>Researchers</h2><p class="k">Everyone with a public report, counted from their first.</p>
+    {{ linechart(ch.researchers, "researchers", "brand", "Researchers with a public report, running total since " ~ ch.since ~ ": " ~ s.researchers|n ~ ".") }}
+  </section>
+  <section class="st-card">
+    <h2>Fixes shipped</h2><p class="k">Public reports whose fix has landed.</p>
+    {{ linechart(ch.fixed, "fixed", "live", "Fixes shipped on public reports, running total: " ~ s.public.fixed|n ~ ".") }}
+  </section>
+</div>
+
+<div class="st-two">
+  <section class="st-card">
+    <h2>XE awarded</h2><p class="k">{{ s.awards.xe|xe }} XE across {{ s.awards.tickets|n }} report{{ "" if s.awards.tickets == 1 else "s" }}. Awards are paid at mainnet launch; <a href="/scope">scope</a> has the terms.</p>
+    {{ linechart(ch.awarded, "awarded", "brand", "XE awarded, running total: " ~ s.awards.xe|xe ~ " XE, on " ~ s.awards.tickets|n ~ " of the reports.") }}
+  </section>
+  <section class="st-card">
+    <h2>Top researchers</h2><p class="k">By XE awarded. The <a href="/leaderboard">leaderboard</a> has everyone.</p>
+    {% if ch.top %}{{ hbars(ch.top, "top") }}{% else %}<p class="mute">Nobody yet: a researcher appears once one of their reports is marked <code>awarded</code>.</p>{% endif %}
+  </section>
+</div>
+
+<div class="st-two">
+  <section class="st-card">
+    <h2>Where public reports stand</h2><p class="k">{{ s.public.reports|n }} of the {{ s.reports|n }} are public; the rest are read in private until a fix ships.</p>
+    {% if ch.stand %}
+    <div class="st-stack">{% for r in ch.stand %}<i class="s-{{ r.key }}" style="flex:{{ r.n }} 0 0" data-tip="{{ r.label }}: {{ r.n|n }}"></i>{% endfor %}</div>
+    <ul class="st-legend">
+      {% for r in ch.stand %}<li><i class="s-{{ r.key }}"></i><span>{{ r.label }}</span> <b class="num">{{ r.n|n }}</b> <span class="k num">{{ r.pct|round|int }}%</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="mute">No public reports yet.</p>{% endif %}
+  </section>
+  <section class="st-card">
+    <h2>Fixes by severity</h2><p class="k">The tier each fixed report was assessed at. A tier is published once the fix has shipped.</p>
+    {% if ch.tiers %}{{ hbars(ch.tiers, "tiers") }}{% else %}<p class="mute">No fixes yet.</p>{% endif %}
+  </section>
+</div>
+
+<div class="st-two">
+  <section class="st-card">
+    <h2>Public reports by area</h2><p class="k">The part of the network each report is about.</p>
+    {% if ch.areas %}{{ hbars(ch.areas, "areas") }}{% else %}<p class="mute">No public reports yet.</p>{% endif %}
+  </section>
+  <section class="st-card">
+    <h2>When reports arrive</h2><p class="k">Every report by weekday and hour, UTC.{% if ch.busiest_hour %} The busiest hour of the week is {{ ch.busiest_hour }}.{% endif %}</p>
+    {% set hc = ch.heat %}
+    <div class="st-scroll">
+    <svg class="st-svg st-heat" viewBox="0 0 {{ hc.w }} {{ hc.h }}" role="img" aria-label="Reports by weekday and hour, UTC.{% if ch.busiest_hour %} The busiest hour of the week is {{ ch.busiest_hour }}.{% endif %}">
+      {% for c in hc.cells %}<rect class="st-cell{{ "" if c.o else " zero" }}" x="{{ c.x }}" y="{{ c.y }}" width="{{ hc.cw }}" height="{{ hc.ch }}"{% if c.o %} fill-opacity="{{ c.o }}"{% endif %} {{ tip(c.tip) }}</rect>
+      {% endfor %}
+      {% for wd in hc.days %}<text class="st-ax" x="0" y="{{ wd.y }}">{{ wd.label }}</text>{% endfor %}
+      {% for hr in hc.hours %}<text class="st-ax" x="{{ hr.x }}" y="{{ hc.hours_y }}" text-anchor="middle">{{ hr.label }}</text>{% endfor %}
+    </svg>
+    </div>
+  </section>
+</div>
+
+<div class="st-share row">
+  <a class="button mini" href="https://x.com/intent/tweet?text={{ (ch.headline ~ " The XE bounty in numbers:")|urlencode }}&amp;url={{ (bounty_url ~ "/stats")|urlencode }}" target="_blank" rel="noopener">Post these numbers</a>
+  <a class="button mini ghost" href="{{ og.image }}" download="xe-bounty-stats.png">Download the card</a>
+  <span class="k">Counted at {{ s.as_of[11:16] }} UTC on {{ s.as_of[:10] }} · <a href="/v1/stats">the same numbers as JSON</a></span>
+</div>
+
+<h2>How this is counted</h2>
+<p class="sub">Reports filed, and the days and hours they arrive, count every report, including those read in private until a fix ships. The log's length is the <a href="/log">log</a>'s own. Everything else, researchers included, counts public reports as the <a href="/">report list</a> shows them: a tier appears once its fix has shipped, and an award once its ticket is marked <code>awarded</code>. The page is the same for everyone who reads it. Days and hours are UTC.</p>
+
+<details>
+  <summary>The numbers by day</summary>
+  <div class="st-scroll"><table>
+    <thead><tr><th>Day (UTC)</th><th class="right">Reports</th><th class="right">New researchers</th><th class="right">Fixes shipped</th><th class="right">XE awarded</th></tr></thead>
+    <tbody>
+    {% for row in s.per_day|reverse %}<tr><td class="num">{{ row.day }}</td><td class="right num">{{ row.reports|n }}</td><td class="right num">{{ row.researchers|n }}</td><td class="right num">{{ row.fixed|n }}</td><td class="right num">{{ row.awarded_xe|xe }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</details>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ asset('/static/stats.js') }}" defer></script>{% endblock %}

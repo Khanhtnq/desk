@@ -44,6 +44,7 @@
       {% else %}
       <a href="/" {% if path == "/" %}aria-current="page"{% endif %}>{{ copy.labels.reports }}</a>
       <a href="/scope" {% if path == "/scope" %}aria-current="page"{% endif %}>{{ copy.labels.scope }}</a>
+      <a href="/stats" {% if path == "/stats" %}aria-current="page"{% endif %}>{{ copy.labels.stats }}</a>
       <a href="/leaderboard" {% if path == "/leaderboard" %}aria-current="page"{% endif %}>{{ copy.labels.leaderboard }}</a>
       {% endif %}
       <a href="/log" {% if path.startswith("/log") %}aria-current="page"{% endif %}>{{ copy.labels.log }}</a>
@@ -100,6 +101,7 @@
     {% else %}
     <a class="mobile-nav-item" href="/" {% if path == "/" %}aria-current="page"{% endif %}>{{ copy.labels.reports }}</a>
     <a class="mobile-nav-item" href="/scope">{{ copy.labels.scope }}</a>
+    <a class="mobile-nav-item" href="/stats">{{ copy.labels.stats }}</a>
     <a class="mobile-nav-item" href="/leaderboard">{{ copy.labels.leaderboard }}</a>
     {% endif %}
     <a class="mobile-nav-item" href="/log">{{ copy.labels.log }}</a>

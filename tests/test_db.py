@@ -4401,3 +4401,75 @@ async def test_a_request_body_is_bounded_as_it_is_read(ctx, monkeypatch):
     }
     await asyncio.wait_for(main.app(scope, receive, send), 30)
     assert out[0]["type"] == "http.response.start" and out[0]["status"] == 413
+
+
+# ---- stats ------------------------------------------------------------------------------------------
+
+
+async def test_stats_count_what_an_anonymous_reader_can(ctx, db):
+    """The rule: `/stats` is one page for every reader. How many reports were filed, and when, counts
+    every report; every other number, researchers among them, is counted over public reports as an
+    anonymous reader is shown them. So a sealed report is one more report on its day and nothing
+    else, a tier that is still held is in no breakdown, and the awards are the leaderboard's."""
+    from desk.models import Reporter
+    from desk.services import stats
+
+    # no reader is asked for: there is one reading, and it is the anonymous one
+    assert list(inspect.signature(stats.collect).parameters) == ["db", "now"]
+    assert list(inspect.signature(stats.snapshot).parameters) == ["db"]
+    now = utcnow()
+    p = await _team(ctx, db)
+    ada, bob = Reporter(github_login="ada"), Reporter(github_login="bob")
+    db.add_all([ada, bob])
+    await db.flush()
+
+    async def mk(title, reporter, area, visibility="public"):
+        spec = tsvc.NewTicket(
+            kind="bounty", title=title, source="web", reporter_id=reporter.id, area=area,
+            visibility=visibility,
+        )
+        return await tsvc.create(ctx, db, p.actor, spec)
+
+    fixed, held = await mk("fixed", ada, "consensus"), await mk("held", ada, "node-api")
+    await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="support", title="a question", source="web"))
+    await tsvc.set_facts(ctx, db, p, fixed, {"assessed_tier": "high"})
+    await tsvc.set_facts(ctx, db, p, held, {"assessed_tier": "medium"})
+    for st in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, p, fixed, st)
+    await tsvc.set_status(ctx, db, p, held, "triaging")
+    await tsvc.set_award(ctx, db, p, fixed, 5_000_000_000, approve=True)  # approved, and not yet awarded
+    before = await stats.collect(db, now)
+    assert (before["reports"], before["researchers"]) == (2, 1)  # the question is not a report
+    assert before["public"] == {
+        "reports": 2, "open": 1, "fixed": 1, "closed": {},
+        "fixed_by_tier": {"high": 1},  # the tier of the fix; the held one is nowhere
+        "by_area": {"consensus": 1, "node-api": 1},
+    }
+    assert before["awards"] == {"xe": 0, "tickets": 0, "researchers": 0, "top": []}
+    assert sum(d["awarded_xe"] for d in before["per_day"]) == 0
+
+    # a sealed report, from someone new, fixed and with an approved award of its own
+    sealed = await mk("sealed", bob, "p2p-sync", visibility="private")
+    await tsvc.set_facts(ctx, db, p, sealed, {"assessed_tier": "severe"})
+    for st in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, p, sealed, st)
+    await tsvc.set_award(ctx, db, p, sealed, 9_000_000_000, approve=True)
+    after = await stats.collect(db, now)
+    assert after["reports"] == 3
+    assert sum(d["reports"] for d in after["per_day"]) == 3 and sum(map(sum, after["by_hour"])) == 3
+    # and nothing else: who filed it is not counted until a report of theirs is public
+    assert after["researchers"] == before["researchers"] == 1
+    assert after["public"] == before["public"] and after["awards"] == before["awards"]
+    for series in ("researchers", "fixed", "awarded_xe"):
+        assert [d[series] for d in after["per_day"]] == [d[series] for d in before["per_day"]], series
+    assert after["log_entries"] == (await EventLog.head(db)).index + 1
+
+    # `awarded` publishes the award, here as everywhere: the totals are the leaderboard's
+    await tsvc.set_status(ctx, db, p, fixed, "awarded")
+    done = await stats.collect(db, now)
+    board = await tsvc.leaderboard(db)
+    assert done["awards"]["xe"] == sum(b["award_xe"] for b in board) == 5_000_000_000
+    assert sum(d["awarded_xe"] for d in done["per_day"]) == done["awards"]["xe"]
+    assert done["awards"]["top"] == [{"name": "ada", "login": "ada", "award_xe": 5_000_000_000, "tickets": 1}]
+    assert done["public"]["fixed"] == 1 and sum(d["fixed"] for d in done["per_day"]) == 1
+    assert json.loads(json.dumps(done)) == done  # what `/v1/stats` returns as it stands

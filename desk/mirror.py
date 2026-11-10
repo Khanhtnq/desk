@@ -279,6 +279,12 @@ def build_llms_txt(
                 "Scope and tiers",
                 "what is in scope, the tiers and their ceilings, how disclosure works",
             ),
+            link(
+                "/stats.md",
+                "Stats",
+                "the programme in numbers: reports filed, researchers, fixes and awards; "
+                "`/v1/stats` is the same as JSON",
+            ),
             link("/leaderboard.md", "Leaderboard", "awards so far, by reporter"),
             link("/log.md", "Log", "the hash-chained public log of everything the desk does"),
             link("/live", "Live", "the log as it happens; `/v1/events/stream` is the stream itself"),
