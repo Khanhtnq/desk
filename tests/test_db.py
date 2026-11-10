@@ -1318,6 +1318,38 @@ def _pull(number, title, body="", state="open", merged=False, login="grace", ass
     }
 
 
+async def test_a_patch_link_has_one_spelling(ctx, db):
+    """The rule: a patch link's repository and ref are the key the PR follower matches, so they are
+    stored in one spelling whoever makes the link (`thread.patch_key`, in `add_patch_ref`). A link
+    made by hand under another spelling is the row the follower then finds, not a second one."""
+    team = await _team(ctx, db)
+    repo = "xeprotocol/xe"
+    t, _ = await sync.upsert_issue(ctx, db, repo, _issue(410, "Frontier pages twice"))
+    by_hand = await thread.add_patch_ref(
+        ctx, db, team, t, repo="XEProtocol/XE", ref=" #0412 ", note="by hand"
+    )
+    assert (by_hand.repo, by_hand.ref, by_hand.url) == (repo, "412", f"https://github.com/{repo}/pull/412")
+    sha = await thread.add_patch_ref(ctx, db, team, t, repo=repo, ref="DEADBEEFCAFE0123", kind="commit")
+    assert sha.ref == "deadbeefcafe0123"
+    assert await thread.add_patch_ref(ctx, db, team, t, repo=repo, ref="412", note="by hand") is None
+    bad = (
+        ("pr", "0"), ("pr", "12a"), ("pr", "\u0661\u0662"), ("pr", "9" * 11), ("pr", "deadbeef"),
+        ("commit", "main"), ("commit", "abc"), ("branch", "412"),
+    )
+    for kind, ref in bad:
+        with pytest.raises(HTTPException) as e:
+            await thread.add_patch_ref(ctx, db, team, t, repo=repo, ref=ref, kind=kind)
+        assert e.value.status_code == 400, (kind, ref)
+    merged = _pull(412, "fix: page frontiers once", "Fixes #410", state="closed", merged=True)
+    assert await sync.link_pull(ctx, db, repo, merged) == 1
+    links = {p.ref: p for p in await thread.patches_for(db, t)}
+    assert set(links) == {"412", "deadbeefcafe0123"} and len(await thread.patches_for(db, t)) == 2
+    assert (links["412"].state, links["412"].note, links["412"].title) == (
+        "merged", "by hand", "fix: page frontiers once"
+    )
+    assert t.status == "patched"
+
+
 async def test_a_fixing_pull_moves_the_ticket_and_a_mention_only_links(ctx, db):
     repo = "xeprotocol/xe"
     t, _ = await sync.upsert_issue(ctx, db, repo, _issue(70, "Vote replay"))

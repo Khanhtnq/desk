@@ -244,13 +244,14 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
     fixes = gh.closing_refs(text)
     state = "merged" if pull.get("merged_at") else (pull.get("state") or "open")
     author = (pull.get("user") or {}).get("login") or ""
+    link_repo, link_ref = thread.patch_key(repo, pull["number"])  # as every link is stored
     if account_blocked(ctx, pull.get("user")):
         # the PR is not linked, and a link made before the block comes off; a ref that moved a ticket
         # (only ever a maintainer's) is left so the return hop still has its record
         await db.execute(
             delete(PatchRef).where(
-                PatchRef.repo == repo,
-                PatchRef.ref == str(pull["number"]),
+                PatchRef.repo == link_repo,
+                PatchRef.ref == link_ref,
                 PatchRef.kind == "pr",
                 PatchRef.moved_from == "",
             )
@@ -264,7 +265,7 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
             continue
         if issue_no in fixes and (state != "open" or trusted):
             q = select(PatchRef.followed).where(
-                PatchRef.ticket_id == t.id, PatchRef.repo == repo, PatchRef.ref == str(pull["number"])
+                PatchRef.ticket_id == t.id, PatchRef.repo == link_repo, PatchRef.ref == link_ref
             )
             if (await db.execute(q)).scalar_one_or_none() != state:
                 # this PR may be about to move the ticket: the row lock first, before the link is

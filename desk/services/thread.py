@@ -9,6 +9,7 @@ patch_refs PRs and commits
 from __future__ import annotations
 
 import re
+from typing import Any
 from datetime import timezone
 
 from fastapi import HTTPException
@@ -28,7 +29,23 @@ REPO_ALIASES = {
     "faucet": "xeprotocol/faucet",
 }
 PR_TOKEN = re.compile(r"(?:(?P<owner>[\w.-]+)/)?(?P<repo>[\w.-]*)#(?P<num>\d+)")
-PATCH_REPO, PATCH_REF = re.compile(r"[\w.-]{1,100}/[\w.-]{1,100}"), re.compile(r"[\w.-]{1,64}")
+PATCH_REPO = re.compile(r"[a-z0-9_.-]{1,100}/[a-z0-9_.-]{1,100}")
+PATCH_PR, PATCH_SHA = re.compile(r"#?0*([1-9][0-9]{0,9})"), re.compile(r"[0-9a-f]{7,64}")
+
+
+def patch_key(repo: Any, ref: Any, kind: str = "pr") -> tuple[str, str]:
+    """A patch link's repository and ref in the one spelling they are stored and matched in, or a
+    400. They are a key: the PR follower finds a ticket's link by them (`sync.link_pull`), and they
+    become a URL, a table cell in the export and a name in a reply. So `XEProtocol/xe` and ` #027 `
+    are `xeprotocol/xe` and `27`, a sha is lower-case hex, and nothing else is either. Stored as
+    sent, a link made by hand was never matched: the follower added a second row for the same PR
+    and the first took no state, title or author, and outlived the delete for a blocked author.
+    ASCII only: `\\w` and `\\d` admit the other scripts' letters and digits."""
+    repo, ref = str(repo).strip().lower(), str(ref).strip().lower()
+    m = (PATCH_PR if kind == "pr" else PATCH_SHA).fullmatch(ref)
+    if not PATCH_REPO.fullmatch(repo) or m is None:
+        raise HTTPException(400, "repo is owner/name and ref is a PR number or a commit sha")
+    return repo, (m[1] if kind == "pr" else ref)
 
 
 # ---- notes ------------------------------------------------------------------------------------------
@@ -423,14 +440,11 @@ async def add_patch_ref(
     """Link a PR or a commit to a ticket. Returns the link when it was added or changed, None when it
     was already as given. `only_new` is for a writer replaying a snapshot (the triage import): a link
     the ticket already has is left exactly as it is."""
-    repo, ref = repo.strip(), str(ref).strip()
-    if not repo or not ref or kind not in ("pr", "commit"):
-        raise HTTPException(400, "repo, ref and kind (pr|commit) are required")
-    # every writer of a patch ref comes through here. The repo and ref become a URL, a table cell in
-    # the export and a name in a reply, so they are a repository and a number or sha and nothing
-    # else; the free text beside them is one line
-    if not PATCH_REPO.fullmatch(repo) or not PATCH_REF.fullmatch(ref):
-        raise HTTPException(400, "repo is owner/name and ref is a number or a commit sha")
+    if kind not in ("pr", "commit"):
+        raise HTTPException(400, "kind is pr or commit")
+    # every writer of a patch ref comes through here: the key in its one spelling, and the free text
+    # beside it one line
+    repo, ref = patch_key(repo, ref, kind)
     title, note, author = (clean_text(x, one_line=True) for x in (title, note, author))
     url = url.strip()
     if url and not url.lower().startswith("https://"):
@@ -484,6 +498,7 @@ def patch_refs_text(prs: list[PatchRef]) -> str:
 
 
 async def patch_ref(db: AsyncSession, t: Ticket, repo: str, ref: str) -> PatchRef:
+    repo, ref = patch_key(repo, ref)
     q = select(PatchRef).where(PatchRef.ticket_id == t.id, PatchRef.repo == repo, PatchRef.ref == ref)
     return (await db.execute(q)).scalar_one()
 
