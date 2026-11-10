@@ -3395,11 +3395,16 @@ async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
     assert len(models) >= 30 and {SignedRequest, team_api.FactsIn, rapi.TextIn, agent.ProposalIn} <= models
     for m in models:
         assert issubclass(m, auth.Body), m.__name__
-        for body in ({"x": "a\x00b"}, {"a\x00": 1}, {"changes": {"deep": [{"k": ["\x00"]}]}}):
+        bodies = (
+            {"x": "a\x00b"}, {"a\x00": 1}, {"changes": {"deep": [{"k": ["\x00"]}]}},
+            {"x": "a\udc80"}, {"\ud83d": 1}, {"value": {"deep": ["\ud83d"]}},
+        )
+        for body in bodies:
             with pytest.raises(ValidationError):
                 m.model_validate(body)
     clean = {"changes": {"area": "consensus"}}
     assert team_api.FactsIn.model_validate(clean).changes == clean["changes"]
+    assert rapi.TextIn.model_validate({"body": "a whole pair \U0001f600 is text"}).body.endswith("text")
     # the one address stored as typed, which no model carries when it arrives on the filing form
     for bad in ("a\x00@b.co", "a@b\x00.co", "a\x7f@b.co"):
         with pytest.raises(HTTPException) as e:

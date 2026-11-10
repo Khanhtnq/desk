@@ -95,13 +95,18 @@ def clean_lookup(raw: str | None, limit: int = 256) -> str:
     return s[:limit]
 
 
-def has_nul(value: Any) -> bool:
-    """A NUL anywhere in parsed JSON: any string, any key, at any depth (walked without recursion)."""
+def unstorable(value: Any) -> bool:
+    """A NUL or half a surrogate pair anywhere in parsed JSON: any string, any key, at any depth
+    (walked without recursion). Postgres stores neither, as text or inside jsonb."""
     stack = [value]
     while stack:
         v = stack.pop()
         if isinstance(v, str):
             if "\x00" in v:
+                return True
+            try:
+                v.encode("utf-8")
+            except UnicodeEncodeError:
                 return True
         elif isinstance(v, dict):
             stack.extend(v.keys())
@@ -112,18 +117,20 @@ def has_nul(value: Any) -> bool:
 
 
 class Body(BaseModel):
-    """The base of every JSON request body. Postgres refuses a NUL in text and in jsonb, and a request
-    that carried one into a statement ended as a bare 500 (XE-0827, XE-1426, XE-1015). The cleaning
+    """The base of every JSON request body. Postgres refuses a NUL in text and in jsonb, and half a
+    surrogate pair (which JSON can spell: "\\udc80") cannot be encoded to send at all; a request that
+    carried either into a statement ended as a bare 500 (XE-0827, XE-1426, XE-1015). The cleaning
     was at the call sites that remembered it; the rule is here, at the boundary, for every field of
-    every body including the free-form ones (a facts dict, a proposal's value): a body with a NUL in
-    it is a 422. Refused, not stripped: stripping gives `XE-0\x00142` and `XE-0142` one meaning. The
-    path and the query string are `main.NoNul`'s; form fields are cleaned where they are read."""
+    every body including the free-form ones (a facts dict, a proposal's value): such a body is a 422.
+    Refused, not stripped: stripping gives `XE-0\x00142` and `XE-0142` one meaning. The path and the
+    query string are `main.NoNul`'s (neither can carry a lone surrogate: both are decoded with
+    replacement); form fields are cleaned where they are read."""
 
     @model_validator(mode="before")
     @classmethod
-    def _no_nul(cls, data: Any) -> Any:
-        if has_nul(data):
-            raise ValueError("the request has a NUL character in it")
+    def _refuse_unstorable(cls, data: Any) -> Any:
+        if unstorable(data):
+            raise ValueError("the request has a NUL or half a surrogate pair in it")
         return data
 
 
