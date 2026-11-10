@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..authz import SYSTEM
 from ..context import Context
-from ..models import Note, PatchRef, Reply, Reporter, SyncCursor, Ticket
+from ..models import Event, Note, PatchRef, Reply, Reporter, SyncCursor, Ticket
 from . import github as gh
 from . import thread
 from . import tickets as tsvc
@@ -263,11 +263,13 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
         t = await tsvc.find_by_source(db, "github", repo, str(issue_no))
         if t is None:
             continue
-        if issue_no in fixes and (state != "open" or trusted):
-            q = select(PatchRef.followed).where(
+        if issue_no in fixes:
+            q = select(PatchRef.followed, PatchRef.moved_from).where(
                 PatchRef.ticket_id == t.id, PatchRef.repo == link_repo, PatchRef.ref == link_ref
             )
-            if (await db.execute(q)).scalar_one_or_none() != state:
+            had = (await db.execute(q)).first()
+            news = had is None or had.followed != state
+            if news and _has_a_say(state, trusted, had.moved_from if had else ""):
                 # this PR may be about to move the ticket: the row lock first, before the link is
                 # logged (the order every writer takes them in), and so that the follower reads the
                 # status as it is now and not as this pass loaded it
@@ -305,21 +307,29 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
 PRE_PATCH = ("new", "triaging", "needs-info", "accepted", "fixing")
 
 
+def _has_a_say(state: str, trusted: bool, moved_from: str) -> bool:
+    """May a PR in this state move a ticket at all? A merge is a maintainer's act whoever wrote the
+    PR; open or closed, a maintainer's PR; closed, also the PR that moved the ticket. Anyone can open
+    and close a PR that says `fixes #a, fixes #b`: a stranger's takes no ticket's lock and is not
+    recorded, so it has its say if its author is a maintainer later."""
+    return state == "merged" or trusted or (state == "closed" and bool(moved_from))
+
+
 async def _follow_pull_state(
     ctx: Context, db: AsyncSession, t: Ticket, pr: PatchRef, state: str, *, trusted: bool
 ) -> bool:
     if t.kind != "bounty" or pr.followed == state:
         return False  # a question is not followed, and nothing is recorded against the day it is a report
-    if state == "open" and not trusted:
-        return False  # not this PR's say; unrecorded, so it has it if its author is a maintainer later
+    if not _has_a_say(state, trusted, pr.moved_from):
+        return False
     # decided on the rows as they are now. A poll is one session that keeps what it loaded: the ticket
     # read in its first phase is stale by the time the pulls are read, and a move decided on the stale
     # status was refused by `set_status` (which does re-read) after the change had been recorded as
     # acted on, so it was never acted on at all (XE-2080 sweep)
     await tsvc.lock(db, t)
     await db.refresh(pr)
-    if pr.followed == state:
-        return False
+    if t.kind != "bounty" or pr.followed == state:
+        return False  # made a question, or acted on by another pass, while this one waited
     pr.followed = state
     if t.status not in PRE_PATCH:
         return False
@@ -406,6 +416,9 @@ async def import_repo(
             if since and (pull.get("updated_at") or "") < since:
                 continue
             stats["pulls"] += await link_pull(ctx, db, repo, pull)
+            # per PR, as the issues are: the follower's row locks and the log are not held across
+            # the rest of the listing, which is a request a page and can wait on GitHub for minutes
+            await db.commit()
         await db.commit()
     await set_cursor(db, f"github:{repo}:issues", newest, stats)
     await db.commit()
@@ -434,8 +447,9 @@ async def poll(ctx: Context, db: AsyncSession, client: gh.GitHub) -> list[dict]:
 # The engineering tickets live in a private repo and name the public reports they cover: "security: bounty
 # bundle xe#8". The desk never writes there. It reads the tag to fill `internal_ref`, and reads the
 # issue's state to move the public ticket: open → accepted; closed as completed → patched, which puts
-# the ticket in the outbox for a human to tell the reporter; closed as not planned → a note, since the
-# public verdict is the Reviewer's call. Every change is the SYSTEM principal with via="internal".
+# the ticket in the outbox for a human to tell the reporter; closed for any other reason (not planned,
+# duplicate) → a note, since the public verdict is the Reviewer's call. Every change is the SYSTEM
+# principal with via="internal".
 
 
 async def link_internal_issue(ctx: Context, db: AsyncSession, issue: dict) -> dict:
@@ -448,9 +462,15 @@ async def link_internal_issue(ctx: Context, db: AsyncSession, issue: dict) -> di
     stats = {"issue": number, "tagged": 0, "linked": 0, "moved": 0, "noted": 0}
     for t in await _tagged_tickets(ctx, db, text, ref):
         stats["tagged"] += 1
-        if not t.internal_ref and t.internal_followed.startswith(f"{ref}:"):
-            # it was linked to this issue and followed it, and a person has since cleared the link (the
-            # wrong class, say). That stands: the issue still naming the report does not put it back
+        if not t.internal_ref:
+            # no link as this pass loaded it: the link is decided on the row as it is now, so one a
+            # person set a moment ago is noted beside and not written over
+            await tsvc.lock(db, t)
+        if not t.internal_ref and (
+            t.internal_followed.startswith(f"{ref}:") or await _linked_before(db, t, via)
+        ):
+            # it was linked to this issue, and a person has since cleared the link (the wrong class,
+            # say). That stands: the issue still naming the report does not put it back
             cleared = f"Internal ticket {ref} names this report; its link here was cleared by hand."
             stats["noted"] += int(await _note_once(ctx, db, t, cleared))
             continue
@@ -493,18 +513,31 @@ async def _tagged_tickets(ctx: Context, db: AsyncSession, text: str, ref: str = 
     return out
 
 
+async def _linked_before(db: AsyncSession, t: Ticket, via: str) -> bool:
+    """Has the tracker linked this ticket to this issue before? The tracker makes a link once, and
+    its own event is the memory of it: whatever the ticket's kind (a question is linked and never
+    followed), whatever it has followed since, and for a link made before `internal_followed` was
+    kept. A link that is gone after that was cleared by a person."""
+    q = select(Event.index).where(
+        Event.ref == t.id, Event.kind == "ticket.facts", Event.payload["via"].astext == via
+    )
+    return (await db.execute(q.limit(1))).first() is not None
+
+
 async def _follow_internal_state(ctx: Context, db: AsyncSession, t: Ticket, issue: dict, via: str) -> bool:
     if t.kind != "bounty":
         return False
     state = issue.get("state") or "open"
-    reason = issue.get("state_reason") or ""
+    # an open issue is one state whatever its reason: one that was ever reopened says `reopened` for
+    # as long as it stays open, and is not news each time it is read
+    reason = (issue.get("state_reason") or "") if state != "open" else ""
     ref = f"#{issue['number']}"
     seen = f"{ref}:{state}:{reason}"[:64]
     if t.internal_followed == seen:
         return False  # read again, unchanged: it has had its say (see PRE_PATCH above)
     await tsvc.lock(db, t)  # and the status below is the one in the database now, as for a PR
-    if t.internal_followed == seen or t.internal_ref != ref:
-        return False
+    if t.kind != "bounty" or t.internal_followed == seen or t.internal_ref != ref:
+        return False  # made a question, acted on by another pass, or unlinked, while this one waited
     t.internal_followed = seen
     if state == "open":
         if t.status in ("new", "triaging", "needs-info"):

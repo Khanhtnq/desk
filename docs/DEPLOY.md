@@ -131,6 +131,14 @@ docker compose up -d                       # migrate runs 0002…, then app and 
 docker compose --profile discord up -d     # if the bot is in use
 ```
 
+The update that brings migration `0012` needs one more command, once, straight after the `up`:
+
+```sh
+docker compose exec app desk import-internal --full
+```
+
+`0012` records the state each tracker issue was last acted on, and takes it from the log, which holds the tracker's moves and not its reads: an issue closed, then reopened since, is recorded as still closed, and its next close would move nothing. The full read compares every issue with that guess while the tracker is as the last poll left it. An issue still in the recorded state replays nothing.
+
 `0002` adds what Releases 2 and 3 introduced (reporter sessions and links, payout proof, `tickets.channel_state`) with `IF NOT EXISTS`, so it is safe on a database of any age. If you ever need a clean slate instead: `docker compose run --rm migrate alembic downgrade base && docker compose run --rm migrate alembic upgrade head`, then re-create the first team user (`desk users add`, §3) and re-import (§4).
 
 ## 8. If a page is blank

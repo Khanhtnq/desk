@@ -130,7 +130,8 @@ github:
 # never writes to it. An internal ticket names the public report(s) it covers in its title or body
 # with the public repo's short name and number, e.g. "security: bounty bundle xe#8" → xeprotocol/xe#8.
 # Several public reports may share one internal ticket. Reading its state moves the public ticket:
-# open → accepted, closed as completed → patched (and into the outbox), closed as not planned → a note.
+# open → accepted, closed as completed → patched (and into the outbox), closed for any other reason
+# (not planned, duplicate) → a note.
 internal:
   repo: xeprotocol/core
   aliases: { xe: xeprotocol/xe, dao: xeprotocol/dao, sdk: xeprotocol/sdk }

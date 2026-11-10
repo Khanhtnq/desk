@@ -1551,6 +1551,61 @@ async def test_a_source_moves_a_ticket_once_and_a_persons_status_then_stands(ctx
     await sync.link_internal_issue(ctx, db, _issue(1082, bundle, **done))
     assert t7.status == "patched"
 
+    # an open issue is one state whatever reason it carries: one that was ever reopened says so for
+    # as long as it stays open, and is not news each time it is read
+    t8, _ = await sync.upsert_issue(ctx, db, repo, _issue(157, "Reopened once, read often"))
+
+    async def bundle8(**kw):
+        return await sync.link_internal_issue(ctx, db, _issue(1083, "security: bundle xe#157", **kw))
+
+    assert (await bundle8())["moved"] == 1 and t8.status == "accepted"
+    await tsvc.set_status(ctx, db, team, t8, "triaging")
+    assert (await bundle8(state_reason="reopened"))["moved"] == 0 and t8.status == "triaging"
+    # a close that carries no reason at all patches, as one that says completed does
+    assert (await bundle8(state="closed"))["moved"] == 1 and t8.status == "patched"
+    # the tracker links a report once, and its own event is the memory of it. A person links the
+    # report to another issue, which it then follows, and later clears that: the first issue, still
+    # naming the report, does not put its link back
+    await tsvc.set_facts(ctx, db, team, t8, {"internal_ref": "#1084"})
+    other = await sync.link_internal_issue(ctx, db, _issue(1084, "security: another bundle"))
+    assert (other["tagged"], other["moved"], t8.internal_followed) == (1, 0, "#1084:open:")
+    await tsvc.set_facts(ctx, db, team, t8, {"internal_ref": ""})
+    stats = await bundle8(state="closed")
+    assert (stats["linked"], stats["moved"], stats["noted"], t8.internal_ref) == (0, 0, 1, "")
+    # nor on a question, which is linked and never followed, so nothing else remembers the link
+    ask = tsvc.NewTicket(kind="support", title="Which port does the node use?", source="web")
+    q = await tsvc.create(ctx, db, team.actor, ask)
+    names = _issue(1085, "docs: ports", body=f"Asked in {q.id}.")
+    stats = await sync.link_internal_issue(ctx, db, names)
+    assert (stats["linked"], stats["moved"], q.internal_ref, q.internal_followed) == (1, 0, "#1085", "")
+    await tsvc.set_facts(ctx, db, team, q, {"internal_ref": ""})
+    for noted in (1, 0):
+        stats = await sync.link_internal_issue(ctx, db, names)
+        assert (stats["linked"], stats["noted"], q.internal_ref) == (0, noted, ""), noted
+
+    # a stranger's PR closed unmerged has no say, as its opening had none: it takes no ticket's lock
+    # and is not recorded, where anyone can open and close a PR that says it fixes every report
+    t9, _ = await sync.upsert_issue(ctx, db, repo, _issue(158, "Named by a stranger's closed PR"))
+    await pull(165, 158, state="closed", login="mallory", association="NONE")
+    link = await thread.patch_ref(db, t9, repo, "165")
+    assert (t9.status, link.state, link.followed) == ("new", "closed", "")
+    # the PR that moved the ticket is heard when it closes, whoever its author is by then
+    await pull(166, 158)
+    assert t9.status == "fixing"
+    await pull(166, 158, state="closed", login="grace", association="NONE")
+    assert t9.status == "triaging"
+    # and in the source: the pre-lock and the follower ask the one question, each PR is committed
+    # as it is read, and both followers ask the ticket's kind again once they hold its lock
+    src = inspect.getsource(sync.link_pull) + inspect.getsource(sync._follow_pull_state)
+    assert src.count("_has_a_say(") == 2
+    loop = inspect.getsource(sync.import_repo)
+    loop = loop[loop.index("async for pull in client.pulls"):]
+    assert loop.index("await link_pull(") < loop.index("await db.commit()") < loop.index("set_cursor(")
+    assert loop.count("await db.commit()") == 3
+    for fn in (sync._follow_pull_state, sync._follow_internal_state):
+        held = inspect.getsource(fn)
+        assert 't.kind != "bounty"' in held[held.index("await tsvc.lock(db, t)"):], fn.__name__
+
 
 async def test_the_teams_own_words_on_the_thread_tell_the_reporter(ctx, db):
     # the rule: a reporter is told when the team writes on the ticket's own thread: a desk reply, a

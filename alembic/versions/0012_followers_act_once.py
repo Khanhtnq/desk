@@ -12,6 +12,12 @@ not replay them. A tracker issue's last state is not stored anywhere, so it is t
 last move the tracker made on a ticket still linked to that issue (accepted while it was open, patched
 when it closed as completed). A ticket the tracker never moved, or one whose issue closed with another
 reason, has its say once more on its next read, as it did on every read before. Idempotent.
+
+The log holds the tracker's moves, not its reads: an issue that closed, patched its report and was
+reopened since is recorded here as still closed, and its next close would not be news. No statement
+can know that, so read the tracker in full once, straight after this migration
+(`desk import-internal --full`, docs/DEPLOY.md §7): each issue is compared with the guess made here,
+and one still in that state replays nothing.
 """
 
 from alembic import op
