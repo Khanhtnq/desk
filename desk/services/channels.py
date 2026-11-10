@@ -55,7 +55,11 @@ async def from_platform(
     """The reporter behind a platform account; created on first contact. With `link_to` (a signed-in web
     reporter adding the platform to their account) the platform identity moves onto that account and
     any platform-only row merges into it."""
-    email = (email or "").lower()[:256]
+    # the platform's words for the account are made storable where they are written (the bot and the
+    # OAuth callback both come through here)
+    pid = tsvc.clean_text(str(pid), one_line=True)
+    name, handle = (tsvc.clean_text(x, one_line=True)[:128] for x in (name, handle))
+    email = tsvc.clean_text(email, one_line=True).lower()[:256]
     await rsvc.identity_lock(db, f"{platform}:{pid}", f"email:{email}" if email else "")
     existing = await by_platform(db, platform, pid)
     if existing is None and email:
@@ -245,7 +249,7 @@ async def convert_to_bounty(ctx: Context, db: AsyncSession, t: Ticket, *, user_i
 
 
 async def rename_from_channel(ctx: Context, db: AsyncSession, t: Ticket, *, user_id: str, title: str) -> str:
-    title = (title or "").strip()[:200]
+    title = tsvc.clean_text(title, one_line=True)[:200]  # as `tickets.create` stores a title
     if len(title) < 4:
         raise HTTPException(400, "a title needs a few words")
     old, t.title = t.title, title
@@ -302,6 +306,7 @@ async def mark_mirrored(
 
 
 async def mark_failed(ctx: Context, db: AsyncSession, r: Reply, t: Ticket, error: str) -> None:
+    error = tsvc.clean_text(error)  # the platform's own words for what went wrong
     r.mirror, r.mirror_error = "failed", error[:2000]
     await ctx.events.append(
         db, "reply.mirror_failed", "desk", {"ticket": t.id, "reply": r.id, "error": error[:200]}, ref=t.id

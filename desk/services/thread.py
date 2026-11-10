@@ -139,7 +139,12 @@ async def add_message(
             return None
     body = clean_text(body)[:60_000]
     m = Message(
-        ticket_id=t.id, source=source, source_ref=source_ref, author=author[:128], author_is_team=is_team
+        ticket_id=t.id,
+        source=source,
+        source_ref=source_ref,
+        # every thread writer comes through here; a chat member's display name is the platform's text
+        author=clean_text(author, one_line=True)[:128],
+        author_is_team=is_team,
     )
     if t.visibility == "private":
         if not ctx.vault.available:

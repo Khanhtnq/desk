@@ -897,6 +897,7 @@ async def set_facts(
     locked first: what may change depends on the ticket's status (the tier behind an award, sealing an
     awarded report), and that is read as it is now (XE-0463)."""
     await lock(db, t)
+    reason = clean_text(reason, one_line=True)  # it goes in the log, whoever gave it
     diff: dict[str, Any] = {}
     for k, v in changes.items():
         v = await fact_value(db, t, k, v)
@@ -981,6 +982,7 @@ async def set_status(
     if status not in STATUSES:
         raise HTTPException(400, f"unknown status {status!r}")
     await lock(db, t)
+    reason = clean_text(reason, one_line=True)  # it goes in the log, whoever gave it (`/close` in chat)
     _award_is_public(t, status=status)
     allowed = TRANSITIONS[t.kind].get(t.status, set())
     if not force and status != t.status and status not in allowed:

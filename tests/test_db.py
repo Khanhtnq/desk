@@ -3549,7 +3549,11 @@ async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
     """The rule (XE-0827, XE-1426, XE-1015): Postgres refuses a NUL in text and in jsonb, so no request
     carries one as far as a statement. It is refused once at each way in: the path and the query
     string by `main.NoNul`, a JSON body by `auth.Body`, which every request model is. A route added
-    later is behind the first; a model added later is the second, or fails here."""
+    later is behind the first; a model added later is the second, or fails here; and a route that
+    takes a body some other way (a bare dict, the raw request) fails here too."""
+    import typing
+
+    from fastapi.routing import APIRoute
     from pydantic import BaseModel, ValidationError
 
     from desk import main
@@ -3599,6 +3603,27 @@ async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
         for body in bodies:
             with pytest.raises(ValidationError):
                 m.model_validate(body)
+    # and it is the routes that are asked, not only the models: every body any route declares is made
+    # of those models and nothing else, and the raw request is read in two places, each of which
+    # cleans what it reads (the filing's form fields, GitHub's signed payload)
+    def classes(tp):
+        args = typing.get_args(tp)
+        return {tp} if not args else {c for a in args if a is not type(None) for c in classes(a)}
+
+    routes = [r for r in main.app.routes if isinstance(r, APIRoute)]
+    declared = {
+        (r.path, f.name): classes(f.field_info.annotation) for r in routes for f in r.dependant.body_params
+    }
+    assert len(declared) >= 25
+    for where, made_of in declared.items():
+        assert made_of and all(isinstance(c, type) and issubclass(c, auth.Body) for c in made_of), where
+    raw = {
+        (r.endpoint.__name__, read)
+        for r in routes
+        for read in ("request.json(", "request.form(", "request.body(", "request.stream(")
+        if read in inspect.getsource(r.endpoint)
+    }
+    assert raw == {("file_ticket", "request.form("), ("github_webhook", "request.body(")}
     clean = {"changes": {"area": "consensus"}}
     assert team_api.FactsIn.model_validate(clean).changes == clean["changes"]
     assert rapi.TextIn.model_validate({"body": "a whole pair \U0001f600 is text"}).body.endswith("text")
@@ -3608,6 +3633,65 @@ async def test_a_nul_in_a_request_is_refused_at_the_boundary(ctx):
             rsvc.clean_email(bad)
         assert e.value.status_code == 400
     assert rsvc.clean_email(" Ann@Example.org ") == "ann@example.org"
+
+
+async def test_text_from_a_provider_is_made_storable_where_it_is_written(ctx, db, tmp_path):
+    """The other half of the rule above. Text that does not arrive in a request body (GitHub's and
+    Discord's words for an account at sign-in, what the chat bot hands over, a file's name on the
+    filing form, the node's own answer) is made storable in the function that writes it, so every
+    caller has it. Each flush below is the statement Postgres would have refused."""
+    team = await _team(ctx, db)
+    nul, half = "a\x00b", "half\udc80"
+    g = await rsvc.from_github(ctx, db, {"id": 4711, "login": nul, "name": half}, "E\x00@x.co", link_to=None)
+    await db.flush()
+    assert (g.github_login, g.display_name, g.email) == ("ab", "half", "e@x.co")
+    d = await channels.from_platform(
+        ctx, db, "discord", "77\x00", name=half, handle=nul, email="d\udc80@x.co"
+    )
+    await db.flush()
+    assert (d.display_name, d.email) == ("half", "d@x.co")
+    assert d.platform_ids == {"discord": "77", "discord_handle": "ab"}
+    # the chat bot: a member's display name, a title set in the thread, the words after /close, and
+    # the platform's own error text
+    q = await channels.open_from_channel(ctx, db, _post(uid="78", thread_ref="556", user_name=nul))
+    m = await channels.incoming(
+        ctx, db, q, message_ref="m1", user_id="78", user_name=nul + half, body="more", is_team=False
+    )
+    assert m.author == "abhalf"
+    new = await channels.rename_from_channel(ctx, db, q, user_id="9", title="Escrow \x00releases\udc80 twice")
+    assert new == q.title == "Escrow releases twice"
+    r = await thread.add_reply(ctx, db, team, q, "A word.")
+    await channels.mark_failed(ctx, db, r, q, "thread\x00 gone\udc80")
+    await channels.close_from_channel(ctx, db, q, user_id="9", reason="answered\x00 in\udc80 chat")
+    await db.flush()
+    assert r.mirror_error == "thread gone" and (q.status, q.closed_reason) == ("closed", "answered")
+    moves = select(Event).where(Event.ref == q.id, Event.kind == "ticket.status").order_by(Event.index.desc())
+    assert (await db.execute(moves)).scalars().first().payload["reason"] == "answered in chat"
+    # a file's name: a multipart part is decoded with the charset the client names, so it can carry
+    # either character; the row is clean, and so is the refusal that quotes the name
+    ctx.settings.blob_dir = tmp_path
+    f = rsvc.Filing(
+        title="Escrow release double-counts",
+        body="Steps: open an escrow, release twice within one block. Expected: one release. Got: two.",
+        files=[_Upload("po\x00c\udc80\n.txt", b"x", "text/\x00plain")],
+    )
+    t = await rsvc.file_ticket(ctx, db, g, f)
+    await db.flush()
+    a = (await rsvc.attachments_for(db, t))[0]
+    assert (a.filename, a.content_type) == ("poc .txt", "text/plain")
+    with pytest.raises(HTTPException) as e:
+        await rsvc.save_attachment(ctx, db, t, _Upload("\udc80.txt", b""), actor="desk")
+    assert e.value.status_code == 400 and e.value.detail == ".txt is empty"
+    assert json.dumps(e.value.detail, ensure_ascii=False).encode("utf-8")
+
+    # the node's answer goes into the health rows and three event payloads
+    class _Node:
+        async def node(self):
+            return {"network_id": "test\x00net\udc80", "id": 7, "version": "v"}
+
+    ctx.chain = _Node()
+    node = await ctx.refresh_node()
+    assert (node.network_id, node.node_id, node.version) == ("testnet", "", "v")
 
 
 async def test_an_internal_ref_has_one_spelling(ctx, db):

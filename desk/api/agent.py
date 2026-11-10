@@ -45,13 +45,12 @@ class PatchIn(Body):
 
 
 def _storable(v: Any, depth: int = 0) -> None:
-    """A proposal value goes into JSONB: finite numbers, bounded nesting, no NUL (XE-1015)."""
+    """A proposal value goes into JSONB: finite numbers and bounded nesting (XE-1015). A NUL in it
+    never gets here: `auth.Body` has refused the request."""
     if depth > 8:
         raise HTTPException(400, "the value is nested too deep")
     if isinstance(v, float) and not math.isfinite(v):
         raise HTTPException(400, "the value has a non-finite number in it")
-    if isinstance(v, str) and "\x00" in v:
-        raise HTTPException(400, "the value has a NUL in it")
     if isinstance(v, dict):
         for k, x in v.items():
             _storable(k, depth + 1)

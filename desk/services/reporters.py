@@ -89,7 +89,7 @@ async def identity_lock(db: AsyncSession, *keys: str) -> None:
 
 
 def _name(s: str) -> str:
-    return (s or "")[:128]
+    return tsvc.clean_text(s, one_line=True)[:128]
 
 
 def clean_email(email: str) -> str:
@@ -183,8 +183,11 @@ async def from_github(
     """The GitHub identity claims the imported reporter row with that login, so their old issues show up
     under "my reports" the first time they sign in."""
     gid = int(gh_user["id"])
-    login = (gh_user.get("login") or "")[:128]
-    email = (email or "").lower()[:256]
+    # what a provider says of an account is text from outside like any other, and this is where it is
+    # written: the login, the name and the address are made storable here, for every caller (the
+    # OAuth callback parses GitHub's JSON itself, not through `github.storable`)
+    login = tsvc.clean_text(gh_user.get("login"), one_line=True)[:128]
+    email = tsvc.clean_text(email, one_line=True).lower()[:256]
     await identity_lock(db, f"github:{gid}", f"email:{email}" if email else "")
     existing = await by_github(db, gid, login)
     if existing is None and email:
@@ -521,21 +524,25 @@ async def save_attachment(
     ctx: Context, db: AsyncSession, t: Ticket, up: UploadFile, *, actor: str
 ) -> Attachment:
     limit = ctx.settings.max_attachment_mb * 1024 * 1024
+    # the name as the client sent it is cleaned once, for the row and for the two refusals: a
+    # multipart part is decoded with the charset the client names, so it can carry half a surrogate
+    # pair, and an error response with one in it cannot be encoded (a 500 where a 400 was meant)
+    name = tsvc.clean_text(up.filename, one_line=True)[:256]
     data = await up.read(limit + 1)
     if len(data) > limit:
-        raise HTTPException(413, f"{up.filename or 'attachment'} is over {ctx.settings.max_attachment_mb} MB")
+        raise HTTPException(413, f"{name or 'attachment'} is over {ctx.settings.max_attachment_mb} MB")
     if not data:
-        raise HTTPException(400, f"{up.filename or 'attachment'} is empty")
+        raise HTTPException(400, f"{name or 'attachment'} is empty")
     last = select(Attachment.n).where(Attachment.ticket_id == t.id).order_by(Attachment.n.desc())
     n = int((await db.execute(last)).scalars().first() or 0) + 1
     sealed = t.visibility == "private"
-    path = _blob_path(ctx, t, n, up.filename or "file")
+    path = _blob_path(ctx, t, n, name or "file")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(ctx.vault.seal(data) if sealed else data)
     a = Attachment(
         ticket_id=t.id,
         n=n,
-        filename=(tsvc.clean_text(up.filename, one_line=True) or "file")[:256],
+        filename=name or "file",
         content_type=(tsvc.clean_text(up.content_type, one_line=True) or "application/octet-stream")[:128],
         size=len(data),
         sha256=hashlib.sha256(data).hexdigest(),

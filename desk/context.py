@@ -51,9 +51,11 @@ class Context:
             log.warning("node unreachable: %s", e)
             return self.node
 
-        def text(k: str) -> str:  # a string whatever the node sent (XE-0983)
+        def text(k: str) -> str:  # a string whatever the node sent (XE-0983), and one Postgres stores
             v = info.get(k, "")
-            return v[:128] if isinstance(v, str) else ""
+            if not isinstance(v, str):
+                return ""
+            return v.replace("\x00", "").encode("utf-8", "ignore").decode("utf-8")[:128]
 
         self.node = NodeIdentity(network_id=text("network_id"), node_id=text("id"), version=text("version"))
         return self.node

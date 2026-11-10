@@ -148,7 +148,7 @@ async def create_session(db: AsyncSession, user: User, request: Request | None =
         csrf=new_secret(24),
         expires_at=now() + SESSION_TTL,
         ip=client_ip(request) if request else "",
-        user_agent=(request.headers.get("user-agent", "")[:256] if request else ""),
+        user_agent=(clean_lookup(request.headers.get("user-agent")) if request else ""),
     )
     db.add(s)
     user.last_login_at = now()

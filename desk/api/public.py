@@ -380,7 +380,8 @@ async def github_webhook(ctx: Ctx, db: Db, request: Request):
         ctx.settings.github_webhook_secret, body, request.headers.get("x-hub-signature-256", "")
     ):
         raise HTTPException(401, "bad signature")
-    delivery = request.headers.get("x-github-delivery", "")
+    # stored as the key of a row: bounded and storable, not as long as the sender made it
+    delivery = auth.clean_lookup(request.headers.get("x-github-delivery"), 64)
     event = request.headers.get("x-github-event", "")
     if delivery and not await auth.claim_first(db, SeenDelivery, id=delivery):
         return {"ok": True, "duplicate": True}
