@@ -22,15 +22,15 @@ from datetime import timedelta
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import case, delete, func, select, text
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from xe.keys import KeyError_, KeyPair, derive_address
 
-from ..auth import Verified, clean_lookup
+from ..auth import Verified, clean_lookup, drop_reporter_links, family_lock
 from ..authz import Principal
 from ..context import Context
-from ..models import AREAS, TOPICS, Attachment, Reporter, ReporterLink, ReporterSession, Ticket
+from ..models import AREAS, TOPICS, Attachment, Reporter, ReporterSession, Ticket
 from . import thread
 from . import tickets as tsvc
 from .tickets import NewTicket, utcnow
@@ -85,7 +85,7 @@ async def identity_lock(db: AsyncSession, *keys: str) -> None:
     (XE-0969, XE-1012). Postgres only; released with the transaction."""
     for k in keys:
         if k:
-            await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"reporter:{k}"})
+            await family_lock(db, f"reporter:{k}")
 
 
 def _name(s: str) -> str:
@@ -271,7 +271,7 @@ async def merge(ctx: Context, db: AsyncSession, *, into: Reporter, other: Report
     await restamp(db, into)  # moved tickets carry the surviving account's address (XE-0801)
     # the shell keeps no way in: its sessions and outstanding links end with the merge (XE-0710)
     await db.execute(delete(ReporterSession).where(ReporterSession.reporter_id == other.id))
-    await db.execute(delete(ReporterLink).where(ReporterLink.reporter_id == other.id))
+    await drop_reporter_links(db, reporter_id=other.id)
     await ctx.events.append(
         db, "reporter.merged", f"reporter:{into.id}", {"into": into.id, "other": other.id}, public=False
     )
@@ -326,7 +326,7 @@ async def end_other_sessions(db: AsyncSession, r: Reporter, keep: int | None) ->
     if keep is not None:
         q = q.where(ReporterSession.id != keep)
     res = await db.execute(q)
-    await db.execute(delete(ReporterLink).where(ReporterLink.reporter_id == r.id))
+    await drop_reporter_links(db, reporter_id=r.id)
     return int(res.rowcount or 0)
 
 

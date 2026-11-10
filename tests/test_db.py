@@ -3278,6 +3278,35 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     for use in (lambda s: auth.consume_invite(s, invite), lambda s: auth.consume_reporter_link(s, link)):
         first, waited, got = await raced(use)
         assert first is not None and waited and got is None
+
+    # two different links of one family, used in the same moment. Using one burns its siblings, so
+    # each claimed its own row and then waited for the other's: a deadlock, which the database ends
+    # with an error (XE-1903). They queue on the family's lock: one works, the other is told it was used
+    async def both(make, use):
+        a, b = await make(), await make()
+        await db.commit()
+
+        async def one(raw):
+            async with sm() as s:
+                got = await use(s, raw)
+                await s.commit()
+                return got is not None
+
+        return sorted(await asyncio.gather(one(a), one(b)))
+
+    def new_link():
+        return auth.create_reporter_link(db, "pair@example.org", None, "/my")
+
+    for _ in range(3):
+        assert await both(new_link, auth.consume_reporter_link) == [False, True]
+        assert await both(lambda: auth.create_invite(db, team.user), auth.consume_invite) == [False, True]
+    # and every other writer of several of a family's rows queues on the same lock
+    for fn in (auth.consume_reporter_link, auth.consume_invite, auth.drop_reporter_links, users.set_active):
+        assert "family_lock(" in inspect.getsource(fn), fn.__name__
+    for mod in (auth, rsvc, users):
+        for line in inspect.getsource(mod).splitlines():
+            if re.search(r"(delete|update)\((ReporterLink|Invite)\)", line):
+                assert mod is auth or "Invite.user_id == u.id" in line, line
     # a TOTP code: the step it matched is taken once, and nothing at or before it is taken afterwards
     first, waited, got = await raced(lambda s: auth.claim_totp_step(s, team.user, 1000))
     assert first is True and waited and got is False

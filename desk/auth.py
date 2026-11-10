@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -270,12 +270,29 @@ async def create_reporter_link(
     return raw
 
 
+async def family_lock(db: AsyncSession, key: str) -> None:
+    """A transaction-scoped advisory lock, held to commit: whoever is about to write several rows that
+    belong to one owner (an address's sign-in links, a member's invites, a reporter being looked up
+    and perhaps created) takes the owner's lock first, so two of them queue instead of each holding
+    a row the other wants. Re-entrant within a transaction. Postgres only."""
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": key})
+
+
 async def consume_reporter_link(db: AsyncSession, raw: str) -> ReporterLink | None:
     """Single use, atomically: the row is claimed with one conditional UPDATE, so two concurrent
     consumers of one link cannot both sign in (XE-0709). Consuming a link also burns every other
     outstanding link for the same address: the person has recovered, older mail is not a credential
-    any more (XE-0782)."""
+    any more (XE-0782). The address's lock is taken before either write: two sibling links used in the
+    same moment each claimed its own row and then waited for the other's to burn it, and the database
+    ended the deadlock with an error, a 500 where one of them should have signed in and the other
+    been told the link was used (XE-1903). It is the lock a first sign-in with that address takes
+    (`reporters.identity_lock`), so the sign-in that follows already holds it."""
     stamp = now()
+    q = select(ReporterLink.email).where(ReporterLink.token_hash == hash_secret(raw))
+    email = (await db.execute(q)).scalar_one_or_none()
+    if email is None:
+        return None
+    await family_lock(db, f"reporter:email:{email}")
     res = await db.execute(
         update(ReporterLink)
         .where(
@@ -292,10 +309,31 @@ async def consume_reporter_link(db: AsyncSession, raw: str) -> ReporterLink | No
     link = (await db.execute(select(ReporterLink).where(ReporterLink.id == row[0]))).scalar_one()
     await db.execute(
         update(ReporterLink)
-        .where(ReporterLink.email == link.email, ReporterLink.used_at.is_(None))
+        .where(
+            ReporterLink.email == link.email,
+            ReporterLink.used_at.is_(None),
+            ReporterLink.expires_at >= stamp,  # an expired one is dead already, and is the purge's to take
+        )
         .values(used_at=stamp)
     )
     return link
+
+
+async def drop_reporter_links(db: AsyncSession, *, reporter_id: int | None = None, email: str = "") -> None:
+    """Delete the sign-in links bound to an account, and those sent to an address, under the lock of
+    every address among them (in order), as the consumer of one takes it: a writer of several of a
+    family's rows that does not queue with the others is the other half of a deadlock (XE-1903)."""
+    by = []
+    if reporter_id is not None:
+        by.append(ReporterLink.reporter_id == reporter_id)
+    if email:
+        by.append(ReporterLink.email == email)
+    if not by:
+        return
+    emails = set((await db.execute(select(ReporterLink.email).where(or_(*by)))).scalars().all())
+    for e in sorted(emails | ({email} if email else set())):
+        await family_lock(db, f"reporter:email:{e}")
+    await db.execute(delete(ReporterLink).where(or_(*by)))
 
 
 async def purge_reporter_auth(db: AsyncSession) -> int:
@@ -333,8 +371,15 @@ async def consume_invite(
     db: AsyncSession, raw: str, purposes: tuple[str, ...] = ("invite", "magic-link")
 ) -> User | None:
     # one conditional UPDATE claims the row (XE-0837); the user's other outstanding invites and magic
-    # links are burned with it (XE-0782)
+    # links are burned with it (XE-0782), under the member's lock so two of them used at once queue
+    # rather than deadlock (XE-1903)
     stamp = now()
+    owner = (
+        await db.execute(select(Invite.user_id).where(Invite.token_hash == hash_secret(raw)))
+    ).scalar_one_or_none()
+    if owner is None:
+        return None
+    await family_lock(db, f"invites:{owner}")
     res = await db.execute(
         update(Invite)
         .where(
@@ -350,7 +395,9 @@ async def consume_invite(
     if row is None:
         return None
     await db.execute(
-        update(Invite).where(Invite.user_id == row[0], Invite.used_at.is_(None)).values(used_at=stamp)
+        update(Invite)
+        .where(Invite.user_id == row[0], Invite.used_at.is_(None), Invite.expires_at >= stamp)
+        .values(used_at=stamp)
     )
     u = (await db.execute(select(User).where(User.id == row[0]))).scalar_one_or_none()
     return u if u and u.active else None
