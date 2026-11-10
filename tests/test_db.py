@@ -3724,3 +3724,69 @@ async def test_a_link_does_not_outlive_the_identity_it_was_sent_to(ctx, db):
     # nothing else in the service clears an address
     cleared = re.findall(r"\.email\s*(?:,[^=\n]*)?=[^=\n]*\"\"", inspect.getsource(rsvc))
     assert len(cleared) == 2, cleared
+
+
+async def test_a_request_body_is_bounded_as_it_is_read(ctx, monkeypatch):
+    """The rule (XE-0777, XE-1905): no more of a request body is read than its route allows, whatever
+    the headers say and whatever the method. Asked of both limits (a JSON body, the filing), of a body
+    that declares no length, one that understates it and one whose length is not a number, and of a
+    reader that lets the refusal through (FastAPI) and one that does nothing with it."""
+    from starlette.exceptions import HTTPException as AnyHTTPException
+
+    from desk import main
+
+    monkeypatch.setattr(main, "get_context", lambda: ctx)
+    assert any(m.cls is main.BodyLimit for m in main.app.user_middleware)
+    json_max = main.BodyLimit.JSON_MAX
+    filing_max = (ctx.settings.max_attachments * ctx.settings.max_attachment_mb << 20) + json_max
+    chunk = b"x" * (256 << 10)
+
+    async def run(path, total, headers=(), method="POST", reader="plain"):
+        """`total` bytes, in chunks, to an app that reads the whole body: the status that came back and
+        how many bytes the app was given."""
+        sent, got, out = 0, 0, []
+
+        async def receive():
+            nonlocal sent
+            n = min(len(chunk), total - sent)
+            sent += n
+            return {"type": "http.request", "body": chunk[:n], "more_body": sent < total}
+
+        async def send(message):
+            out.append(message)
+
+        async def inner(scope, receive, send):
+            nonlocal got
+            more = True
+            while more:
+                m = await receive()
+                got += len(m["body"])
+                more = m["more_body"]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        async def like_fastapi(scope, receive, send):
+            try:
+                await inner(scope, receive, send)
+            except AnyHTTPException as e:
+                await send({"type": "http.response.start", "status": e.status_code, "headers": []})
+                await send({"type": "http.response.body", "body": b""})
+
+        raw = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in headers]
+        scope = {"type": "http", "method": method, "path": path, "query_string": b"", "headers": raw}
+        await main.BodyLimit(like_fastapi if reader == "fastapi" else inner)(scope, receive, send)
+        return out[0]["status"], got
+
+    limits = (("/v1/team/tickets/XE-0001/facts", json_max), ("/v1/reporter/tickets", filing_max))
+    for path, limit in limits:
+        for headers in ((), (("content-length", "10"),), (("content-length", "\u00b2"),)):
+            for reader in ("plain", "fastapi"):
+                status, got = await run(path, limit + 1, headers, reader=reader)
+                assert status == 413 and got <= limit, (path, headers, reader)
+            assert await run(path, limit, headers) == (200, limit)
+        # declared honestly, it is refused before a byte is read; chunked with no length likewise
+        assert await run(path, limit + 1, (("content-length", str(limit + 1)),)) == (413, 0)
+        assert await run(path, 5, (("transfer-encoding", "chunked"),)) == (411, 0)
+    for method in ("GET", "DELETE", "PUT", "PATCH"):
+        assert (await run("/v1/x", json_max + 1, method=method))[0] == 413, method
+    assert isinstance(main.BodyTooLarge(), HTTPException) and main.BodyTooLarge().status_code == 413

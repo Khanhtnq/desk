@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -85,32 +86,71 @@ app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 app.add_middleware(MarkdownMirror, base_url="")
 
 
+class BodyTooLarge(HTTPException):
+    """Raised from `receive` once a body has run past its limit: an HTTPException (FastAPI's, and so
+    Starlette's), so whatever was reading (FastAPI's body parsing, which turns any other error into a
+    400; a handler's `request.body()`) lets it through to the 413."""
+
+    def __init__(self):
+        super().__init__(413, "request body too large")
+
+
 class BodyLimit:
-    """Pure ASGI. A request body is bounded before anything parses it (XE-0777): a JSON body at 1 MB, a
+    """Pure ASGI. A request body is bounded before anything parses it (XE-0777): a JSON body at 2 MB, a
     filing (the one multipart route) at the attachment count times the attachment size plus the report.
-    A body that declares more is refused at once; one with no declared length is refused too, since
-    every client the desk serves sends one and a chunked upload is the way round the limit."""
+    The bound is on the bytes that arrive, counted as they are read, whatever the method and whatever
+    the headers say (XE-1905): the declared length was the only thing checked, so a body that declared
+    none and was not chunked, or one behind a proxy that did not hold it to its declaration, was read
+    to the end. The declared length is still the fast path: a body that declares more is refused at
+    once, and a chunked one with no length too, since every client the desk serves sends one."""
 
     JSON_MAX = 2 << 20
 
     def __init__(self, app):
         self.app = app
 
+    def limit_for(self, path: str) -> int:
+        if path == "/v1/reporter/tickets":
+            st = get_context().settings
+            return (st.max_attachments * st.max_attachment_mb << 20) + self.JSON_MAX
+        return self.JSON_MAX
+
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("method") not in ("POST", "PUT", "PATCH"):
+        if scope["type"] != "http":
             return await self.app(scope, receive, send)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
-        limit = self.JSON_MAX
-        if scope["path"] == "/v1/reporter/tickets":
-            st = get_context().settings
-            limit = (st.max_attachments * st.max_attachment_mb << 20) + self.JSON_MAX
+        limit = self.limit_for(scope["path"])
         length = headers.get("content-length", "")
-        if not length.isdigit():
+        if not _DIGITS.fullmatch(length):
             if "chunked" in headers.get("transfer-encoding", "").lower():
                 return await _refuse(scope, send, 411, "a request body needs a Content-Length")
         elif int(length) > limit:
             return await _refuse(scope, send, 413, "request body too large")
-        return await self.app(scope, receive, send)
+        seen, started = 0, False
+
+        async def counted():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body") or b"")
+                if seen > limit:
+                    raise BodyTooLarge()
+            return message
+
+        async def watched(message):
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+
+        try:
+            await self.app(scope, counted, watched)
+        except BodyTooLarge:
+            # nothing inside turned it into a response (a reader outside the exception handlers)
+            if not started:
+                await _refuse(scope, send, 413, "request body too large")
+
+
+_DIGITS = re.compile(r"[0-9]{1,18}")  # `str.isdigit` also says yes to "²", which `int` then refuses
 
 
 async def _refuse(scope, send, status: int, why: str):
