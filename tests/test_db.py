@@ -3563,3 +3563,25 @@ async def test_a_proposal_is_checked_as_the_fact_it_would_set(ctx, db):
     assert out["diff"]["internal_ref"]["to"] == "#1064" and t.internal_ref == "#1064"
     out = await psvc.decide(ctx, db, p, dup, True)
     assert t.duplicate_of == canon.id
+
+
+async def test_the_daily_note_counts_what_the_public_counts(ctx, db):
+    """The rule: a public event with no ticket behind it says nothing an anonymous reader could not
+    count for themselves. The daily note is the one such event that carries ticket numbers."""
+    from desk import worker
+
+    p = await _team(ctx, db)
+    for visibility in ("public", "private"):
+        spec = tsvc.NewTicket(kind="bounty", title=f"a {visibility} report", visibility=visibility)
+        t = await tsvc.create(ctx, db, p.actor, spec)
+        for st in ("triaging", "accepted"):
+            await tsvc.set_status(ctx, db, p, t, st)
+    note = await worker.daily_counts(ctx, db)
+    ours = await tsvc.counts(db, authz.SYSTEM, "bounty")
+    assert (note["bounty"]["accepted"], ours["accepted"]) == (1, 2)
+    assert note["bounty"] == await tsvc.counts(db, authz.ANON, "bounty")
+    assert note["support"] == await tsvc.counts(db, authz.ANON, "support")
+    owed = len(await tsvc.outbox(db, ctx.config, authz.SYSTEM))
+    assert note["outbox"] == len(await tsvc.outbox(db, ctx.config, authz.ANON)) == owed - 1
+    src = inspect.getsource(worker.Worker.job_daily) + inspect.getsource(worker.daily_counts)
+    assert "SYSTEM" not in src and "daily_counts(" in inspect.getsource(worker.Worker.job_daily)

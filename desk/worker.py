@@ -37,6 +37,20 @@ async def mark_run(db, job: str, detail: dict | None = None) -> None:
         row.detail = detail or {}
 
 
+async def daily_counts(ctx, db) -> dict:
+    """The numbers in the daily note, which is a public event with no ticket behind it: counted as an
+    anonymous reader would count them. Counted with the desk's own eyes they included the private
+    tickets, and the note minus `/v1/tickets/counts` was the number of sealed reports at each status,
+    day by day; with one of them moving, that is where it stands (XE-0700 sweep)."""
+    from .authz import ANON
+
+    return {
+        "bounty": await tsvc.counts(db, ANON, "bounty"),
+        "support": await tsvc.counts(db, ANON, "support"),
+        "outbox": len(await tsvc.outbox(db, ctx.config, ANON)),
+    }
+
+
 class Worker:
     JOBS = {
         "github_poll": 120,
@@ -256,25 +270,14 @@ class Worker:
             ).scalar_one_or_none()
             if row and row.detail.get("date") == today:
                 return
-            from .authz import SYSTEM
-
-            counts = await tsvc.counts(db, SYSTEM, "bounty")
-            support = await tsvc.counts(db, SYSTEM, "support")
-            outbox = await tsvc.outbox(db, self.ctx.config, SYSTEM)
             head = await EventLog.head(db)
-            await self.ctx.events.append(
-                db,
-                "note.daily",
-                "desk",
-                {
-                    "date": today,
-                    "bounty": counts,
-                    "support": support,
-                    "outbox": len(outbox),
-                    "log_head": {"index": head.index, "hash": head.hash},
-                    "network_id": self.ctx.node.network_id,
-                },
-            )
+            note = {
+                "date": today,
+                **await daily_counts(self.ctx, db),
+                "log_head": {"index": head.index, "hash": head.hash},
+                "network_id": self.ctx.node.network_id,
+            }
+            await self.ctx.events.append(db, "note.daily", "desk", note)
             await mark_run(db, "daily", {"date": today})
             await db.commit()
 
