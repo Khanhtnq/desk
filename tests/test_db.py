@@ -1738,6 +1738,34 @@ async def test_reporter_withdraws_and_replies(ctx, db):
     assert e.value.status_code == 403
 
 
+async def test_a_finished_ticket_takes_no_reporter_message(ctx, db):
+    """The rule (XE-1960): the reporter's reply box writes to a ticket only while it is open. Asked of
+    every status the desk has, so a status added later is on one side or the other by `Ticket.is_open`,
+    and the page shows the box by the same property."""
+    r = await rsvc.from_email(ctx, db, "erin@example.org", link_to=None)
+    body = "What I did, what happened, what I expected; enough words to pass the body check."
+    f = rsvc.Filing(kind="bounty", title="Explorer shows wrong tip", body=body)
+    t = await rsvc.file_ticket(ctx, db, r, f)
+    statuses = set(tsvc.TRANSITIONS["bounty"]) | set(tsvc.TRANSITIONS["support"])
+    assert {"closed", "paid", "new", "awarded"} <= statuses
+    for status in sorted(statuses):
+        t.status = status
+        before = len(await thread.messages_for(db, t))
+        if status in ("closed", "paid"):
+            assert not t.is_open
+            with pytest.raises(HTTPException) as e:
+                await rsvc.reply(ctx, db, r, t, "one more thing")
+            assert e.value.status_code == 409, status
+            assert len(await thread.messages_for(db, t)) == before, status
+        else:
+            assert t.is_open
+            assert await rsvc.reply(ctx, db, r, t, "one more thing") is not None, status
+            assert len(await thread.messages_for(db, t)) == before + 1, status
+    page = (Path(tsvc.__file__).parent.parent / "templates" / "ticket.html").read_text()
+    box = page[page.index('class="compose reporter"'):page.index('id="reporter-reply"')]
+    assert "{% if not t.is_open %}" in box
+
+
 async def test_support_questions_take_topics_not_areas(ctx, db):
     r = await rsvc.from_email(ctx, db, "gail@example.org", link_to=None)
     body = "I wrote the seed down when I made the wallet but the paper is gone. Is there any way back in?"

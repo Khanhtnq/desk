@@ -226,7 +226,7 @@
 {% elif mine %}
   <div class="compose reporter" style="margin-top:28px" data-ticket="{{ t.id }}">
     <h3>Add to your {{ "question" if t.kind == "support" else "report" }}</h3>
-    {% if t.status in ("closed", "paid") %}
+    {% if not t.is_open %}
     <p class="k">This one is {{ copy.labels.get(t.status, t.status) }}{% if t.closed_reason %} ({{ t.closed_reason }}){% endif %}. File a new one if there is more.</p>
     {% else %}
     <textarea id="reporter-reply" placeholder="{% if t.visibility == 'private' %}Sealed like the report; the team sees it, nobody else does.{% else %}Public, like the rest of the thread.{% endif %}"></textarea>

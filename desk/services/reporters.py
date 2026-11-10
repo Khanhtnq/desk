@@ -667,8 +667,13 @@ async def withdraw(ctx: Context, db: AsyncSession, r: Reporter, t: Ticket, reaso
 
 
 async def reply(ctx: Context, db: AsyncSession, r: Reporter, t: Ticket, body: str):
+    """The reporter's own word on their ticket, from the desk's reply box. A finished ticket (closed or
+    paid) takes none: the rule is here, where the message is written, and the ticket page asks the same
+    question of the same property to decide whether to show the box (XE-1960)."""
     if not owns(r, t):
         raise HTTPException(403, "not your ticket")
+    if not t.is_open:
+        raise HTTPException(409, f"a {t.status} ticket takes no more messages; file a new one")
     body = (body or "").strip()
     if not body:
         raise HTTPException(400, "empty message")
