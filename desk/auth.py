@@ -372,14 +372,17 @@ async def consume_invite(
 ) -> User | None:
     # one conditional UPDATE claims the row (XE-0837); the user's other outstanding invites and magic
     # links are burned with it (XE-0782), under the member's lock so two of them used at once queue
-    # rather than deadlock (XE-1903)
+    # rather than deadlock (XE-1903). The member's lock is the member's row: every team write to a
+    # member takes that row first (`member_lock`), and the sign-in that follows this writes it, so
+    # an accept and a deactivation queue on it whichever starts first. An advisory lock beside the
+    # row was taken after the row by one of them and before it by the other.
     stamp = now()
     owner = (
         await db.execute(select(Invite.user_id).where(Invite.token_hash == hash_secret(raw)))
     ).scalar_one_or_none()
     if owner is None:
         return None
-    await family_lock(db, f"invites:{owner}")
+    await member_lock(db, owner)
     res = await db.execute(
         update(Invite)
         .where(
@@ -401,6 +404,20 @@ async def consume_invite(
     )
     u = (await db.execute(select(User).where(User.id == row[0]))).scalar_one_or_none()
     return u if u and u.active else None
+
+
+async def member_lock(db: AsyncSession, user_id: int) -> None:
+    """The row lock on a team member, re-read: the owner's lock for the member's invites, and the
+    first thing a writer of the member takes. Pending changes are flushed first, as `tickets.lock`."""
+    await db.flush()
+    q = select(User).where(User.id == user_id).with_for_update()
+    await db.execute(q.execution_options(populate_existing=True))
+
+
+async def drop_invites(db: AsyncSession, user_id: int) -> None:
+    """Delete a member's unused invites: the account is deactivated, or the address they were
+    mailed to is no longer the member's. The caller holds `member_lock`."""
+    await db.execute(delete(Invite).where(Invite.user_id == user_id, Invite.used_at.is_(None)))
 
 
 # ---- TOTP (RFC 6238, stdlib only) ---------------------------------------------------------------------

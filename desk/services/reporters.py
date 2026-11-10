@@ -255,6 +255,15 @@ async def merge(ctx: Context, db: AsyncSession, *, into: Reporter, other: Report
     """Two rows turn out to be one person (an imported GitHub login signs in by email first, say): the
     tickets move, the identities union, the other row is kept empty rather than deleted so its id in
     old log entries still resolves."""
+    # the shell keeps no way in: its outstanding links end with the merge (XE-0710). They are the
+    # ones bound to it and the ones mailed to its address: a plain sign-in link carries no account,
+    # only the address, and one sent before the merge outlived it, signing its holder in as that
+    # address again, on a new row, after the merge had folded the address away (XE-1904). First,
+    # before either row is written: a sign-in with that address takes the address's lock and then
+    # the row, and a merge that wrote the row and then asked for the lock was the other half of a
+    # deadlock (XE-1903)
+    was = other.email
+    await drop_reporter_links(db, reporter_id=other.id, email=was)
     for t in (await db.execute(select(Ticket).where(Ticket.reporter_id == other.id))).scalars():
         t.reporter_id = into.id
     into.github_id = into.github_id or other.github_id
@@ -267,18 +276,14 @@ async def merge(ctx: Context, db: AsyncSession, *, into: Reporter, other: Report
     # platform ids move too, so the chat bot keys later messages to the live row, not the shell (XE-0473)
     into.platform_ids = {**(other.platform_ids or {}), **(into.platform_ids or {})}
     other.platform_ids = {}
-    was = other.email
     other.github_id, other.github_login, other.email = None, "", ""
     other.xe_address, other.payout_proof, other.xe_login_addresses = "", {}, []
     other.display_name = f"merged into {into.id}"
     await db.flush()
     await restamp(db, into)  # moved tickets carry the surviving account's address (XE-0801)
-    # the shell keeps no way in: its sessions and outstanding links end with the merge (XE-0710). Its
-    # links are the ones bound to it and the ones mailed to its address: a plain sign-in link carries
-    # no account, only the address, and one sent before the merge outlived it, signing its holder in
-    # as that address again, on a new row, after the merge had folded the address away (XE-1904)
+    # and its sessions, here and not with the links: after the wait for the address's lock, so a
+    # session a queued sign-in committed meanwhile is ended too
     await db.execute(delete(ReporterSession).where(ReporterSession.reporter_id == other.id))
-    await drop_reporter_links(db, reporter_id=other.id, email=was)
     await ctx.events.append(
         db, "reporter.merged", f"reporter:{into.id}", {"into": into.id, "other": other.id}, public=False
     )
@@ -309,8 +314,11 @@ async def unlink(ctx: Context, db: AsyncSession, r: Reporter, kind: str, value: 
     elif kind == "email":
         if not r.email:
             raise HTTPException(404, "no email is on this account")
-        value, r.email = r.email, ""
-        await drop_reporter_links(db, email=value)  # mail already sent to it is not a way back (XE-1904)
+        # mail already sent to it is not a way back (XE-1904); the address's lock before the row is
+        # written, the order a sign-in with the address takes them in (XE-1903)
+        value = r.email
+        await drop_reporter_links(db, email=value)
+        r.email = ""
     elif kind == "github":
         if r.github_id is None:
             raise HTTPException(404, "GitHub is not linked")

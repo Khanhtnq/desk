@@ -3383,13 +3383,29 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     for _ in range(3):
         assert await both(new_link, auth.consume_reporter_link) == [False, True]
         assert await both(lambda: auth.create_invite(db, team.user), auth.consume_invite) == [False, True]
-    # and every other writer of several of a family's rows queues on the same lock
-    for fn in (auth.consume_reporter_link, auth.consume_invite, auth.drop_reporter_links, users.set_active):
+    # and every other writer of several of a family's rows queues on the same lock: an address's
+    # lock for its links, the member's row for a member's invites
+    for fn in (auth.consume_reporter_link, auth.drop_reporter_links):
         assert "family_lock(" in inspect.getsource(fn), fn.__name__
-    for mod in (auth, rsvc, users):
-        for line in inspect.getsource(mod).splitlines():
+    for fn in (auth.consume_invite, users.set_active):
+        assert "member_lock(" in inspect.getsource(fn), fn.__name__
+    # the lock is the first thing taken, not only present: before the owner's row is written. A
+    # sign-in takes the lock and then writes the row, so a writer in the other order is the other
+    # half of the same deadlock
+    for fn, lock, write in (
+        (users.set_active, "member_lock(", "u.active ="),
+        (rsvc.unlink, "drop_reporter_links(", 'r.email = ""'),
+        (rsvc.merge, "drop_reporter_links(", "t.reporter_id = into.id"),
+    ):
+        src = inspect.getsource(fn)
+        assert -1 < src.index(lock) < src.index(write), fn.__name__
+    # the two tables are written in one module, whatever is added to the others
+    import desk as package
+
+    for f in Path(package.__file__).parent.rglob("*.py"):
+        for line in f.read_text().splitlines():
             if re.search(r"(delete|update)\((ReporterLink|Invite)\)", line):
-                assert mod is auth or "Invite.user_id == u.id" in line, line
+                assert f.name == "auth.py", (f.name, line)
     # a TOTP code: the step it matched is taken once, and nothing at or before it is taken afterwards
     first, waited, got = await raced(lambda s: auth.claim_totp_step(s, team.user, 1000))
     assert first is True and waited and got is False

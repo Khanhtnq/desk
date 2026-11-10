@@ -12,7 +12,7 @@ from .. import auth
 from ..auth import clean_lookup
 from ..authz import Principal
 from ..context import Context
-from ..models import ROLES, AgentToken, Invite, Passkey, Session, User
+from ..models import ROLES, AgentToken, Passkey, Session, User
 from .tickets import utcnow
 
 
@@ -90,14 +90,16 @@ async def set_email(ctx: Context, db: AsyncSession, actor: str, u: User, email: 
 
 
 async def set_active(ctx: Context, db: AsyncSession, actor: str, u: User, active: bool) -> None:
+    # the member's row first, before the log: an invite being accepted holds it from its claim to
+    # its sign-in, so the two queue (XE-1903)
+    await auth.member_lock(db, u.id)
     u.active = active
     await ctx.events.append(db, "user.active", actor, {"user": u.id, "active": active}, public=False)
     if not active:
         await revoke_all(ctx, db, actor, u, why="owner deactivated")
         # sessions and outstanding invites end with the account, not at their own expiry (XE-0838)
         await db.execute(delete(Session).where(Session.user_id == u.id))
-        await auth.family_lock(db, f"invites:{u.id}")  # queue with a consumer of one of them (XE-1903)
-        await db.execute(delete(Invite).where(Invite.user_id == u.id, Invite.used_at.is_(None)))
+        await auth.drop_invites(db, u.id)
 
 
 async def revoke_all(ctx: Context, db: AsyncSession, actor: str, u: User, *, why: str) -> int:
