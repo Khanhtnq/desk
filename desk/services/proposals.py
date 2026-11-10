@@ -52,7 +52,7 @@ async def propose(
         # a key before anyone adopts it (the family of a canonical is the pending duplicate_of proposals
         # equal to its id), so `xe-0142` filed its ticket under a family of its own; and a value no
         # ticket could hold waited for a person to click into the 400 (XE-1054)
-        value = await tsvc.fact_value(db, t, field, value)
+        value = await tsvc.fact_value(ctx, db, t, field, value)
     if field == "reply_draft" and not isinstance(value, str):
         raise HTTPException(400, "a reply draft is a string")
     if field == "award_xe":
@@ -119,6 +119,9 @@ async def fill_awards(ctx: Context, db: AsyncSession, p: Principal, ids: list[st
         raise HTTPException(400, f"step must be one of {list(ctx.config.award_steps)}")
     filled: list[dict] = []
     skipped: list[dict] = []
+    # as stored, before anything is matched against them: `xe-0042` found its ticket (`get`) and
+    # missed its pending proposal, so the step's figure was set over the agent's and nothing was adopted
+    ids = [tsvc.ticket_id(i) for i in ids]
     pending = await pending_field_for(db, ids, "award_xe")
     # ids read up front: a savepoint rollback later in the loop may expire a row (XE-0862)
     newest = {tid: (prs[0], prs[0].id) for tid, prs in pending.items() if prs}
@@ -361,10 +364,19 @@ async def close_duplicates(
     require_field(p, "status")
     closed: list[dict] = []
     skipped: list[dict] = []
-    for t, pr in await pending_duplicates_of(db, canon.id):
-        if only and t.id not in only:
+    # ids read before any savepoint: a rollback expires the row and a lazy load of it is a 500
+    family = [(t, pr, t.id) for t, pr in await pending_duplicates_of(db, canon.id)]
+    if only is not None:
+        # a subset is named by ids as stored; one that is not in the family is said so, not passed
+        # over (`xe-0002` closed nothing and the answer listed nothing). An empty subset is none of
+        # the family, not all of it
+        only = [tsvc.ticket_id(i) for i in only]
+        members = {tid for _, _, tid in family}
+        outside = f"not a pending duplicate of {canon.id}"
+        skipped += [{"ticket": i, "why": outside} for i in only if i not in members]
+    for t, pr, tid in family:
+        if only is not None and tid not in only:
             continue
-        tid = t.id  # read before the savepoint: a rollback expires the row and a lazy load here is a 500
         try:
             async with db.begin_nested():
                 require(p, "reply", t)

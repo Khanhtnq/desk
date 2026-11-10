@@ -974,7 +974,13 @@ async def test_a_marked_duplicate_with_the_close_still_pending_is_part_of_the_fa
     assert row.duplicate_of == canon.id
     fam = await psvc.pending_duplicates_of(db, canon.id)
     assert [(o.id, pr) for o, pr in fam] == [(t.id, None)]
-    out = await psvc.close_duplicates(ctx, db, p, canon)
+    # a subset of the family is named by ids as stored, however the caller spelt them: an empty one
+    # is none of the family, one outside it is said so, and `xe-0002` is XE-0002
+    none = await psvc.close_duplicates(ctx, db, p, canon, only=[])
+    assert none["closed"] == [] and none["skipped"] == []
+    stray = await psvc.close_duplicates(ctx, db, p, canon, only=["xe-9999"])
+    assert stray["closed"] == [] and [x["ticket"] for x in stray["skipped"]] == ["XE-9999"]
+    out = await psvc.close_duplicates(ctx, db, p, canon, only=[f" {t.id.lower()} "])
     assert [d["ticket"] for d in out["closed"]] == [t.id] and out["skipped"] == []
     await db.refresh(t)
     await db.refresh(s)
@@ -2729,7 +2735,8 @@ async def test_filling_missing_awards_adopts_a_proposal_or_takes_the_step(ctx, d
     assert out["filled"] == [] and len(out["skipped"]) == 2
 
     ids = [proposed.id, bare.id, other.id, notier.id, taken.id, hidden.id]
-    out = await psvc.fill_awards(ctx, db, team, ids + ["XE-9999"], "standard")
+    # the ids as a caller may spell them: the proposal on `proposed` is found under any of them
+    out = await psvc.fill_awards(ctx, db, team, [f" {ids[0].lower()} "] + ids[1:] + ["xe-9999"], "standard")
     got = {f["ticket"]: (f["award_xe"], f["from"]) for f in out["filled"]}
     assert got == {
         proposed.id: (500_000_000, f"proposal #{pr.id}"),
@@ -3707,13 +3714,16 @@ async def test_an_internal_ref_has_one_spelling(ctx, db):
     t, _ = await sync.upsert_issue(ctx, db, "xeprotocol/xe", _issue(63, "Explorer search bar"))
     others = [
         await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=f"r{i}", source="web"))
-        for i in range(4)
+        for i in range(6)
     ]
-    for o, spelt in zip(others, ("#1068", " #01068 ", "1068\n", "Faucet#010")):
+    # the tracker is xeprotocol/core, so `core#1068` is its `#1068` and not another repository's
+    assert ctx.config.internal_repo == "xeprotocol/core"
+    spellings = ("#1068", " #01068 ", "1068\n", "Faucet#010", "core#1068", "Core#01068")
+    for o, spelt in zip(others, spellings):
         await tsvc.set_facts(ctx, db, p, o, {"internal_ref": spelt})
-    assert [o.internal_ref for o in others] == ["#1068", "#1068", "#1068", "faucet#10"]
+    assert [o.internal_ref for o in others] == ["#1068", "#1068", "#1068", "faucet#10", "#1068", "#1068"]
     klass = await tsvc.same_class(db, p, {"#1068"})
-    assert [o.id for o in klass["#1068"]] == sorted(o.id for o in others[:3])  # one class
+    assert [o.id for o in klass["#1068"]] == sorted(o.id for o in others if o is not others[3])  # one class
     # and the tracker moves a ticket a person linked: under another spelling the issue "also named"
     # the report and left it alone
     await tsvc.set_facts(ctx, db, p, t, {"internal_ref": "1070"})

@@ -280,8 +280,15 @@ async def find_by_source(db: AsyncSession, source: str, repo: str, ref: str) -> 
     return (await db.execute(q)).scalar_one_or_none()
 
 
+def ticket_id(raw: Any) -> str:
+    """A ticket id in the one spelling it is stored in. `xe-0042` names XE-0042 wherever a caller may
+    spell an id: looked up through this (`get`), stored through it (`fact_value`), and compared with a
+    stored id only after it (the two bulk routes that take a list of ids)."""
+    return str(raw).strip().upper()
+
+
 async def get(db: AsyncSession, tid: str) -> Ticket | None:
-    return (await db.execute(select(Ticket).where(Ticket.id == tid.upper()))).scalar_one_or_none()
+    return (await db.execute(select(Ticket).where(Ticket.id == ticket_id(tid)))).scalar_one_or_none()
 
 
 async def get_for(db: AsyncSession, p: Principal, tid: str) -> Ticket:
@@ -832,20 +839,27 @@ async def leaderboard(db: AsyncSession) -> list[dict]:
 _INTERNAL_REF = re.compile(r"(?:([a-z0-9][a-z0-9_.-]{0,19})?#)?([0-9]{1,9})")
 
 
-def internal_ref(v: Any) -> str:
+def internal_ref(v: Any, tracker: str = "") -> str:
     """An engineering ticket reference as it is stored: `#1064` in the tracker, `faucet#10` in another
     repository. It is a key (the tracker's state follows `#n`, a class of reports is the tickets that
     share one, `settings.internal_url` links it), so it has one spelling: `1064`, `#1064`, ` #01064 `
     and `Faucet#10` are accepted and stored as `#1064` and `faucet#10`; anything else is a 400, where
     it used to be stored as sent and matched nothing, or was too long for the column and ended as a
-    500. ASCII digits only: `str.isdigit` and `\\d` admit the other scripts' digits."""
+    500. ASCII digits only: `str.isdigit` and `\\d` admit the other scripts' digits.
+
+    `tracker` is the tracker's own repository (`xeprotocol/core`): `core#1064` is that tracker's
+    `#1064` under a second spelling, and is stored as `#1064`. Kept as written it looked linked, had
+    no link, sat in a class of its own and was never moved when the engineering ticket closed."""
     m = _INTERNAL_REF.fullmatch(v.strip().lower()) if isinstance(v, str) else None
     if m is None or int(m[2]) == 0:
         raise HTTPException(400, "internal_ref is a ticket number such as #1064 or faucet#10")
-    return f"{m[1] or ''}#{int(m[2])}"
+    repo = m[1] or ""
+    if repo == tracker.rsplit("/", 1)[-1].lower():
+        repo = ""
+    return f"{repo}#{int(m[2])}"
 
 
-async def fact_value(db: AsyncSession, t: Ticket, k: str, v: Any) -> Any:
+async def fact_value(ctx: Context, db: AsyncSession, t: Ticket, k: str, v: Any) -> Any:
     """One fact as it would be stored on this ticket, or a 400: the vocabulary, the type, the one
     spelling of a value that is a key, and that what it names exists. `set_facts` stores what this
     returns, so a bad value never lands however it arrived; a proposal is checked with it when it is
@@ -864,11 +878,11 @@ async def fact_value(db: AsyncSession, t: Ticket, k: str, v: Any) -> Any:
     if k == "claimed_tier" and t.kind != "bounty":
         raise HTTPException(400, "a support question carries no claimed tier")
     if k == "internal_ref":
-        return internal_ref(v)
+        return internal_ref(v, ctx.config.internal_repo)
     if k == "duplicate_of":
         if not isinstance(v, str) or len(v) > 32:
             raise HTTPException(400, "duplicate_of is a ticket id such as XE-0042")
-        v = v.strip().upper()
+        v = ticket_id(v)
         if v == t.id:
             raise HTTPException(400, "a ticket cannot duplicate itself")
         if await get(db, v) is None:
@@ -900,7 +914,7 @@ async def set_facts(
     reason = clean_text(reason, one_line=True)  # it goes in the log, whoever gave it
     diff: dict[str, Any] = {}
     for k, v in changes.items():
-        v = await fact_value(db, t, k, v)
+        v = await fact_value(ctx, db, t, k, v)
         if k == "visibility" and v == "public" and t.visibility == "private":
             raise HTTPException(400, "use disclose to make a private ticket public")
         old = getattr(t, k)
