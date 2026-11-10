@@ -658,8 +658,10 @@ async def patch_counts(db: AsyncSession, ticket_ids: list[str]) -> dict[str, int
 
 
 async def release_view(db: AsyncSession, cfg: Config, p: Principal) -> dict[str, list[Ticket]]:
-    """Every `before` and `decide` ticket grouped by area, severity order within each."""
-    rows = await list_tickets(db, cfg, p, Filters(kind="bounty", status="all", limit=500))
+    """Every `before` and `decide` ticket grouped by area, severity order within each. Every one:
+    read through `every_ticket`, not the first page of the list, which past 500 bounty tickets left
+    out whichever of them sorted after it."""
+    rows = await every_ticket(db, cfg, p, Filters(kind="bounty", status="all"))
     out: dict[str, list[Ticket]] = {a: [] for a in cfg.areas}
     for t in rows:
         if t.mainnet_gate in ("before", "decide"):
