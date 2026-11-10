@@ -3693,3 +3693,34 @@ async def test_the_daily_note_counts_what_the_public_counts(ctx, db):
     assert note["outbox"] == len(await tsvc.outbox(db, ctx.config, authz.ANON)) == owed - 1
     src = inspect.getsource(worker.Worker.job_daily) + inspect.getsource(worker.daily_counts)
     assert "SYSTEM" not in src and "daily_counts(" in inspect.getsource(worker.Worker.job_daily)
+
+
+async def test_a_link_does_not_outlive_the_identity_it_was_sent_to(ctx, db):
+    """The rule (XE-0710, XE-1904): when an address comes off an account, by a merge or by the
+    reporter unlinking it, every sign-in link already mailed to it stops working. Asked of both
+    places an address is taken off, and of both kinds of link (bound to the account, and plain)."""
+    from desk.models import ReporterSession
+
+    kept = await rsvc.from_email(ctx, db, "kept@example.org", link_to=None)
+    shell = await rsvc.from_email(ctx, db, "old@example.org", link_to=None)
+    plain = await auth.create_reporter_link(db, "old@example.org", None, "/my")
+    bound = await auth.create_reporter_link(db, "extra@example.org", shell.id, "/my")
+    theirs = await auth.create_reporter_link(db, "kept@example.org", None, "/my")
+    await auth.create_reporter_session(db, shell, "email")
+    shell_id = shell.id
+    await rsvc.merge(ctx, db, into=kept, other=shell)
+    assert (kept.email, shell.email) == ("kept@example.org", "")
+    assert await auth.consume_reporter_link(db, plain) is None
+    assert await auth.consume_reporter_link(db, bound) is None
+    assert await rsvc.by_email(db, "old@example.org") is None  # and nothing brought the address back
+    left = select(ReporterSession.id).where(ReporterSession.reporter_id == shell_id)
+    assert (await db.execute(left)).first() is None
+    assert (await auth.consume_reporter_link(db, theirs)) is not None  # the surviving account's own
+    # unlinked by the reporter: the same
+    kept.xe_login_addresses = ["a" * 40]
+    sent = await auth.create_reporter_link(db, "kept@example.org", None, "/my")
+    await rsvc.unlink(ctx, db, kept, "email")
+    assert kept.email == "" and await auth.consume_reporter_link(db, sent) is None
+    # nothing else in the service clears an address
+    cleared = re.findall(r"\.email\s*(?:,[^=\n]*)?=[^=\n]*\"\"", inspect.getsource(rsvc))
+    assert len(cleared) == 2, cleared

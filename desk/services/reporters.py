@@ -264,14 +264,18 @@ async def merge(ctx: Context, db: AsyncSession, *, into: Reporter, other: Report
     # platform ids move too, so the chat bot keys later messages to the live row, not the shell (XE-0473)
     into.platform_ids = {**(other.platform_ids or {}), **(into.platform_ids or {})}
     other.platform_ids = {}
+    was = other.email
     other.github_id, other.github_login, other.email = None, "", ""
     other.xe_address, other.payout_proof, other.xe_login_addresses = "", {}, []
     other.display_name = f"merged into {into.id}"
     await db.flush()
     await restamp(db, into)  # moved tickets carry the surviving account's address (XE-0801)
-    # the shell keeps no way in: its sessions and outstanding links end with the merge (XE-0710)
+    # the shell keeps no way in: its sessions and outstanding links end with the merge (XE-0710). Its
+    # links are the ones bound to it and the ones mailed to its address: a plain sign-in link carries
+    # no account, only the address, and one sent before the merge outlived it, signing its holder in
+    # as that address again, on a new row, after the merge had folded the address away (XE-1904)
     await db.execute(delete(ReporterSession).where(ReporterSession.reporter_id == other.id))
-    await drop_reporter_links(db, reporter_id=other.id)
+    await drop_reporter_links(db, reporter_id=other.id, email=was)
     await ctx.events.append(
         db, "reporter.merged", f"reporter:{into.id}", {"into": into.id, "other": other.id}, public=False
     )
@@ -303,6 +307,7 @@ async def unlink(ctx: Context, db: AsyncSession, r: Reporter, kind: str, value: 
         if not r.email:
             raise HTTPException(404, "no email is on this account")
         value, r.email = r.email, ""
+        await drop_reporter_links(db, email=value)  # mail already sent to it is not a way back (XE-1904)
     elif kind == "github":
         if r.github_id is None:
             raise HTTPException(404, "GitHub is not linked")
