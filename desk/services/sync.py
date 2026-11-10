@@ -245,6 +245,15 @@ async def link_pull(ctx: Context, db: AsyncSession, repo: str, pull: dict) -> in
         t = await tsvc.find_by_source(db, "github", repo, str(issue_no))
         if t is None:
             continue
+        if issue_no in fixes and (state != "open" or trusted):
+            q = select(PatchRef.followed).where(
+                PatchRef.ticket_id == t.id, PatchRef.repo == repo, PatchRef.ref == str(pull["number"])
+            )
+            if (await db.execute(q)).scalar_one_or_none() != state:
+                # this PR may be about to move the ticket: the row lock first, before the link is
+                # logged (the order every writer takes them in), and so that the follower reads the
+                # status as it is now and not as this pass loaded it
+                await tsvc.lock(db, t)
         pr = await thread.add_patch_ref(
             ctx,
             db,
@@ -281,18 +290,26 @@ PRE_PATCH = ("new", "triaging", "needs-info", "accepted", "fixing")
 async def _follow_pull_state(
     ctx: Context, db: AsyncSession, t: Ticket, pr: PatchRef, state: str, *, trusted: bool
 ) -> bool:
+    if t.kind != "bounty" or pr.followed == state:
+        return False  # a question is not followed, and nothing is recorded against the day it is a report
+    if state == "open" and not trusted:
+        return False  # not this PR's say; unrecorded, so it has it if its author is a maintainer later
+    # decided on the rows as they are now. A poll is one session that keeps what it loaded: the ticket
+    # read in its first phase is stale by the time the pulls are read, and a move decided on the stale
+    # status was refused by `set_status` (which does re-read) after the change had been recorded as
+    # acted on, so it was never acted on at all (XE-2080 sweep)
+    await tsvc.lock(db, t)
+    await db.refresh(pr)
     if pr.followed == state:
         return False
     pr.followed = state
-    if t.kind != "bounty" or t.status not in PRE_PATCH:
+    if t.status not in PRE_PATCH:
         return False
     via = f"github:{pr.repo}#{pr.ref}"
     ref = f"{pr.repo.split('/')[-1]}#{pr.ref}"
     if state == "merged":
         target, reason = "patched", f"{ref} merged"  # a merge is a maintainer's act whoever wrote the PR
     elif state == "open":
-        if not trusted:
-            return False
         if t.status == "fixing":
             if not pr.moved_from:
                 # a second maintainer PR while fixing: it inherits where the ticket came from, so its
@@ -413,6 +430,12 @@ async def link_internal_issue(ctx: Context, db: AsyncSession, issue: dict) -> di
     stats = {"issue": number, "tagged": 0, "linked": 0, "moved": 0, "noted": 0}
     for t in await _tagged_tickets(ctx, db, text, ref):
         stats["tagged"] += 1
+        if not t.internal_ref and t.internal_followed.startswith(f"{ref}:"):
+            # it was linked to this issue and followed it, and a person has since cleared the link (the
+            # wrong class, say). That stands: the issue still naming the report does not put it back
+            cleared = f"Internal ticket {ref} names this report; its link here was cleared by hand."
+            stats["noted"] += int(await _note_once(ctx, db, t, cleared))
+            continue
         if not t.internal_ref:
             await tsvc.set_facts(ctx, db, SYSTEM, t, {"internal_ref": ref}, via=via)
             stats["linked"] += 1
@@ -461,6 +484,9 @@ async def _follow_internal_state(ctx: Context, db: AsyncSession, t: Ticket, issu
     seen = f"{ref}:{state}:{reason}"[:64]
     if t.internal_followed == seen:
         return False  # read again, unchanged: it has had its say (see PRE_PATCH above)
+    await tsvc.lock(db, t)  # and the status below is the one in the database now, as for a PR
+    if t.internal_followed == seen or t.internal_ref != ref:
+        return False
     t.internal_followed = seen
     if state == "open":
         if t.status in ("new", "triaging", "needs-info"):

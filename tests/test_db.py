@@ -1440,6 +1440,48 @@ async def test_a_source_moves_a_ticket_once_and_a_persons_status_then_stands(ctx
     # the issue is reopened (nothing to move at fixing) and closed again: that close is news
     assert (await tracker())["moved"] == 0 and t3.status == "fixing"
     assert (await tracker(**done))["moved"] == 1 and t3.status == "patched"
+    # a link a person cleared stays cleared: the issue still naming the report does not put it back
+    await tsvc.set_facts(ctx, db, team, t3, {"internal_ref": ""})
+    stats = await tracker()
+    assert (stats["linked"], stats["moved"], stats["noted"], t3.internal_ref) == (0, 0, 1, "")
+    assert (await tracker(**done))["noted"] == 0 and (t3.internal_ref, t3.status) == ("", "patched")
+
+    # a stranger's open PR is not the PR's say, and is not recorded as if it had been: seen again
+    # once its author is a maintainer, it moves the ticket
+    t6, _ = await sync.upsert_issue(ctx, db, repo, _issue(155, "A fork's fix"))
+    await pull(164, 155, login="mallory", association="NONE")
+    assert t6.status == "new"
+    await pull(164, 155, login="mallory", association="MEMBER")
+    assert t6.status == "fixing"
+
+    # decided on the ticket as it is now. A poll is one session that keeps what it loaded; a person's
+    # move made since is what the follower finds, and the change at the source is not used up on a
+    # status that is no longer there
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+
+    async def elsewhere(tid, status, **kw):
+        async with sm() as other:
+            await tsvc.set_status(ctx, other, team, await tsvc.get(other, tid), status, **kw)
+            await other.commit()
+
+    t4, _ = await sync.upsert_issue(ctx, db, repo, _issue(153, "Stale by the tracker phase"))
+    await sync.link_internal_issue(ctx, db, _issue(1081, "security: bundle xe#153"))
+    assert t4.status == "accepted"
+    await db.commit()
+    await elsewhere(t4.id, "triaging")
+    assert t4.status == "accepted"  # what this pass still holds
+    stats = await sync.link_internal_issue(ctx, db, _issue(1081, "security: bundle xe#153", **done))
+    assert (stats["moved"], stats["noted"], t4.status) == (1, 0, "patched")
+    t5, _ = await sync.upsert_issue(ctx, db, repo, _issue(154, "Closed by a person meanwhile"))
+    await tsvc.set_status(ctx, db, team, t5, "triaging")
+    await db.commit()
+    await elsewhere(t5.id, "closed", closed_reason="invalid")
+    assert t5.status == "triaging"
+    await pull(163, 154, state="closed", merged=True)  # a merge while closed: seen, and it stays closed
+    assert t5.status == "closed"
+    await tsvc.set_status(ctx, db, team, t5, "triaging")  # reopened by a person: the old merge is not news
+    await pull(163, 154, state="closed", merged=True)
+    assert t5.status == "triaging"
 
 
 async def test_the_teams_own_words_on_the_thread_tell_the_reporter(ctx, db):
