@@ -164,7 +164,7 @@ async def session_from_request(db: AsyncSession, request: Request) -> tuple[Sess
     if s is None or s.expires_at < now():
         return None
     u = (await db.execute(select(User).where(User.id == s.user_id))).scalar_one_or_none()
-    if u is None or not u.active:
+    if u is None or not u.active or not u.roles:
         return None
     return s, u
 
@@ -403,7 +403,7 @@ async def consume_invite(
         .values(used_at=stamp)
     )
     u = (await db.execute(select(User).where(User.id == row[0]))).scalar_one_or_none()
-    return u if u and u.active else None
+    return u if u and u.active and u.roles else None
 
 
 async def member_lock(db: AsyncSession, user_id: int) -> None:
@@ -596,7 +596,7 @@ async def passkey_begin_login(db: AsyncSession, settings: Settings, email: str |
     email = clean_lookup(email)
     if email:
         u = (await db.execute(select(User).where(User.email == email.strip().lower()))).scalar_one_or_none()
-        if u and u.active:
+        if u and u.active and u.roles:
             user_id = u.id
             keys = list((await db.execute(select(Passkey).where(Passkey.user_id == u.id))).scalars().all())
             allow = [PublicKeyCredentialDescriptor(id=p.credential_id) for p in keys]
@@ -644,7 +644,7 @@ async def passkey_finish_login(
     if not await claim_sign_count(db, pk, v.new_sign_count):
         raise HTTPException(401, "passkey sign-in failed: its counter has moved on; try again")
     u = (await db.execute(select(User).where(User.id == pk.user_id))).scalar_one_or_none()
-    if u is None or not u.active:
+    if u is None or not u.active or not u.roles:
         raise HTTPException(401, "account is not active")
     return u
 

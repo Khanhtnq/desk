@@ -3115,11 +3115,24 @@ async def test_payout_file_lists_only_awarded_tickets(ctx, db):
 
 
 async def test_tokens_stop_when_the_owner_leaves_the_team(ctx, db):
+    from starlette.requests import Request
+
+    from desk.models import Session
+
     lead = await _team(ctx, db)
     agent = await _agent(ctx, db, lead.user, scopes=("read:public", "read:private", "write:notes"))
+    _, raw = await auth.create_session(db, lead.user)
+    invite = await auth.create_invite(db, lead.user)
     assert agent.token.revoked_at is None
     await users.set_roles(ctx, db, "test", lead.user, [])
     assert agent.token.revoked_at is not None
+    assert (await db.execute(select(Session).where(Session.user_id == lead.user.id))).scalars().all() == []
+    assert await auth.consume_invite(db, invite) is None
+    req = Request(
+        {"type": "http", "method": "GET", "path": "/", "query_string": b"",
+         "headers": [(b"cookie", f"{auth.SESSION_COOKIE}={raw}".encode())]}
+    )
+    assert await auth.session_from_request(db, req) is None
 
 
 async def test_making_a_ticket_private_seals_what_arrived_while_public(ctx, db, tmp_path):
@@ -3699,7 +3712,7 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     # lock for its links, the member's row for a member's invites
     for fn in (auth.consume_reporter_link, auth.drop_reporter_links):
         assert "family_lock(" in inspect.getsource(fn), fn.__name__
-    for fn in (auth.consume_invite, users.set_active, users.set_email):
+    for fn in (auth.consume_invite, users.set_active, users.set_email, users.set_roles):
         assert "member_lock(" in inspect.getsource(fn), fn.__name__
     # the lock is the first thing taken, not only present: before the owner's row is written. A
     # sign-in takes the lock and then writes the row, so a writer in the other order is the other
@@ -3707,6 +3720,7 @@ async def test_a_single_use_credential_is_claimed_by_one_statement(ctx, db):
     for fn, lock, write in (
         (users.set_active, "member_lock(", "u.active ="),
         (users.set_email, "member_lock(", "u.email ="),
+        (users.set_roles, "member_lock(", "u.roles ="),
         (rsvc.unlink, "drop_reporter_links(", 'r.email = ""'),
         (rsvc.merge, "drop_reporter_links(", "t.reporter_id = into.id"),
         (rsvc.from_email, "identity_lock(", "r.email = email"),
@@ -3902,6 +3916,8 @@ async def test_a_cookie_write_carries_the_csrf_token(ctx, db):
     both = req("POST", f"{auth.SESSION_COOKIE}={traw}; {rcookie}", ts.csrf)
     who = await deps.current(db, both)
     assert who.session is not None and who.reporter_session is None
+    url = (await rapi.github_link(ctx, db, who, both, rapi.LinkIn(next="/account")))["url"]
+    assert await state_of(url) == {"next": "/account", "link_to": r.id}
     resp = Response()
     await rapi.logout(ctx, db, who, both, resp)
     assert resp.headers["set-cookie"].startswith(f"{auth.REPORTER_COOKIE}=")

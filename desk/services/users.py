@@ -56,11 +56,14 @@ async def set_roles(ctx: Context, db: AsyncSession, actor: str, u: User, roles: 
     bad = [r for r in roles if r not in ROLES]
     if bad:
         raise HTTPException(400, f"unknown roles {bad}")
+    await auth.member_lock(db, u.id)
     old = list(u.roles)
     u.roles = sorted(set(roles))
     await ctx.events.append(db, "user.roles", actor, {"user": u.id, "from": old, "to": u.roles}, public=False)
     if not u.roles:
         await revoke_all(ctx, db, actor, u, why="roles removed")
+        await db.execute(delete(Session).where(Session.user_id == u.id))
+        await auth.drop_invites(db, u.id)
 
 
 async def set_name(ctx: Context, db: AsyncSession, actor: str, u: User, name: str) -> None:

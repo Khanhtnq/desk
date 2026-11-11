@@ -128,7 +128,7 @@ async def totp_login(ctx: Ctx, db: Db, request: Request, response: Response, bod
     u = await users.by_email(db, body.email)
     # one answer whether the address is a member, is active, or has a code set up (XE-0523)
     step = None
-    if u is not None and u.active and u.totp_secret:
+    if u is not None and u.active and u.roles and u.totp_secret:
         try:
             secret = ctx.vault.open_text(u.totp_secret)
         except Exception:

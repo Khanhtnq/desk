@@ -15,7 +15,7 @@ from markdown_it import MarkdownIt
 from markupsafe import Markup, escape
 from sqlalchemy import select
 
-from . import __version__, brand
+from . import __version__, auth, brand
 from .auth import resolve, safe_next
 from .authz import ANON, Principal, can, can_see
 from .brief import build_agent_brief, fix_brief
@@ -125,7 +125,11 @@ async def principal(db, request: Request) -> tuple[Principal, str]:
     except Exception:
         request.state.reporter = None
         return ANON, ""
-    request.state.reporter = a.reporter
+    rep = a.reporter
+    if rep is None and a.session is not None:
+        got = await auth.reporter_session_from_request(db, request)
+        rep = got[1] if got else None
+    request.state.reporter = rep
     return a.principal, a.csrf
 
 

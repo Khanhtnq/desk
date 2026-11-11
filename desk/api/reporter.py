@@ -45,13 +45,27 @@ def _limit(request: Request, table=_attempts, limit=LIMIT, window=WINDOW, what="
     table[ip] = hits
 
 
-def _reporter(who: Who, request: Request) -> Reporter:
+async def _held_reporter(
+    db: Db, who: Who, request: Request | None = None
+) -> tuple[auth.ReporterSession, Reporter] | None:
+    """The reporter session this browser holds, even when it also holds a team session (`who.session`).
+    `deps.current` checks the CSRF token of `who.session` (or `who.reporter_session`) on every cookie
+    write; a request with neither session holds nothing here."""
+    if who.reporter is not None and who.reporter_session is not None:
+        return who.reporter_session, who.reporter
+    if who.session is not None and request is not None:
+        return await auth.reporter_session_from_request(db, request)
+    return None
+
+
+async def _reporter(db: Db, who: Who, request: Request) -> Reporter:
     """The signed-in reporter. The CSRF check on a cookie write is `deps.current`'s, for every route:
     it used to be made here, and the two routes that did not call this (adding a key to a signed-in
     account, and sign-out) went without it (XE-2101, XE-2139)."""
-    if who.reporter is None or who.reporter_session is None:
+    held = await _held_reporter(db, who, request)
+    if held is None:
         raise HTTPException(401, "sign in first")
-    return who.reporter
+    return held[1]
 
 
 def _safe_next(ctx: Ctx, nxt: str | None, default: str = "/my") -> str:
@@ -118,7 +132,7 @@ async def github_start(ctx: Ctx, db: Db, request: Request, next: str | None = No
 @router.post("/auth/github/link")
 async def github_link(ctx: Ctx, db: Db, who: Who, request: Request, body: LinkIn):
     """A signed-in reporter adds GitHub to their account: the address to send the browser to."""
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     return {"url": await _github_url(ctx, db, request, body.next, r.id)}
 
 
@@ -136,11 +150,12 @@ async def _take_state(db: Db, state: str, kind: str) -> auth.TakenChallenge:
     return ch
 
 
-def _link_target(ch: auth.TakenChallenge, who: Who) -> int | None:
+async def _link_target(db: Db, ch: auth.TakenChallenge, who: Who, request: Request) -> int | None:
     """The account a sign-in adds its identity to: only the one the asking browser is still signed in as.
     A state handed to another browser (login CSRF) is a plain sign-in there, never a merge."""
     want = ch.detail.get("link_to")
-    if want and who.reporter is not None and who.reporter.id == want:
+    held = await _held_reporter(db, who, request) if want else None
+    if want and held is not None and held[1].id == want:
         return want
     return None
 
@@ -178,7 +193,7 @@ async def github_callback(
             email = ""
     if not isinstance(user, dict) or "id" not in user:
         raise HTTPException(400, "GitHub returned no user; start again")
-    want = _link_target(ch, who)
+    want = await _link_target(db, ch, who, request)
     r = await rsvc.from_github(ctx, db, user, email, link_to=await rsvc.get(db, want) if want else None)
     resp = RedirectResponse(ch.detail.get("next") or "/my", status_code=302)
     await _sign_in(ctx, db, request, resp, r, "github")
@@ -218,7 +233,7 @@ async def discord_start(ctx: Ctx, db: Db, request: Request, next: str | None = N
 
 @router.post("/auth/discord/link")
 async def discord_link(ctx: Ctx, db: Db, who: Who, request: Request, body: LinkIn):
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     return {"url": await _discord_url(ctx, db, request, body.next, r.id)}
 
 
@@ -248,7 +263,7 @@ async def discord_callback(
         user = (await client.get("https://discord.com/api/users/@me", headers=h)).json()
     if not isinstance(user, dict) or "id" not in user:
         raise HTTPException(400, "Discord returned no user; start again")
-    want = _link_target(ch, who)
+    want = await _link_target(db, ch, who, request)
     link_to = await rsvc.get(db, want) if want else None
     r = await channels.from_platform(
         ctx,
@@ -273,22 +288,26 @@ class EmailIn(Body):
     next: str | None = None
 
 
-async def _email_link(ctx: Ctx, db, who: Who, email: str, next_path: str) -> bool:
+async def _email_link(
+    ctx: Ctx, db, who: Who, email: str, next_path: str, request: Request | None = None
+) -> bool:
     """Create a one-time link and mail it. Signed in, the link adds the address to that account and the
     mail says so; otherwise it is a sign-in. Commits. Returns whether mail went out."""
+    held = await _held_reporter(db, who, request)
+    rep = held[1] if held else None
     existing = await rsvc.by_email(db, email)
-    if who.reporter and existing and existing.id != who.reporter.id:
+    if rep and existing and existing.id != rep.id:
         # never a merge by mail: the person who clicks is not the person who asked
         raise HTTPException(409, "that address is already on another account; sign in there to use it")
     # signed out, the link is a sign-in whether or not the address is known (XE-0363); only a signed-in
     # asker gets a link bound to their account
-    link_to = who.reporter.id if who.reporter else None
+    link_to = rep.id if rep else None
     raw = await auth.create_reporter_link(db, email, link_to, next_path)
     await db.commit()
     host = ctx.settings.hosts["bounty"]
     url = f"{ctx.settings.scheme}://{host}/v1/reporter/auth/email/{raw}"
     name = ctx.config.copy_public.get("bounty_name", "the XE desk")
-    if who.reporter:
+    if rep:
         subject = f"Confirm this address for {name}"
         text = (
             "Open this link within fifteen minutes, in the browser where you asked for it, to confirm "
@@ -309,7 +328,7 @@ async def _email_link(ctx: Ctx, db, who: Who, email: str, next_path: str) -> boo
 async def email_start(ctx: Ctx, db: Db, who: Who, request: Request, body: EmailIn):
     """Send a one-time link. Signed out, the response is the same whether or not the address is known."""
     _limit(request)
-    sent = await _email_link(ctx, db, who, rsvc.clean_email(body.email), _safe_next(ctx, body.next))
+    sent = await _email_link(ctx, db, who, rsvc.clean_email(body.email), _safe_next(ctx, body.next), request)
     note = None if sent else "mail is not configured on this desk; ask the team"
     return {"ok": True, "sent": sent, "note": note}
 
@@ -323,11 +342,12 @@ async def email_finish(ctx: Ctx, db: Db, who: Who, request: Request, token: str)
     link_to = None
     if link.reporter_id:
         # a link that adds an address to an account works only in the browser signed in as that account
-        if who.reporter is None or who.reporter.id != link.reporter_id:
+        held = await _held_reporter(db, who, request)
+        if held is None or held[1].id != link.reporter_id:
             raise HTTPException(
                 400, "open this link in the browser where you asked for it, signed in to the same account"
             )
-        link_to = who.reporter
+        link_to = held[1]
     r = await rsvc.from_email(ctx, db, link.email, link_to=link_to)
     resp = RedirectResponse(link.next_path or "/my", status_code=302)
     await _sign_in(ctx, db, request, resp, r, "email")
@@ -347,14 +367,15 @@ async def xe_login(ctx: Ctx, db: Db, who: Who, request: Request, response: Respo
     v = await auth.verify_signed(db, req, DOMAIN_LOGIN)
     if str(v.payload.get("host") or "").lower() not in {h.lower() for h in ctx.settings.hosts.values()}:
         raise HTTPException(401, "the signed host is not this desk; sign in on the page you are on")
-    r = await rsvc.from_xe(ctx, db, v, link_to=who.reporter)
+    held = await _held_reporter(db, who, request)
+    r = await rsvc.from_xe(ctx, db, v, link_to=held[1] if held else None)
     return await _sign_in(ctx, db, request, response, r, "xe")
 
 
 @router.post("/payout")
 async def bind_payout(ctx: Ctx, db: Db, who: Who, request: Request, req: auth.SignedRequest):
     """A signed request under xe/desk/payout/v1 with payload {"address": A}, signed by A's key."""
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     v = await auth.verify_signed(db, req, DOMAIN_PAYOUT)
     out = await rsvc.bind_payout(ctx, db, r, v)
     await db.commit()
@@ -365,7 +386,7 @@ async def bind_payout(ctx: Ctx, db: Db, who: Who, request: Request, req: auth.Si
 async def unbind_payout(ctx: Ctx, db: Db, who: Who, request: Request):
     """Drop the bound payout address. Nothing to sign: the account's session is the authority here, since
     removing an address can only ever stop a payment, not redirect one."""
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     out = await rsvc.unbind_payout(ctx, db, r)
     await db.commit()
     return out
@@ -381,9 +402,7 @@ async def logout(ctx: Ctx, db: Db, who: Who, request: Request, response: Respons
     on another site, whose POST carries no cookie) changes nothing here (the XE-2101 sweep). A browser
     holding the team's cookie as well is the team member to `who`, and still holds a reporter session
     to end."""
-    if who.session is None and who.reporter_session is None:
-        return {"ok": True}
-    if await auth.reporter_session_from_request(db, request) is not None:
+    if await _held_reporter(db, who, request) is not None:
         await auth.end_reporter_session(db, request)
         await db.commit()
         auth.clear_session_cookie(response, ctx.settings, name=auth.REPORTER_COOKIE)
@@ -399,7 +418,7 @@ class UnlinkIn(Body):
 async def unlink_identity(ctx: Ctx, db: Db, who: Who, request: Request, body: UnlinkIn):
     """Take a way in off the account: {"kind": "xe", "value": <address>}, or kind email, github, discord.
     The last way in cannot be removed (XE-0575)."""
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     out = await rsvc.unlink(ctx, db, r, body.kind[:32], body.value)
     await db.commit()
     return out
@@ -408,21 +427,26 @@ async def unlink_identity(ctx: Ctx, db: Db, who: Who, request: Request, body: Un
 @router.post("/sessions/revoke-others")
 async def revoke_other_sessions(ctx: Ctx, db: Db, who: Who, request: Request):
     """Sign this account out of every other browser and burn its outstanding email links."""
-    r = _reporter(who, request)
-    n = await rsvc.end_other_sessions(db, r, keep=who.reporter_session.id)
+    held = await _held_reporter(db, who, request)
+    if held is None:
+        raise HTTPException(401, "sign in first")
+    rs, r = held
+    n = await rsvc.end_other_sessions(db, r, keep=rs.id)
     await ctx.events.append(db, "reporter.sessions_ended", f"reporter:{r.id}", {"n": n}, public=False)
     await db.commit()
     return {"ended": n}
 
 
 @router.get("/me")
-async def me(ctx: Ctx, db: Db, who: Who):
-    if who.reporter is None:
+async def me(ctx: Ctx, db: Db, who: Who, request: Request):
+    held = await _held_reporter(db, who, request)
+    if held is None:
         return {"reporter": None}
-    mine = await rsvc.my_tickets(db, who.reporter)
+    _, rep = held
+    mine = await rsvc.my_tickets(db, rep)
     hidden = await tsvc.hidden_targets(db, who.principal, mine)
     return {
-        "reporter": rsvc.to_dict(who.reporter),
+        "reporter": rsvc.to_dict(rep),
         "csrf": who.csrf,
         "tickets": [tsvc.to_dict(ctx, t, who.principal, hidden=hidden) for t in mine],
         "github_sign_in": bool(ctx.settings.github_oauth_client_id),
@@ -483,7 +507,7 @@ async def file_ticket(ctx: Ctx, db: Db, who: Who, request: Request):
     FastAPI reads a declared body before it resolves who is calling, so the filing's allowance (its
     attachments' worth, where every other route has 2 MB) was read and parsed for anyone who sent
     one (XE-1905). The route declares no body, so nothing is read for a caller who is refused."""
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     _limit(request, _filings, FILE_LIMIT, FILE_WINDOW, "reports")
     if not is_multipart(request.headers.get("content-type")):
         raise HTTPException(415, "a report is filed as multipart/form-data")
@@ -513,7 +537,9 @@ async def file_ticket(ctx: Ctx, db: Db, who: Who, request: Request):
     notify = None
     if notify_email and notify_email.strip() and not r.email:
         try:
-            notify = await _email_link(ctx, db, who, rsvc.clean_email(notify_email), _safe_next(ctx, url))
+            notify = await _email_link(
+                ctx, db, who, rsvc.clean_email(notify_email), _safe_next(ctx, url), request
+            )
         except HTTPException:
             notify = False  # a bad address never costs the filing
     return {"ticket": t.id, "url": url, "visibility": t.visibility, "notify_sent": notify, "queued": t.queued}
@@ -525,7 +551,7 @@ class TextIn(Body):
 
 @router.post("/tickets/{tid}/messages")
 async def reporter_reply(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: TextIn):
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     t = await tsvc.get_for(db, who.principal, tid)
     m = await rsvc.reply(ctx, db, r, t, body.body)
     await db.commit()
@@ -534,7 +560,7 @@ async def reporter_reply(ctx: Ctx, db: Db, who: Who, request: Request, tid: str,
 
 @router.post("/tickets/{tid}/withdraw")
 async def reporter_withdraw(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, body: TextIn):
-    r = _reporter(who, request)
+    r = await _reporter(db, who, request)
     t = await tsvc.get_for(db, who.principal, tid)
     await rsvc.withdraw(ctx, db, r, t, body.body)
     await db.commit()
@@ -542,9 +568,10 @@ async def reporter_withdraw(ctx: Ctx, db: Db, who: Who, request: Request, tid: s
 
 
 @router.get("/tickets/{tid}/attachments")
-async def list_attachments(ctx: Ctx, db: Db, who: Who, tid: str):
+async def list_attachments(ctx: Ctx, db: Db, who: Who, request: Request, tid: str):
     t = await tsvc.get_for(db, who.principal, tid)
-    if not (who.principal.is_team or rsvc.owns(who.reporter, t)):
+    held = await _held_reporter(db, who, request)
+    if not (who.principal.is_team or rsvc.owns(held[1] if held else None, t)):
         raise HTTPException(403, "attachments open for the reporter and the team only")
     rows = await rsvc.attachments_for(db, t)
     return {
@@ -556,9 +583,10 @@ async def list_attachments(ctx: Ctx, db: Db, who: Who, tid: str):
 
 
 @router.get("/tickets/{tid}/attachments/{n}")
-async def get_attachment(ctx: Ctx, db: Db, who: Who, tid: str, n: int):
+async def get_attachment(ctx: Ctx, db: Db, who: Who, request: Request, tid: str, n: int):
     t = await tsvc.get_for(db, who.principal, tid)
-    if not (who.principal.is_team or rsvc.owns(who.reporter, t)):
+    held = await _held_reporter(db, who, request)
+    if not (who.principal.is_team or rsvc.owns(held[1] if held else None, t)):
         raise HTTPException(403, "attachments open for the reporter and the team only")
     a, data = await rsvc.open_attachment(ctx, db, who.principal, t, n)
     await db.commit()

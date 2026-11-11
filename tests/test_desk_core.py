@@ -513,3 +513,157 @@ def test_ticket_url_is_the_bare_id_on_its_front_door():
         assert TICKET_ID.fullmatch(ok)
     for bad in ("agent", "team", "XE-1", "XE-0032/x", "XQ-0001", "scope"):
         assert not TICKET_ID.fullmatch(bad)
+
+
+async def test_roleless_team_sessions_and_dual_cookie_reporter_routes(monkeypatch):
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from desk import auth, ui
+    from desk.api import authn, deps
+    from desk.api import reporter as rapi
+    from desk.services import reporters as rsvc
+    from desk.services import users
+
+    def make_req(method: str, cookie: str = "", csrf: str = "") -> Request:
+        headers = []
+        if cookie:
+            headers.append((b"cookie", cookie.encode()))
+        if csrf:
+            headers.append((b"x-desk-csrf", csrf.encode()))
+        scope = {"type": "http", "method": method, "path": "/", "query_string": b"", "headers": headers}
+        return Request(scope)
+
+    ts = SimpleNamespace(id="team-sess", csrf="team-csrf")
+    rs = SimpleNamespace(id="rep-sess", csrf="rep-csrf")
+    member = SimpleNamespace(id=1, email="lead@xe.network", display_name="Lead", active=True, roles=["lead"])
+    rep = SimpleNamespace(
+        id=9, email="rep@example.org", display_name="Rep", github_id=None, github_login="",
+        xe_address=None, xe_login_addresses=[], platform_ids={},
+    )
+
+    async def fake_team(_db, _req):
+        return (ts, member) if member.active and member.roles else None
+
+    async def fake_rep(_db, req):
+        return (rs, rep) if auth.REPORTER_COOKIE in (req.headers.get("cookie") or "") else None
+
+    monkeypatch.setattr(auth, "session_from_request", fake_team)
+    monkeypatch.setattr(auth, "reporter_session_from_request", fake_rep)
+
+    cookie = f"{auth.SESSION_COOKIE}=t; {auth.REPORTER_COOKIE}=r"
+    both_get = make_req("GET", cookie)
+    who_get = await deps.current(None, both_get)
+    assert who_get.principal.is_team and who_get.session is ts and who_get.reporter_session is None
+
+    # writes in a dual-cookie browser require the team session's CSRF token
+    with pytest.raises(HTTPException) as e:
+        await deps.current(None, make_req("POST", cookie, rs.csrf))
+    assert e.value.status_code == 403
+    both_post = make_req("POST", cookie, ts.csrf)
+    who_post = await deps.current(None, both_post)
+    assert who_post.session is ts and who_post.reporter_session is None
+
+    # UI principal populates request.state.reporter for reporter pages in a dual-cookie browser
+    p, csrf = await ui.principal(None, both_get)
+    assert p.is_team and csrf == ts.csrf and both_get.state.reporter is rep
+
+    # reporter routes resolve the browser's reporter session alongside `who.session`, while `nobody` gets 401
+    assert await rapi._held_reporter(None, who_post, both_post) == (rs, rep)
+    assert await rapi._reporter(None, who_post, both_post) is rep
+    ch = SimpleNamespace(detail={"link_to": rep.id})
+    assert await rapi._link_target(None, ch, who_post, both_post) == rep.id
+    nobody = auth.Auth(auth.Principal())
+    assert await rapi._held_reporter(None, nobody, both_post) is None
+    with pytest.raises(HTTPException) as e:
+        await rapi._reporter(None, nobody, both_post)
+    assert e.value.status_code == 401
+
+    # roleless User (`roles == []`) is not a team member anywhere: removing roles drops sessions & invites,
+    # and stale `desk_session` cookies fall through cleanly to `desk_reporter`
+    calls = []
+
+    class FakeDb:
+        async def execute(self, stmt):
+            calls.append(("sql", str(stmt)))
+            return SimpleNamespace(
+                scalar_one_or_none=lambda: member,
+                first=lambda: (member.id,),
+                scalars=lambda: SimpleNamespace(all=list),
+            )
+
+        async def commit(self):
+            calls.append(("commit",))
+
+    async def fake_lock(_db, uid):
+        calls.append(("lock", uid))
+
+    async def fake_drop(_db, uid):
+        calls.append(("drop_invites", uid))
+
+    async def fake_revoke(_ctx, _db, _actor, u, *, why):
+        calls.append(("revoke_all", u.id, why))
+
+    monkeypatch.setattr(auth, "member_lock", fake_lock)
+    monkeypatch.setattr(auth, "drop_invites", fake_drop)
+    monkeypatch.setattr(users, "revoke_all", fake_revoke)
+
+    events = []
+
+    async def append_ev(_db, kind, actor, payload, *, public=True):
+        events.append((kind, actor, payload, public))
+
+    ctx = SimpleNamespace(
+        events=SimpleNamespace(append=append_ev),
+        settings=SimpleNamespace(
+            hosts={"bounty": "bounty.test", "support": "support.test"},
+            scheme="https",
+            cookie_secure=False,
+            github_oauth_client_id="gh",
+            discord_sign_in=False,
+            smtp_host="",
+        ),
+        config=SimpleNamespace(copy_public={"bounty_name": "XE"}),
+        vault=SimpleNamespace(open_text=lambda s: s),
+    )
+    fake_db = FakeDb()
+    await users.set_roles(ctx, fake_db, "user:admin", member, [])
+    assert member.roles == []
+    assert calls[0] == ("lock", member.id)
+    assert ("revoke_all", member.id, "roles removed") in calls
+    assert ("drop_invites", member.id) in calls
+    assert any(entry[0] == "sql" and "DELETE FROM sessions" in entry[1] for entry in calls)
+
+    # with `member.roles == []`, the stale team cookie is ignored and `desk_reporter` resolves
+    fell_through = await deps.current(None, make_req("POST", cookie, rs.csrf))
+    assert fell_through.principal.kind == "reporter" and fell_through.reporter is rep
+
+    # `totp_login` refuses a roleless user with the uniform 401
+    member.totp_secret = "JBSWY3DPEHPK3PXP"
+    monkeypatch.setattr(users, "by_email", lambda _db, _e: _async_val(member))
+    authn._attempts.clear()
+    with pytest.raises(HTTPException) as e:
+        await authn.totp_login(
+            ctx, fake_db, make_req("POST"), Response(), authn.TotpLoginIn(email=member.email, code="000000")
+        )
+    assert e.value.status_code == 401
+
+    # `_email_link` in a dual-cookie browser binds `link_to=rep.id`
+    member.roles = ["lead"]
+    links = []
+
+    async def fake_create_link(_db, email, link_to, nxt):
+        links.append((email, link_to, nxt))
+        return "tok"
+
+    monkeypatch.setattr(rsvc, "by_email", lambda _db, _e: _async_val(None))
+    monkeypatch.setattr(auth, "create_reporter_link", fake_create_link)
+    monkeypatch.setattr(auth, "send_mail", lambda *_a: _async_val(False))
+    await rapi._email_link(ctx, fake_db, who_post, "new@example.org", "/account", both_post)
+    assert links == [("new@example.org", rep.id, "/account")]
+
+
+async def _async_val(v):
+    return v
