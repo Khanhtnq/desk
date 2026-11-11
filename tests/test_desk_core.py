@@ -513,3 +513,73 @@ def test_ticket_url_is_the_bare_id_on_its_front_door():
         assert TICKET_ID.fullmatch(ok)
     for bad in ("agent", "team", "XE-1", "XE-0032/x", "XQ-0001", "scope"):
         assert not TICKET_ID.fullmatch(bad)
+
+
+async def test_other_live_patches_counts_followed_open_maintainer_pr(monkeypatch):
+    from types import SimpleNamespace
+
+    from desk.models import PatchRef
+    from desk.services import sync
+    from desk.services import tickets as tsvc
+
+    t = Ticket(id="XE-0042", kind="bounty", visibility="public", status="fixing")
+    pr1 = PatchRef(
+        ticket_id=t.id, repo="xeprotocol/xe", ref="10", kind="pr", state="open", author="alice",
+        followed="", moved_from="",
+    )
+    pr2 = PatchRef(
+        ticket_id=t.id, repo="xeprotocol/xe", ref="11", kind="pr", state="open", author="bob",
+        followed="", moved_from="",
+    )
+    stranger = PatchRef(
+        ticket_id=t.id, repo="xeprotocol/xe", ref="12", kind="pr", state="open", author="rando",
+        followed="", moved_from="",
+    )
+    mention = PatchRef(
+        ticket_id=t.id, repo="xeprotocol/xe", ref="13", kind="pr", state="open", author="alice",
+        followed="", moved_from="",
+    )
+    open_others = [pr2, stranger, mention]
+
+    class FakeDb:
+        async def refresh(self, _row, with_for_update=False):
+            pass
+
+        async def execute(self, _stmt):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(first=lambda: None, all=lambda: list(open_others))
+            )
+
+    async def fake_lock(_db, _t):
+        pass
+
+    moved = []
+
+    async def fake_set_path(_ctx, _db, _actor, ticket, target, **_kw):
+        ticket.status = target
+        moved.append(target)
+
+    monkeypatch.setattr(tsvc, "lock", fake_lock)
+    monkeypatch.setattr(tsvc, "set_status_via_path", fake_set_path)
+    ctx = SimpleNamespace(settings=SimpleNamespace(github_bot_login=""))
+    db = FakeDb()
+
+    # Ticket was already at `fixing` before either maintainer PR opened (`moved_from == ""`).
+    assert await sync._follow_pull_state(ctx, db, t, pr1, "open", trusted=True) is False
+    assert await sync._follow_pull_state(ctx, db, t, pr2, "open", trusted=True) is False
+    assert pr1.followed == "open" and pr1.moved_from == ""
+    assert pr2.followed == "open" and pr2.moved_from == ""
+    # Stranger's `Fixes #n` PR is ignored; bare mention PR never enters `_follow_pull_state`.
+    assert await sync._follow_pull_state(ctx, db, t, stranger, "open", trusted=False) is False
+    assert stranger.followed == "" and mention.followed == ""
+
+    # Closing pr1 unmerged while pr2 (`followed == "open"`) is still open must NOT drop `t` from `fixing`.
+    pr1.state = "closed"
+    assert await sync._follow_pull_state(ctx, db, t, pr1, "closed", trusted=True) is False
+    assert t.status == "fixing" and moved == []
+
+    # Once pr2 also closes unmerged (leaving only `stranger` and `mention` open), `t` drops to `accepted`.
+    open_others = [stranger, mention]
+    pr2.state = "closed"
+    assert await sync._follow_pull_state(ctx, db, t, pr2, "closed", trusted=True) is True
+    assert t.status == "accepted" and moved == ["accepted"]

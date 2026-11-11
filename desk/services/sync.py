@@ -384,7 +384,12 @@ async def _other_live_patches(ctx: Context, db: AsyncSession, t: Ticket, repo: s
     )
     bot = ctx.settings.github_bot_login
     for other in (await db.execute(q)).scalars().all():
-        if other.state == "merged" or other.moved_from or (bot and other.author == bot):
+        if (
+            other.state == "merged"
+            or other.moved_from
+            or other.followed == "open"
+            or (bot and other.author == bot)
+        ):
             return True
     return False
 

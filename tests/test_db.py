@@ -1417,8 +1417,18 @@ async def test_a_fixing_pull_moves_the_ticket_and_a_mention_only_links(ctx, db):
     assert t5.status == "fixing"
     await sync.link_pull(ctx, db, repo, _pull(85, "Prune peers", "Fixes #73", state="closed"))
     assert t5.status == "triaging"
-    # past patched, GitHub never moves a ticket
+    # a ticket already at fixing before two maintainer PRs open stays at fixing until both close
     team = await _team(ctx, db, roles=("reviewer", "treasurer"))
+    t6, _ = await sync.upsert_issue(ctx, db, repo, _issue(74, "Manual fixing with two maintainer PRs"))
+    for st in ("triaging", "accepted", "fixing"):
+        await tsvc.set_status(ctx, db, team, t6, st)
+    await sync.link_pull(ctx, db, repo, _pull(87, "First fix", "Fixes #74"))
+    await sync.link_pull(ctx, db, repo, _pull(88, "Second fix", "Fixes #74"))
+    await sync.link_pull(ctx, db, repo, _pull(87, "First fix", "Fixes #74", state="closed"))
+    assert t6.status == "fixing"  # 88 is a maintainer's open fixing PR even though moved_from is ""
+    await sync.link_pull(ctx, db, repo, _pull(88, "Second fix", "Fixes #74", state="closed"))
+    assert t6.status == "accepted"
+    # past patched, GitHub never moves a ticket
     t.assessed_tier = t.assessed_tier or "medium"  # an award needs a tier (XE-0470)
     await tsvc.set_award(ctx, db, team, t, 1_000_000, approve=True)
     await tsvc.set_status(ctx, db, team, t, "awarded")
