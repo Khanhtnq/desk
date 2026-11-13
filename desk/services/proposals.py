@@ -69,6 +69,8 @@ async def value_for(ctx: Context, db: AsyncSession, t: Ticket, field: str, value
         # a key before anyone adopts it (the family of a canonical is the pending duplicate_of proposals
         # equal to its id), so `xe-0142` filed its ticket under a family of its own
         value = await tsvc.fact_value(ctx, db, t, field, value)
+        if field == "visibility" and value == "public" and t.visibility == "private":
+            raise HTTPException(400, "use disclose to make a private ticket public")
     if field == "reply_draft":
         if not isinstance(value, str):
             raise HTTPException(400, "a reply draft is a string")
@@ -76,6 +78,8 @@ async def value_for(ctx: Context, db: AsyncSession, t: Ticket, field: str, value
         # person sees on the chip, the text the check reads and the text sent are one text
         value = tsvc.clean_text(value)
     if field == "award_xe":
+        if t.kind != "bounty":
+            raise HTTPException(400, "a support question carries no award")
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise HTTPException(400, "award_xe is a whole number of XE, 0 or more")
         if value > tsvc.AWARD_MAX // 1_000_000:
@@ -93,6 +97,8 @@ async def propose(
     if p.token is None:
         raise HTTPException(403, "proposals come from agent tokens; a person sets the fact directly")
     value = await value_for(ctx, db, t, field, value)
+    if field == "assessed_tier" and t.status in ("awarded", "paid") and value != t.assessed_tier:
+        raise HTTPException(409, f"the ticket is {t.status}; the tier behind the award stands")
     if field == "award_xe":
         # asked of the proposal, not of the value: the tier and the reason are as they are today, and
         # `set_award` holds the ceiling when the amount is adopted
@@ -101,6 +107,13 @@ async def propose(
             raise HTTPException(400, f"award_xe exceeds twice the {t.assessed_tier} ceiling ({ceiling} XE)")
         if not reason or len(reason.strip()) < 20:
             raise HTTPException(400, "an award proposal needs a reason of at least 20 characters")
+        micro = value * 1_000_000
+        if t.award_approved_at and micro != t.award_xe:
+            raise HTTPException(
+                409, "the award is approved; take approval back before changing the amount"
+            )
+        if t.status in ("awarded", "paid") and micro != t.award_xe:
+            raise HTTPException(409, f"the ticket is {t.status}; the award stands")
     # collapse a repeat proposal from the same token on the same field
     q = select(Proposal).where(
         Proposal.ticket_id == t.id,
@@ -262,6 +275,28 @@ def send_review(ctx: Context, prs: list[Proposal], pr: Proposal, t: Ticket) -> s
     return thread.review_reason(ctx, text, t)
 
 
+def _is_dup_close(pr: Proposal) -> bool:
+    v = pr.value.get("value")
+    return (
+        pr.field == "status"
+        and isinstance(v, dict)
+        and (v.get("status"), v.get("closed_reason")) == ("closed", "duplicate")
+    )
+
+
+def _require_proposal_permission(p: Principal, pr: Proposal, t: Ticket, *, adopt: bool) -> None:
+    if not can_see(p, t):
+        raise HTTPException(404, "no such ticket")
+    if pr.field == "award_xe":
+        require(p, "award", t)
+    elif pr.field == "reply_draft":
+        require(p, "reply", t)
+    else:
+        require_field(p, pr.field)
+        if adopt and pr.field == "status" and _is_dup_close(pr):
+            require(p, "reply", t)
+
+
 async def decide(
     ctx: Context,
     db: AsyncSession,
@@ -289,6 +324,7 @@ async def decide(
     t = await tsvc.get(db, pr.ticket_id)
     if t is None:
         raise HTTPException(404, "ticket is gone")
+    _require_proposal_permission(p, pr, t, adopt=adopt)
     out: dict[str, Any] = {"proposal": pr.id, "ticket": t.id, "field": pr.field, "adopted": adopt}
     value = pr.value.get("value")
     if adopt:
@@ -321,7 +357,6 @@ async def decide(
             text = await thread.fill_for(ctx, db, str(value), t)
             why = send_review(ctx, await pending_for(db, t), pr, t) if send_plain else None
             if send_plain and why is None:
-                require(p, "reply", t)
                 r = await thread.add_reply(ctx, db, p, t, text)  # clears t.draft
                 notify.owe(db, r)  # mailed once it is committed, however the request ends
                 out["sent"] = r.id
@@ -334,10 +369,7 @@ async def decide(
         elif pr.field == "status":
             status = value if isinstance(value, str) else value.get("status")
             reason_c = None if isinstance(value, str) else value.get("closed_reason")
-            require_field(p, "status")
             dup = _is_dup_close(pr)
-            if dup:
-                require(p, "reply", t)  # a duplicate is told; one who cannot reply does not close it
             # an agent may propose a status several hops away; the desk walks the allowed path, one
             # logged hop at a time, inside this transaction
             out["path"] = await tsvc.set_status_via_path(
@@ -354,11 +386,11 @@ async def decide(
                 out["closing"] = tell.owed(t.kind, t.closed_reason)
         elif pr.field == "award_xe":
             # sets the amount only; approval stays a separate, deliberate click
-            require(p, "award", t)
+            if t.status in ("awarded", "paid") and int(value) * 1_000_000 != t.award_xe:
+                raise HTTPException(409, f"the ticket is {t.status}; the award stands")
             await tsvc.set_award(ctx, db, p, t, int(value) * 1_000_000)
             out["award_xe"] = int(value) * 1_000_000
         else:
-            require_field(p, pr.field)
             out["diff"] = await tsvc.set_facts(
                 ctx, db, p, t, {pr.field: value}, reason=reason, via=f"proposal:{pr.id}"
             )
@@ -379,15 +411,6 @@ async def decide(
         public=t.visibility == "public",
     )
     return out
-
-
-def _is_dup_close(pr: Proposal) -> bool:
-    v = pr.value.get("value")
-    return (
-        pr.field == "status"
-        and isinstance(v, dict)
-        and (v.get("status"), v.get("closed_reason")) == ("closed", "duplicate")
-    )
 
 
 def _closed_reason(pr: Proposal) -> str | None:
