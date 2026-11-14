@@ -826,6 +826,7 @@ async def test_plain_acknowledgements_send_on_adopt_and_the_rest_wait(ctx, db):
     assert rr(ctx, "Thanks. We rate this High.", plain) == "names a tier"
     assert rr(ctx, f"Thanks. See {tsvc.ticket_url(ctx, plain)} and {plain.id}.", plain) is None
     assert rr(ctx, "Thanks. Tracked as XE-9999.", plain) == "names another ticket"
+    assert rr(ctx, "Thanks. Tracked as XE-12345.", plain) == "names another ticket"  # ids grow past four
     assert rr(ctx, "Thanks. See https://example.com/x.", plain) == "has a link"
     assert rr(ctx, "Thanks. Fixed in 2 days.", plain) == "has a number"
     assert rr(ctx, "Thanks. The award follows the fix.", plain) == "mentions payment"

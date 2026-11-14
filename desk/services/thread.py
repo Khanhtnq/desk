@@ -357,7 +357,7 @@ def _fill_known(tpl: str, values: dict[str, str]) -> str:
 PLAIN_LIMIT = 300
 _URL = re.compile(r"https?://\S+")
 _CODE = re.compile(r"`|\w+\(\)|\w+_\w+|\w+\.(go|py|js|ts|html|yaml|md)\b|\b\w+/\w+")
-_TICKET_ID = re.compile(r"\b[A-Z]{2}-\d{4}\b")
+_TICKET_ID = re.compile(r"\b[A-Z]{2}-\d{4,}\b")
 _MONEY = re.compile(r"\b(award|awards|awarded|reward|bounty|pay|paid|payout|payment|xe)\b", re.I)
 _CLOSING = re.compile(r"\b(clos(e|ed|ing)|invalid|out of scope|duplicate|not a bug|as designed)\b", re.I)
 _PROMISE = re.compile(
