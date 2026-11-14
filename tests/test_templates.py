@@ -46,6 +46,10 @@ def test_reply_templates_do_not_promise(config):
         # support answers land in the thread the question came from and close it as answered
         closing = name in ("invalid", "notice", "duplicate", "closed") or name.startswith("support_")
         assert "{ticket_url}" in text or closing, name
+    # the closing replies the desk sends itself: a reason slot and a stock line for it, per reason
+    for name, line in config.closing_reasons.items():
+        assert "{reason}" in config.reply_templates[name] and line.strip(), name
+        assert "{" not in line, name  # a stock reason is words, not a template
 
 
 def test_closing_replies_do_not_ask_for_a_reply(config):

@@ -153,7 +153,10 @@ async def reply_template(ctx: Ctx, db: Db, who: Who, request: Request, tid: str,
     if name not in ctx.config.reply_templates:
         raise HTTPException(404, "no such template")
     refs = thread.patch_refs_text(await thread.patches_for(db, t)) or "the linked PR"
-    return {"name": name, "body": await thread.render_template(ctx, db, name, t, patch_refs=refs)}
+    # a closing template opens with its stock reason, there to be written over with the real one
+    reason = ctx.config.closing_reasons.get(name, "")
+    body = await thread.render_template(ctx, db, name, t, patch_refs=refs, reason=reason)
+    return {"name": name, "body": body}
 
 
 @router.post("/tickets/{tid}/reporter")
@@ -308,7 +311,8 @@ async def decide_bulk(ctx: Ctx, db: Db, who: Who, request: Request, body: BulkIn
     """Adopt and reject in one request. Each decision is its own savepoint: one the desk refuses is
     listed under `skipped` with the reason and the rest go through. With `send_plain`, a reply draft the
     desk reads as a plain acknowledgement goes to the reporter under your name; the rest wait as drafts
-    with `review` saying why."""
+    with `review` saying why. An adopted close that the desk will tell itself, once the grace period
+    is over, says `closing` (`tell.tell_resting`); a draft kept on that ticket is that reply's to use."""
     _team(who, request)
     out = await psvc.decide_many(ctx, db, who.principal, body.adopt, body.reject, send_plain=body.send_plain)
     await db.commit()

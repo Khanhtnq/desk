@@ -8,6 +8,12 @@ triage page, sends it when the desk reads it as a plain acknowledgement (`send_r
 A duplicate is told. Adopting a close-as-duplicate, by any path (one chip, a row, the shown rows, a
 family), sends the programme's duplicate reply under the person ruling (`tell_duplicate`); an agent's
 reply draft on that ticket is folded into it, never sent, never left in the editor.
+
+Every other closure is told too, by the desk and not from here: a report left closed and untold is
+sent the programme's closing reply for its reason a quarter of an hour later (`tell.tell_resting`),
+and the draft an agent proposed with that closure, adopted, is the reason inside it when
+`tell.reason_review` lets it be. Adopting such a draft keeps it on the ticket for that sweep;
+`send_review` says, before anyone adopts, which words will go.
 """
 
 from __future__ import annotations
@@ -48,6 +54,12 @@ async def propose(
         reasons = sorted(tsvc.CLOSED_REASONS_FOR[t.kind])
         if status == "closed" and closed_reason not in reasons:
             raise HTTPException(400, f"closing a {t.kind} ticket needs closed_reason from {reasons}")
+        from . import tell
+
+        if status == "closed" and closed_reason in tell.UNOWED:
+            # nothing is owed back on a withdrawal, so nobody is told and the outbox does not list it:
+            # adopted from an agent it would close someone's report in silence
+            raise HTTPException(400, f"{closed_reason} is the reporter's own word; propose another reason")
         if status != "closed" and closed_reason:
             raise HTTPException(400, "closed_reason goes with status closed only")
     if field in tsvc.FACT_VOCAB:
@@ -188,26 +200,44 @@ def _closes(pr: Proposal) -> bool:
 
 
 FOLDED = "the programme's duplicate reply goes instead"
+CARRIED = "the desk's closing reply carries it as the reason"
+STOCK = "the desk's closing reply goes with the stock reason"  # followed by ": " and why
+
+
+def tells(why: str | None) -> bool:
+    """Whether, with `send_review` answering `why` for its draft, adopting the row leaves the reporter
+    told with nobody opening the ticket: the draft is sent as it stands, or folded into the
+    duplicate reply, or the desk's closing reply goes with it or in its place."""
+    return why is None or why in (FOLDED, CARRIED) or why.startswith(STOCK)
 
 
 def send_review(ctx: Context, prs: list[Proposal], pr: Proposal, t: Ticket) -> str | None:
-    """Why this reply draft should wait in the editor rather than go out on adoption, or None when the
-    desk may send it as it stands. The text rule is `thread.review_reason`; on top of it, a draft that
-    rides with a closure or a duplicate ruling, a draft on a closed ticket, and a draft proposed before
-    the reporter was last written to all wait: the person may have said something since. A draft riding
-    with a close-as-duplicate is `FOLDED`: adopting that close sends the programme's reply, not this."""
-    from . import thread
+    """What becomes of this reply draft when the row is adopted from the triage page: None when the
+    desk sends it as it stands, else why it does not. The text rule is `thread.review_reason`; on top
+    of it, a draft on a closed ticket, one riding with a duplicate mark, and one proposed before the
+    reporter was last written to all wait in the editor: the person may have said something since.
+    Two answers are not a wait, and `tells` knows them. A draft riding with a close-as-duplicate is
+    `FOLDED`: adopting that close sends the programme's reply, not this. A draft riding with any
+    other close is kept for the desk's closing reply, sent a quarter of an hour after the adoption:
+    `CARRIED` when it goes inside as the reason, `STOCK` and why when the stock reason goes instead
+    (`tell.reason_review`, asked here of the pending pair as the sweep asks it of the adopted one)."""
+    from . import tell, thread
 
     if t.status == "closed":
         return "the ticket is closed"
     others = [o for o in prs if o.state == "pending" and o.id != pr.id]
     if any(_is_dup_close(o) for o in others):
         return FOLDED
+    text = thread.fill(ctx, str(pr.value.get("value")), t)
+    closure = next((o for o in others if _is_close(o) and tell.owed(t.kind, _closed_reason(o))), None)
+    if closure is not None:
+        held = tell.reason_review(ctx, t, text, pr, closure)
+        return CARRIED if held is None else f"{STOCK}: {held}"
     if any(_closes(o) for o in others):
         return "goes with a closure"
     if t.told_at and pr.created_at and t.told_at > pr.created_at:
         return "the reporter has been written to since"
-    return thread.review_reason(ctx, thread.fill(ctx, str(pr.value.get("value")), t), t)
+    return thread.review_reason(ctx, text, t)
 
 
 async def decide(
@@ -268,6 +298,11 @@ async def decide(
             if dup:
                 why = reason or f"duplicate of {t.duplicate_of}"
                 out.update(await tell_duplicate(ctx, db, p, t, reason=why))
+            elif t.status == "closed":
+                from . import tell
+
+                # nothing is sent from here: the desk's sweep tells it, once the grace period is over
+                out["closing"] = tell.owed(t.kind, t.closed_reason)
         elif pr.field == "award_xe":
             # sets the amount only; approval stays a separate, deliberate click
             require(p, "award", t)
@@ -304,6 +339,12 @@ def _is_dup_close(pr: Proposal) -> bool:
         and isinstance(v, dict)
         and (v.get("status"), v.get("closed_reason")) == ("closed", "duplicate")
     )
+
+
+def _closed_reason(pr: Proposal) -> str | None:
+    """The closing reason a status proposal carries, if it closes with one."""
+    v = pr.value.get("value")
+    return v.get("closed_reason") if pr.field == "status" and isinstance(v, dict) else None
 
 
 async def tell_duplicate(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, *, reason: str) -> dict:

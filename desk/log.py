@@ -423,6 +423,8 @@ def public_payload(kind: str, payload: Any) -> Any:
             out["via"] = "internal"  # the tracker, not its ticket number (XE-0612)
         elif out["via"].startswith("family:"):
             out["via"] = "family"  # a family ruling, not its canonical, which may be private (XE-0799)
+        elif out["via"].startswith("tell:"):
+            out["via"] = "tell"  # the desk's own reply, not whose words filled it or which proposal's
     return out
 
 

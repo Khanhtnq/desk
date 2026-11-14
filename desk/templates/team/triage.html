@@ -5,7 +5,8 @@
 {%- set v = pr.value.value -%}
 {%- set ok = adoptable(pr) -%}
 {%- set why = review(r, pr) if pr.field == "reply_draft" else none -%}
-<span class="chip {{ pr.field }}{% if not ok %} locked{% endif %}{% if pr.field == "reply_draft" and why in (none, folded) %} sends{% endif %}" data-pid="{{ pr.id }}" title="#{{ pr.id }}{% if owners.get(pr.token_id) %} · {{ owners[pr.token_id] }}{% endif %}{% if pr.reason %} · {{ pr.reason|e }}{% endif %}{% if pr.field == "reply_draft" %} · {{ v|e }}{% endif %}">
+{%- set told = pr.field == "reply_draft" and tells(why) -%}
+<span class="chip {{ pr.field }}{% if not ok %} locked{% endif %}{% if told %} sends{% if why is not none and why != folded %} later{% endif %}{% endif %}" data-pid="{{ pr.id }}" title="#{{ pr.id }}{% if owners.get(pr.token_id) %} · {{ owners[pr.token_id] }}{% endif %}{% if pr.reason %} · {{ pr.reason|e }}{% endif %}{% if pr.field == "reply_draft" %} · {{ v|e }}{% endif %}">
   {%- if pr.field == "verdict" %}<i>verdict</i> {{ v }}
   {%- elif pr.field == "assessed_tier" %}<i>tier</i> {{ cfg.tier_label(v) }}{% if not ok %} <small>tier role</small>{% endif %}
   {%- elif pr.field == "mainnet_gate" %}<i>gate</i> {{ cfg.gates.get(v, v) }}
@@ -15,7 +16,7 @@
   {%- elif pr.field == "duplicate_of" %}<i>dup of</i> <a href="/{{ v }}">{{ v }}</a>
   {%- elif pr.field == "status" %}<i>status</i> {% if v is mapping %}{{ v.status }}{% if v.closed_reason %} · {{ v.closed_reason }}{% endif %}{% else %}{{ v }}{% endif %}
   {%- elif pr.field == "award_xe" %}<i>award</i> {{ "{:,}".format(v|int) }} XE{% if not ok %} <small>treasurer</small>{% endif %}
-  {%- elif pr.field == "reply_draft" %}<i>reply</i> {% if why == folded %}draft, {{ v|length|n }} chars <small>{{ why }}</small>{% elif why %}draft, {{ v|length|n }} chars <small>review · {{ why }}</small>{% else %}sends on adopt{% endif %}
+  {%- elif pr.field == "reply_draft" %}<i>reply</i> {% if why is none %}sends on adopt{% elif told %}draft, {{ v|length|n }} chars <small>{{ why }}</small>{% else %}draft, {{ v|length|n }} chars <small>review · {{ why }}</small>{% endif %}
   {%- else %}<i>{{ pr.field }}</i> {{ v }}{% endif %}
   {%- if ok %}<button type="button" class="x" data-reject-one="{{ pr.id }}" title="Reject #{{ pr.id }}">×</button>{% endif -%}
 </span>
@@ -43,7 +44,7 @@
 <div class="release triage">
 <div class="tag"><span>Triage</span></div>
 <h1>What the agents have read, waiting for a ruling.</h1>
-<p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. A reply chip marked <b>sends on adopt</b> is a plain acknowledgement, nothing in it but this ticket, and goes to the reporter under your name when you adopt; one marked <b>review</b> says why it waits on the ticket as a draft instead. A close as duplicate always tells the reporter: adopting it sends the programme's duplicate reply under your name, and any agent draft on that ticket is folded into it. A duplicate family closes and replies in one click.</p>
+<p class="sub">One row per ticket with proposals nobody has decided. Chips are the proposed facts; × rejects one. Adopt writes them through the same path as the ticket page, each on its own savepoint, so one the desk refuses is reported and the rest go through. A reply chip marked <b>sends on adopt</b> is a plain acknowledgement, nothing in it but this ticket, and goes to the reporter under your name when you adopt; one marked <b>review</b> says why it waits on the ticket as a draft instead. A closure always tells the reporter. A close as duplicate sends the programme's duplicate reply under your name when you adopt it, and any agent draft on that ticket is folded into it; a duplicate family closes and replies in one click. Any other close is told by the desk itself, about fifteen minutes after you adopt it, in the programme's closing reply for that reason, signed XE desk. The reply chip on such a row says which words go in it: the agent's draft as the reason (a private ticket, a draft the same agent proposed with the closure, a text the desk's check passes), or the stock reason and why. Nobody reads that reply before it goes. Reopen the ticket, or write to the reporter yourself, inside the fifteen minutes and the desk sends nothing.</p>
 <div class="counts">
   <div><b>{{ counts.all|n }}</b>tickets waiting</div>
   <div><b>{{ counts.proposals|n }}</b>proposals</div>
@@ -64,7 +65,7 @@
     {% if reporter %}<span class="gap"></span><a href="{{ flt('reporter', reporter|string) }}" class="on">reporter {{ reporter }} ×</a>{% endif %}
   </div></div>
   <div class="frow"><span class="flabel">Reply</span><div class="fset">
-    <a href="{{ flt('reply', 'sends') }}" class="{{ 'on' if reply == 'sends' }}">sends on adopt <small>{{ reply_counts.sends|n }}</small></a>
+    <a href="{{ flt('reply', 'sends') }}" class="{{ 'on' if reply == 'sends' }}">reply goes out <small>{{ reply_counts.sends|n }}</small></a>
     <a href="{{ flt('reply', 'review') }}" class="{{ 'on' if reply == 'review' }}">needs review <small>{{ reply_counts.review|n }}</small></a>
   </div></div>
 </div>
@@ -73,7 +74,7 @@
 <div class="row" style="margin:0 0 16px">
   <button class="mini" id="adopt-shown" type="button">Adopt everything shown ({{ rows|length|n }} tickets)</button>
   {% if reply != 'sends' and reply_counts.sends %}<button class="ghost mini" id="adopt-sending" type="button">Adopt the {{ reply_counts.sends|n }} whose reply sends</button>{% elif reply == 'sends' %}<a class="button mini ghost" href="{{ flt('reply', 'sends') }}">Show all again</a>{% endif %}
-  <span class="k">Adopt everything writes every unlocked proposal on this page; plain acknowledgements are sent, reply drafts marked review wait on their tickets. The second button takes only the rows whose reply goes out, so every reporter in that set is told. Skipped ones are listed afterwards.</span>
+  <span class="k">Adopt everything writes every unlocked proposal on this page; plain acknowledgements are sent, closed reports are told by the desk a quarter of an hour later, and reply drafts marked review wait on their tickets. The second button takes only the rows whose reply goes out, now or from the desk, so every reporter in that set is told. Skipped ones are listed afterwards.</span>
 </div>
 {% endif %}
 <div id="triage-msg" class="msg" style="display:none"></div>

@@ -192,13 +192,26 @@ plain_phrases:
   - This ticket is updated when there is a decision.
   - We will update this ticket when a decision is made.
 
+# What a closing reply says for its reason when no reading of the agent's may go out with it: a report
+# closed by hand, a public ticket, a draft the text check holds. One line per closing reason that has
+# a reply template below; `duplicate` names the earlier report instead, and a withdrawal is the
+# reporter's own word. Keep each true of every report closed for that reason.
+closing_reasons:
+  invalid: >-
+    Thanks for the report. We read it against the code and could not confirm a bug in what it
+    describes.
+  out-of-scope: Thanks for the report. What it describes is outside what the programme covers.
+  answered: Thanks for the report. We have read it and answered what it raises.
+  stale: Thanks for the report. We could not take it further with what is here.
+
 reply_templates:
   patched: |-
     Thanks for the report. This is fixed in {patch_refs}. The desk entry is {ticket_url}. If you can,
     re-run your reproduction against the next testnet build and say so here; if it still reproduces,
     reopen with what you saw.
-  # A closed ticket takes no more messages from whoever filed it, so no reply that goes with a close
-  # asks for one: the way back is a new report.
+  # The closing replies are named for the closing reason, and the desk sends them itself on a report
+  # left closed with its reporter untold (services/tell.py). A closed ticket takes no more messages
+  # from its reporter on the desk, so none of them asks for a reply: the way back is a new report.
   duplicate: |-
     Thanks. This is the same finding as {duplicate_url}, which was filed first; the programme pays the
     first verifiable submission, so this one closes as a duplicate. If you believe it is a different
@@ -212,9 +225,29 @@ reply_templates:
     entry is {ticket_url}. Thank you for the report.
   needs_info: |-
     Read, but not yet reproducible from what is here. Could you add {what}? The desk entry is {ticket_url}.
+  # {reason} is the reading in a sentence or two: a person's, typed in the editor; or, when the desk
+  # sends the reply, the agent's adopted draft if it may go out (`tell.reason_review`), else the line
+  # for that reason under `closing_reasons` above.
   invalid: |-
-    Read. {reason} Closing. If there is a reproduction we have missed, file a new report that links
-    {ticket_url} and carries it; it is read like any other.
+    {reason}
+
+    This report is closed as invalid. If we have missed something, file a new report that links
+    {ticket_url} and says what; it is read like any other.
+  out-of-scope: |-
+    {reason}
+
+    This report is closed as out of scope. If you think it falls inside the scope, file a new report
+    that links {ticket_url} and says why; it is read like any other.
+  answered: |-
+    {reason}
+
+    This report is closed as answered. If there is more to it, file a new report that links
+    {ticket_url}; it is read like any other.
+  stale: |-
+    {reason}
+
+    This report is closed for now. If you have more for it, file a new report that links {ticket_url}
+    and carries it; it is read like any other.
   notice: |-
     Noted, and thank you for flagging the campaign ahead of time. Nothing to action from this one.
   # Support answers. Plain, short, no dates nobody has announced.

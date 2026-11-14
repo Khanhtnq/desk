@@ -187,6 +187,12 @@ class Config:
         return [str(x) for x in (self.copy_public.get("plain_phrases") or []) if str(x).strip()]
 
     @property
+    def closing_reasons(self) -> dict[str, str]:
+        """By closing reason, the stock sentence a closing reply carries as its reason when the desk
+        sends it and no reading of an agent's may go out with it (`tell.reason_review`)."""
+        return {k: str(v) for k, v in (self.copy_public.get("closing_reasons") or {}).items()}
+
+    @property
     def triage_agent(self) -> dict:
         return self.desk.get("triage_agent") or {"model_id": "triage", "label": "triage import"}
 

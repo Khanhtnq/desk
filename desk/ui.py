@@ -654,16 +654,18 @@ async def triage(request: Request):
         return True
 
     def review(r, pr) -> str | None:
-        """Why a reply draft waits rather than sends when the row is adopted; None when it sends."""
+        """What becomes of a reply draft when the row is adopted: None when it is sent as it stands,
+        else why not (`proposals.send_review`; `proposals.tells` knows which answers still tell)."""
         return psvc.send_review(c, r.proposals, pr, r.ticket)
 
     def reply_kind(r) -> str | None:
-        """`sends` when the row's reply goes out on adopt, `review` when it waits, None with no reply."""
+        """`sends` when adopting the row leaves the reporter told, `review` when a draft waits for a
+        person, None with no reply."""
         drafts = [pr for pr in r.proposals if pr.field == "reply_draft"]
         if not drafts:
             return None
-        # a draft folded into the programme's duplicate reply sends, in the sense that the reporter is told
-        return "sends" if all(review(r, pr) in (None, psvc.FOLDED) for pr in drafts) else "review"
+        # folded into the duplicate reply, or kept for the desk's closing reply: the reporter is told
+        return "sends" if all(psvc.tells(review(r, pr)) for pr in drafts) else "review"
 
     # the split is over the rows already filtered, so the chip counts say what this page would show
     reply_counts = {"sends": 0, "review": 0}
@@ -710,6 +712,7 @@ async def triage(request: Request):
             "can_award": can_award,
             "adoptable": adoptable,
             "review": review,
+            "tells": psvc.tells,
             "folded": psvc.FOLDED,
             "excerpt": psvc.note_excerpt,
             "total_xe": total_xe,

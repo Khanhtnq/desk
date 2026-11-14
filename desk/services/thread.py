@@ -2,7 +2,8 @@
 
 messages   the public thread: imported comments, reporter messages, our mirrored replies
 notes      internal; humans and agent tokens; never leaves the desk
-replies    public; human author only; queued for the worker to mirror to the source channel
+replies    to the reporter; a person's, or the desk's own in the programme's words (`tell`); never a
+           token's; queued for the worker to mirror to the source channel when the ticket is public
 patch_refs PRs and commits
 """
 
@@ -201,9 +202,13 @@ def mark_told(t: Ticket, when=None) -> None:
 DESK_NAME = "XE desk"  # how a reply the desk sends itself is signed
 
 
-async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str) -> Reply:
+async def add_reply(
+    ctx: Context, db: AsyncSession, p: Principal, t: Ticket, body: str, *, via: str = ""
+) -> Reply:
     """A reply to the reporter: a person's, or the desk's own (`SYSTEM`, signed `DESK_NAME`: only ever
-    a stock template, `tell.tell_resting`). A token never sends one."""
+    the programme's template for where the ticket rests, `tell.tell_resting`, which says in `via`
+    whose words fill it: `tell:stock`, or `tell:proposal:<id>` for a closure's reason an agent
+    drafted and a person adopted). A token never sends one."""
     body = clean_text(body).strip()
     if not body:
         raise HTTPException(400, "empty reply")
@@ -230,14 +235,10 @@ async def add_reply(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, bod
     await add_message(
         ctx, db, t, source="desk", source_ref=_reply_ref(r), author=author, body=body, is_team=True
     )
-    await ctx.events.append(
-        db,
-        "reply.sent",
-        p.actor,
-        {"ticket": t.id, "reply": r.id, "mirror": mirror, "chars": len(body)},
-        ref=t.id,
-        public=t.visibility == "public",
-    )
+    payload = {"ticket": t.id, "reply": r.id, "mirror": mirror, "chars": len(body)}
+    if via:
+        payload["via"] = via
+    await ctx.events.append(db, "reply.sent", p.actor, payload, ref=t.id, public=t.visibility == "public")
     return r
 
 
@@ -355,6 +356,7 @@ def _fill_known(tpl: str, values: dict[str, str]) -> str:
 
 
 PLAIN_LIMIT = 300
+REASON_LIMIT = 600  # a closure's reason is a paragraph, not a line
 # What an unread reply is written in: printable ASCII, line breaks, and the typographic quotes, dashes
 # and ellipsis an editor puts in for them. Anything else is something the check below cannot read as
 # the reporter will: a zero-width character splitting a word it looks for, a letter of another
@@ -371,35 +373,51 @@ _CLOSING = re.compile(r"\b(clos(e|ed|ing)|invalid|out of scope|duplicate|not a b
 _PROMISE = re.compile(
     r"\b(within|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday|next))\b", re.I
 )
+# a closed ticket takes no more messages from its reporter (`reporters.reply`), so a reason that asks
+# for one sends them to a box that is not there
+_ASKS_BACK = re.compile(
+    r"\b(repl(y|ies|ying|ied)|respond(s|ed|ing)?|reopen(s|ed|ing)?|write (to|back)|contact|e-?mail|"
+    r"message us|get in touch|let us know)\b",
+    re.I,
+)
 
 
-def review_reason(ctx: Context, text: str, t: Ticket) -> str | None:
-    """Why a filled reply draft needs a person's read before it goes out, or None when it is a plain
-    acknowledgement the desk can send as it stands. Plain means: short, names nothing but this ticket, no
-    number (a tier, an amount, a date), no link but the ticket's own, no code or path, no word about
-    money or closing, except inside the programme's stock lines (`plain_phrases` in the public copy).
-    The rule is deliberately narrow; everything it does not recognise waits in the editor."""
+def review_reason(ctx: Context, text: str, t: Ticket, *, closing: bool = False) -> str | None:
+    """Why a filled reply draft may not go out unread, or None when the desk can send it. The one text
+    rule, asked two ways. A plain acknowledgement, sent as it stands on a ticket that stays open: short,
+    names nothing but this ticket, no number (a tier, an amount, a date), no link but the ticket's
+    own, no code or path, no word about money or closing, except inside the programme's stock lines
+    (`plain_phrases` in the public copy). And, with `closing`, the reason inside the desk's closing
+    reply (`tell.reason_review`): the same, except that it may be a paragraph (`REASON_LIMIT`), may
+    say the report is closed and why, may not lean on the stock lines (they are written for a ticket
+    that stays open) and may not ask for a reply. The rule is deliberately narrow, and it reads
+    form, not truth: everything it does not recognise waits in the editor, or, for a closure, gives
+    way to the programme's stock reason."""
     from .tickets import ticket_url
 
     body = clean_text(text).strip()  # as `add_reply` cleans it: the text judged is the text sent
     if not body:
         return "empty"
-    if len(body) > PLAIN_LIMIT:
-        return f"over {PLAIN_LIMIT} characters"
+    limit = REASON_LIMIT if closing else PLAIN_LIMIT
+    if len(body) > limit:
+        return f"over {limit} characters"
     if _UNPLAIN.search(body):
         return "has a character outside plain text"
     own = ticket_url(ctx, t)
     rest = body.replace(own, " ").replace(t.id, " ")
-    # the programme's stock lines pass whatever words they carry; the rest of the text is still checked
+    # the programme's stock lines pass whatever words they carry; the rest of the text is still checked.
+    # Not in a closure's reason: "any award follows the fix" above "closed as invalid" is not stock
     folded = re.sub(r"\s+", " ", rest)
-    for phrase in ctx.config.plain_phrases:
+    for phrase in () if closing else ctx.config.plain_phrases:
         folded = re.sub(re.escape(re.sub(r"\s+", " ", phrase.strip())), " ", folded, flags=re.I)
     rest = folded
     if _LINK.search(rest):
         return "has a link"
     if _TICKET_ID.search(rest):
         return "names another ticket"
-    if "{" in rest or "}" in rest:
+    if "{" in rest or "}" in rest or UNNAMED_DUPLICATE in rest:
+        # `{duplicate_url}` is filled only for a reader (`fill_for`); the triage page judges the draft
+        # before that and the sweep after, and both have to give the one answer
         return "has an unfilled placeholder"
     if re.search(r"\d", rest):
         return "has a number"
@@ -412,10 +430,12 @@ def review_reason(ctx: Context, text: str, t: Ticket) -> str | None:
         return "names a tier"
     if _MONEY.search(rest):
         return "mentions payment"
-    if _CLOSING.search(rest):
+    if not closing and _CLOSING.search(rest):
         return "explains a closure"
     if _PROMISE.search(rest):
         return "promises a time"
+    if closing and _ASKS_BACK.search(rest):
+        return "asks for a reply a closed ticket cannot take"
     return None
 
 

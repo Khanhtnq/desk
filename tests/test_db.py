@@ -982,14 +982,16 @@ async def test_a_close_as_duplicate_tells_the_reporter_by_every_path(ctx, db):
     assert (b.status, b.draft, bd.state) == ("closed", "", "adopted")
     assert len(await replies(b)) == 1
 
-    # a status proposal that closes for another reason sends nothing; the draft waits as before
+    # a status proposal that closes for another reason sends nothing from here: the draft is kept on
+    # the ticket and the desk's own sweep tells the reporter (`tell.tell_resting`, tested below)
     c = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title="c", source="web"))
     invalid = {"status": "closed", "closed_reason": "invalid"}
     cs = await psvc.propose(ctx, db, agent, c, "status", invalid, "x")
     cd = await psvc.propose(ctx, db, agent, c, "reply_draft", "Thanks, we have read it.", "")
     out = await psvc.decide_many(ctx, db, p, [cd.id, cs.id], [], send_plain=True)
     by = {d["proposal"]: d for d in out["decided"]}
-    assert "sent" not in by[cs.id] and by[cd.id]["review"] == "the ticket is closed"
+    assert "sent" not in by[cs.id] and by[cs.id]["closing"] is True
+    assert by[cd.id]["review"] == "the ticket is closed" and c.draft == "Thanks, we have read it."
     assert await replies(c) == []
 
     # the close without its mark is refused as before, and nothing is sent
@@ -1925,6 +1927,235 @@ async def test_the_desk_tells_a_resting_ticket_nobody_has(ctx, db):
         with pytest.raises(HTTPException) as e:
             await thread.add_reply(ctx, db, p, plain, "not a person")
         assert e.value.status_code == 403
+
+
+async def test_a_closed_report_is_told_in_the_programmes_words_whoever_closed_it(ctx, db):
+    # the rule: a bounty report left closed and untold past the grace period is sent the programme's
+    # closing reply for its reason by the desk, whatever closed it. The agent's adopted draft is the
+    # reason inside that reply only when it came with the same agent's closure, the ticket is private
+    # and the text passes the check; otherwise the stock reason goes. The triage page says beforehand
+    # which it will be, by asking the question the sweep asks. Closures have a start of their own, so
+    # switching the rule on tells nothing that was already closed; that is swept by hand.
+    team = await _team(ctx, db)
+    a = await _agent(ctx, db, team.user)
+    b = await _agent(ctx, db, team.user)
+    assert a.token.id != b.token.id
+    invalid = {"status": "closed", "closed_reason": "invalid"}
+    good = (
+        "Thanks for the report. We read the vote path it describes against the tree: the tally refuses"
+        " a vote that is not signed, so the sequence in the report stops at its first step and this"
+        " closes as invalid."
+    )
+    ack = "Thanks, confirmed and with the team."
+
+    async def mk(title, visibility="private"):
+        new = tsvc.NewTicket(kind="bounty", title=title, body="steps", visibility=visibility)
+        return await tsvc.create(ctx, db, team.actor, new)
+
+    async def proposed(t, agent, draft=None, closing=invalid):
+        out = []
+        if draft is not None:
+            out.append(await psvc.propose(ctx, db, agent, t, "reply_draft", draft, "why it closes"))
+        if closing is not None:
+            out.append(await psvc.propose(ctx, db, agent, t, "status", closing, "read against the tree"))
+        return out
+
+    async def page(t):
+        """What the triage page's chip says of the draft waiting on `t`, before anyone adopts."""
+        prs = [pr for pr in await psvc.pending_for(db, t) if pr.state == "pending"]
+        return psvc.send_review(ctx, prs, next(pr for pr in prs if pr.field == "reply_draft"), t)
+
+    async def adopt(t):
+        """The triage page's row: every pending proposal on `t`, in one batch."""
+        ids = [pr.id for pr in await psvc.pending_for(db, t) if pr.state == "pending"]
+        out = await psvc.decide_many(ctx, db, team, ids, [], send_plain=True)
+        assert out["skipped"] == []
+        return {d["field"]: d for d in out["decided"]}
+
+    async def said(t):
+        return [thread.reply_body(ctx, r) for r in await thread.replies_for(db, t)]
+
+    old = await mk("closed before the desk began telling closures")
+    await tsvc.set_status(ctx, db, team, old, "closed", closed_reason="invalid")
+    assert await tell.tell_resting(ctx, db) == []  # the first run starts the clock and sends nothing
+
+    # a draft and a closure adopted from the triage page, and what the page says of each beforehand
+    carried = await mk("private, the agent's reason passes")
+    await proposed(carried, a, good)
+    with pytest.raises(HTTPException) as e:  # a withdrawal is the reporter's word; nobody is told of one
+        await psvc.propose(ctx, db, a, carried, "status", {**invalid, "closed_reason": "withdrawn"}, "")
+    assert e.value.status_code == 400
+    public = await mk("public, the same words", visibility="public")
+    await proposed(public, a, good)
+    coded = await mk("private, the reason names code")
+    await proposed(coded, a, "Thanks. The check is in `VerifyMultisig`, so this closes as invalid.")
+    asks = await mk("private, the reason asks for a reply")
+    await proposed(asks, a, "Thanks. We could not find it; reply here and we will look again.")
+    stale = await mk("private, another reading's acknowledgement")
+    await proposed(stale, b, ack, closing=None)
+    await proposed(stale, a)
+    aged = await mk("private, the agent's own older acknowledgement")
+    (d_aged,) = await proposed(aged, a, ack, closing=None)
+    d_aged.created_at = utcnow() - tell.TOGETHER * 6
+    await proposed(aged, a)
+    late = await mk("private, the agent's own later acknowledgement")
+    (d_late,) = await proposed(late, a, ack, closing=None)
+    d_late.created_at = utcnow() + tell.TOGETHER * 6
+    await proposed(late, a)
+    want = {
+        carried: psvc.CARRIED,
+        public: "the ticket is public",
+        coded: "names code or a path",
+        asks: "asks for a reply a closed ticket cannot take",
+        stale: "the draft and the closure are different agents'",
+        aged: "the draft was not written with the closure",
+        late: "the draft was not written with the closure",
+    }
+    for t, why in want.items():
+        got = await page(t)
+        assert got == (why if why == psvc.CARRIED else f"{psvc.STOCK}: {why}"), t.title
+        assert psvc.tells(got)  # either way the reporter is told, so the row counts as one that sends
+        did = await adopt(t)
+        assert did["status"]["closing"] is True and "sent" not in did["reply_draft"], t.title
+        assert t.status == "closed" and t.draft and await said(t) == [], t.title
+    d_carried = next(pr.id for pr in await psvc.pending_for(db, carried) if pr.field == "reply_draft")
+
+    # closed by hand: over a draft adopted on the ticket page, with nothing said, and as a duplicate
+    hand = await mk("private, closed by hand over an adopted draft")
+    (d_hand,) = await proposed(hand, a, good, closing=None)
+    await psvc.decide(ctx, db, team, d_hand, True)
+    await tsvc.set_status(ctx, db, team, hand, "closed", closed_reason="invalid")
+    bare = await mk("private, closed by hand with nothing said")
+    await tsvc.set_status(ctx, db, team, bare, "closed", closed_reason="out-of-scope")
+    canon = await mk("the first filing", visibility="public")
+    dup = await mk("the same again", visibility="public")
+    await tsvc.set_facts(ctx, db, team, dup, {"duplicate_of": canon.id})
+    await tsvc.set_status(ctx, db, team, dup, "closed", closed_reason="duplicate")
+
+    # what the desk leaves to a person, and so to the outbox: the closing words sent and then the close;
+    # a close said in the chat thread; a draft adopted well after the close, which is in an editor
+    said_first = await mk("told, then closed")
+    await thread.add_reply(ctx, db, team, said_first, "This is as designed, so it is not a bug.")
+    await tsvc.set_status(ctx, db, team, said_first, "closed", closed_reason="invalid")
+    chat = await mk("closed from its chat thread")
+    await tsvc.set_status(ctx, db, team, chat, "closed", closed_reason="answered", via="discord:9")
+    after = await mk("closed, the draft adopted on the ticket page an hour later")
+    await proposed(after, a)
+    await adopt(after)
+    (d_after,) = await proposed(after, a, good, closing=None)
+    await psvc.decide(ctx, db, team, d_after, True)
+    d_after.decided_at = utcnow() + tell.TOGETHER * 6
+    assert after.draft == good
+    # and: a draft nobody has decided, a reporter already written to, the reporter's own withdrawal,
+    # and a closure taken back inside the grace period
+    waiting = await mk("closed by hand, an agent's draft undecided")
+    await proposed(waiting, a, good, closing=None)
+    await tsvc.set_status(ctx, db, team, waiting, "closed", closed_reason="invalid")
+    answered = await mk("closed, and told by hand")
+    await tsvc.set_status(ctx, db, team, answered, "closed", closed_reason="invalid")
+    await thread.add_reply(ctx, db, team, answered, "Closed; this is as designed.")
+    withdrawn = await mk("withdrawn by its reporter")
+    await tsvc.set_status(ctx, db, team, withdrawn, "closed", closed_reason="withdrawn")
+    reopened = await mk("closed, then reopened inside the grace period")
+    await proposed(reopened, a, good)
+    await adopt(reopened)
+    await tsvc.set_status(ctx, db, team, reopened, "triaging")
+
+    assert await tell.tell_resting(ctx, db, now=utcnow() + tell.GRACE / 3) == []  # a person's time
+    later = utcnow() + tell.GRACE * 2
+    rows = {r.id: r for r in await tell.resting(ctx, db, now=later)}
+    assert not {answered.id, withdrawn.id, reopened.id} & set(rows)
+    assert rows[waiting.id].why == "an agent's reply draft is waiting to be adopted"
+    assert rows[said_first.id].why == "the reporter was written to just before the close"
+    assert rows[chat.id].why == "closed from its chat thread, where the close was said"
+    assert rows[after.id].why == "a reply draft was adopted after the close; it is in the editor"
+    assert not (rows[said_first.id].text or rows[chat.id].text or rows[after.id].text)
+    for t, why in want.items():  # the sweep answers as the page did
+        r = rows[t.id]
+        carries = (f"proposal:{d_carried}", "") if why == psvc.CARRIED else (tell.STOCK, why)
+        assert (r.words, r.held) == carries and r.text, t.title
+    by_hand = (tell.STOCK, "the closure was not an agent's proposal")
+    assert (rows[hand.id].words, rows[hand.id].held) == by_hand
+    assert (rows[bare.id].words, rows[bare.id].name) == (tell.STOCK, "out-of-scope")
+    assert rows[dup.id].words == tell.STOCK and rows[old.id].text
+    assert tell.describe(rows[coded.id]) == "tell, in stock words (draft not used: names code or a path)"
+    assert tell.describe(rows[carried.id]) == f"tell, with the agent's reason (proposal:{d_carried})"
+
+    told = await tell.tell_resting(ctx, db, now=later)
+    assert {x["ticket"] for x in told} == {t.id for t in (*want, hand, bare, dup)}  # not `old`
+    assert sorted(notify.take_owed(db)) == sorted(x["reply"] for x in told)  # each is mailed after commit
+
+    # the agent's words reach one reporter, inside the programme's frame, and the log says whose they are
+    line = "This report is closed as invalid."
+    (body,) = await said(carried)
+    assert body.startswith(good) and line in body and tsvc.ticket_url(ctx, carried) in body
+    r = (await thread.replies_for(db, carried))[0]
+    assert r.author_id is None and r.author_name == thread.DESK_NAME and r.body == "" and r.body_sealed
+    log = await EventLog.page(db, 0, 50, ref=carried.id, public_only=False)
+    sent = [e for e in log if e.kind == "reply.sent"]
+    assert [(e.actor, e.payload["via"]) for e in sent] == [("desk", f"tell:proposal:{d_carried}")]
+    # which is the team's to know: the reporter's own log says the desk told them, not in whose words
+    assert public_payload("reply.sent", sent[0].payload)["via"] == "tell"
+    # everywhere else the reason is the programme's, and the draft is dropped, not left in the editor
+    stock = ctx.config.closing_reasons["invalid"]
+    for t in (public, coded, asks, stale, aged, late, hand):
+        (body,) = await said(t)
+        assert body.startswith(stock) and line in body, t.title
+        assert not any(w in body for w in ("VerifyMultisig", "confirmed", "tally", "reply here")), t.title
+        assert t.draft == "", t.title
+    sent = [e for e in await EventLog.page(db, 0, 50, ref=public.id) if e.kind == "reply.sent"]
+    assert [e.payload["via"] for e in sent] == ["tell:stock"]
+    (body,) = await said(bare)
+    assert body.startswith(ctx.config.closing_reasons["out-of-scope"]) and "closed as out of scope" in body
+    (body,) = await said(dup)
+    assert canon.id in body and "closes as a duplicate" in body
+
+    # nothing is said twice; what the desk left is still the outbox's; the backlog is the same rule,
+    # run by hand, narrowed to a reason and stopped short when asked
+    assert await tell.tell_resting(ctx, db, now=later) == []
+    left = {old.id, waiting.id, said_first.id, chat.id, after.id}
+    assert {x.id for x in await tsvc.outbox(db, ctx.config, team)} == left
+    assert await tell.tell_resting(ctx, db, now=later, backlog=True, only="duplicate") == []
+    swept = await tell.tell_resting(ctx, db, now=later, backlog=True, only="invalid", limit=1)
+    assert [x["ticket"] for x in swept] == [old.id] and (await said(old))[0].startswith(stock)
+    assert await tell.tell_resting(ctx, db, now=later, backlog=True) == []
+
+    # the text rule for a reason: what a closure may say that an acknowledgement may not, and no more
+    def rr(words):
+        return thread.review_reason(ctx, words, carried, closing=True)
+
+    assert rr(good) is None and thread.review_reason(ctx, good, carried) == "explains a closure"
+    assert rr("Thanks. The network has no such path, so this is closed as invalid.") is None
+    # the stock lines are written for a ticket that stays open, and do not pass inside a closure
+    stock_line = ctx.config.plain_phrases[0]
+    assert thread.review_reason(ctx, f"Thanks. {stock_line}", carried) is None
+    assert rr(f"Thanks. {stock_line}") == "mentions payment"
+    for words, why in (
+        ("Thanks. See https://example.com/x.", "has a link"),
+        ("Thanks. The same as XE-12345.", "names another ticket"),
+        ("Thanks. Fixed 2 days ago.", "has a number"),
+        ("Thanks. The check is in net/sync.", "names code or a path"),
+        ("Thanks. We rate this High.", "names a tier"),
+        ("Thanks. No award follows.", "mentions payment"),
+        ("Thanks. We will look within the week.", "promises a time"),
+        ("Thanks. Reply here with a reproduction.", "asks for a reply a closed ticket cannot take"),
+        ("Thanks. Write to us with a reproduction.", "asks for a reply a closed ticket cannot take"),
+        ("Thanks. The amount is ten thousand XE.", "mentions payment"),
+        (f"Thanks. The same as {thread.UNNAMED_DUPLICATE}.", "has an unfilled placeholder"),
+        ("Thanks. More at example.com if needed.", "has a link"),
+        ("x" * (thread.REASON_LIMIT + 1), f"over {thread.REASON_LIMIT} characters"),
+    ):
+        assert rr(words) == why, words
+
+    # the copy: every closing reason the desk owes a reply for has a template; none asks for a reply
+    # (a closed ticket takes none); each but the duplicate's has a reason slot and a stock line for it
+    for name in tsvc.CLOSED_REASONS_FOR["bounty"]:
+        assert tell.owed("bounty", name) == (name != "withdrawn"), name
+        if tell.owed("bounty", name):
+            tpl = ctx.config.reply_templates[name]
+            assert not thread._ASKS_BACK.search(tpl), name
+            assert name == "duplicate" or ("{reason}" in tpl and ctx.config.closing_reasons[name].strip())
+    assert not tell.owed("support", "answered")
 
 
 async def test_a_blocked_login_is_neither_linked_nor_mirrored(ctx, db):

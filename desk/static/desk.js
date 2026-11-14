@@ -409,13 +409,16 @@
       if (!left) tr.classList.add("done");
       return left;
     };
-    // what the batch did with reply drafts: sent ones, and the ones the desk held back with its reason
+    // what the batch did with replies: the ones sent, the closures the desk tells itself after the
+    // grace period (a draft on one of those is its to use), and the drafts held back with the reason
     const sentLine = (r) => {
       const d = r.decided || [];
       const sent = d.filter(x => x.sent).length;
-      const held = d.filter(x => x.field === "reply_draft" && !x.sent && !x.folded).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
+      const closing = new Set(d.filter(x => x.closing).map(x => x.ticket));
+      const held = d.filter(x => x.field === "reply_draft" && !x.sent && !x.folded && !closing.has(x.ticket)).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
       const parts = [];
       if (sent) parts.push(`Sent ${num(sent)} ${sent === 1 ? "reply" : "replies"} to reporters.`);
+      if (closing.size) parts.push(`${num(closing.size)} closed ${closing.size === 1 ? "report is" : "reports are"} told by the desk in about fifteen minutes.`);
       if (held.length) parts.push(held.join(" · "));
       return parts.join(" ");
     };
@@ -446,9 +449,10 @@
     const adoptRows = async (rows, what) => {
       const ids = rows.flatMap(tr => idsOf(tr, "ids").filter(id => !$(`.chip[data-pid="${id}"].gone`, tr)));
       if (!ids.length) return;
-      const sends = rows.reduce((n, tr) => n + $$(".chip.sends:not(.gone)", tr).length, 0);
+      const sends = rows.reduce((n, tr) => n + $$(".chip.sends:not(.later):not(.gone)", tr).length, 0);
       const replyNote = sends ? ` ${num(sends)} plain ${sends === 1 ? "acknowledgement is" : "acknowledgements are"} sent to reporters under your name; other reply drafts wait on their tickets.` : " Reply drafts wait on their tickets.";
-      if (!await ask({ title: `Adopt ${num(ids.length)} proposals on ${num(rows.length)} ${what}?`, body: `Each is written under your name through the same path as the ticket page: closures close, duplicates are marked and closed and their reporters sent the programme's duplicate reply, tiers and verdicts are set, awards are set but not approved.${replyNote} Anything the desk refuses is listed afterwards.`, ok: `Adopt ${num(ids.length)}` })) return;
+      const closeNote = " A report closed for any other reason is told by the desk about fifteen minutes later, in the programme's closing reply; where its chip says so, the agent's draft goes in that reply as the reason, unread.";
+      if (!await ask({ title: `Adopt ${num(ids.length)} proposals on ${num(rows.length)} ${what}?`, body: `Each is written under your name through the same path as the ticket page: closures close, duplicates are marked and closed and their reporters sent the programme's duplicate reply, tiers and verdicts are set, awards are set but not approved.${replyNote}${closeNote} Anything the desk refuses is listed afterwards.`, ok: `Adopt ${num(ids.length)}` })) return;
       try {
         const r = await api("POST", "/v1/team/proposals/bulk", { adopt: ids, send_plain: true });
         rows.forEach(tr => settle(tr, r));

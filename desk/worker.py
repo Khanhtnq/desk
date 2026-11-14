@@ -1,8 +1,8 @@
 """The worker: GitHub sync, outbox mirroring, label and state pushes, health, anchors, housekeeping.
 Runs as its own container (`python -m desk.worker`). It reads GitHub and the node; it writes to
-GitHub only what a person decided (a reply, a status), with one exception it makes itself: the stock
-reply for a ticket left at accepted or patched with its reporter untold (`services.tell`). It never
-signs anything on chain.
+GitHub only what a person decided (a reply, a status), with one exception it makes itself: the
+programme's reply for a ticket left at accepted, patched or closed with its reporter untold
+(`services.tell`). It never signs anything on chain.
 """
 
 from __future__ import annotations
@@ -98,15 +98,15 @@ class Worker:
             await db.commit()
 
     async def job_tell(self):
-        """The stock reply on tickets resting at accepted or patched that nobody has told. Mail goes
-        after the commit, to what was committed."""
+        """The programme's reply on tickets resting at accepted, patched or closed that nobody has
+        told. Mail goes after the commit, to what was committed."""
         async with session() as db:
             told = await tell.tell_resting(self.ctx, db)
             owed = notify.take_owed(db)
             await mark_run(db, "tell", {"told": len(told)})
             await db.commit()
         if told:
-            log.info("told: %s", ", ".join(f"{x['ticket']} ({x['status']})" for x in told))
+            log.info("told: %s", ", ".join(f"{x['ticket']} ({x['status']}, {x['words']})" for x in told))
         await notify.mail_owed(self.ctx, owed)
 
     async def job_outbox(self):

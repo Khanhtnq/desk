@@ -391,12 +391,19 @@ def export_triage(out: Path = typer.Option(None, help="write here instead of std
 @app.command("tell-backlog")
 def tell_backlog(
     dry_run: bool = typer.Option(False, help="list what would be sent, what is left and why; send nothing"),
+    only: str = typer.Option(
+        "", help="one status (accepted, patched, closed) or one closing reason (duplicate, invalid, ...)"
+    ),
+    limit: int = typer.Option(0, help="send at most this many and stop; 0 sends everything listed"),
+    text: bool = typer.Option(False, help="with --dry-run, print each reply in full, private ones too"),
 ):
-    """Send the stock accepted or patched reply on every ticket that was already resting untold when
-    the desk began telling on its own (the worker only tells moves made since). The rule is the
-    worker's (services/tell.py): what a person has in hand, or the desk cannot say, is left, and the
-    dry run says why. Replies go out as any reply does: a GitHub comment by the worker, a mail from
-    here. Re-runnable; a ticket that has been told is not told twice."""
+    """Send the programme's reply on every ticket that was already resting untold at accepted, patched
+    or closed when the desk began telling that status on its own (the worker only tells moves made
+    since). The rule is the worker's (services/tell.py): what a person has in hand, or the desk cannot
+    say, is left, and the dry run says why. It also says whose words each reply carries: the stock
+    ones, or, in a closing reply, the agent's adopted reason (and why a draft was not used). Replies
+    go out as any reply does: a GitHub comment by the worker, a mail from here. Re-runnable; a ticket
+    that has been told is not told twice."""
 
     async def go():
         from .db import session
@@ -406,24 +413,33 @@ def tell_backlog(
         ctx = _ctx()
         async with session() as db:
             if dry_run:
-                rows = await tell.resting(ctx, db, now=tsvc.utcnow())
+                rows = [
+                    r for r in await tell.resting(ctx, db, now=tsvc.utcnow()) if tell.picked(r, only)
+                ]
                 for r in rows:
                     t = r.ticket
-                    what = "tell" if r.text else f"left: {r.why}"
-                    typer.echo(f"{r.id}  {r.status:8}  {t.source:8}  {t.visibility:7}  {what}")
-                n = sum(1 for r in rows if r.text)
-                typer.echo(f"{n} would be told, {len(rows) - n} left for a person")
+                    typer.echo(f"{r.id:9} {r.name:12} {t.source:8} {t.visibility:7}  {tell.describe(r)}")
+                    if text and r.text:
+                        typer.echo("    " + r.text.replace("\n", "\n    ") + "\n")
+                told = [r for r in rows if r.text]
+                agents = sum(1 for r in told if r.words != tell.STOCK)
+                typer.echo(
+                    f"{len(told)} would be told ({agents} with an agent's reason, {len(told) - agents}"
+                    f" in stock words), {len(rows) - len(told)} left for a person"
+                )
             else:
                 total = mailed = 0
                 while True:
-                    told = await tell.tell_resting(ctx, db, backlog=True)
+                    room = min(tell.BATCH, limit - total) if limit else tell.BATCH
+                    told = await tell.tell_resting(ctx, db, backlog=True, only=only, limit=room)
                     owed = notify.take_owed(db)
                     await db.commit()  # a batch at a time: what is mailed below is what was committed
                     for x in told:
-                        typer.echo(f"{x['ticket']}  {x['status']:8}  told (reply {x['reply']})")
+                        how = f"reply {x['reply']}, {x['words']}"
+                        typer.echo(f"{x['ticket']:9} {x['status']:8}  told ({how})")
                     mailed += await notify.mail_owed(ctx, owed)
                     total += len(told)
-                    if len(told) < tell.BATCH:
+                    if len(told) < room or (limit and total >= limit):
                         break
                 typer.echo(f"{total} told, {mailed} mailed")
         await ctx.aclose()
