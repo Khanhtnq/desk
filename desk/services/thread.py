@@ -360,7 +360,10 @@ PLAIN_LIMIT = 300
 # the reporter will: a zero-width character splitting a word it looks for, a letter of another
 # alphabet standing in for one of ours.
 _UNPLAIN = re.compile(r"[^\x20-\x7e\t\r\n\u2018\u2019\u201c\u201d\u2013\u2014\u2026]")
-_URL = re.compile(r"https?://\S+")
+# A way to somewhere else, however it is spelled: a scheme in any case, a protocol-relative `//host`,
+# an address or a handle, the brackets of a markdown link, image or autolink (the thread renders
+# markdown), and a dot with a letter before it and letters after (a bare domain; a file name too).
+_LINK = re.compile(r"://|//|@|[\[\]<>]|\w\.[^\W\d_]{2,}")
 _CODE = re.compile(r"`|\w+\(\)|\w+_\w+|\w+\.(go|py|js|ts|html|yaml|md)\b|\b\w+/\w+")
 _TICKET_ID = re.compile(r"\b[A-Z]{2}-\d{4,}\b")
 _MONEY = re.compile(r"\b(award|awards|awarded|reward|bounty|pay|paid|payout|payment|xe)\b", re.I)
@@ -392,7 +395,7 @@ def review_reason(ctx: Context, text: str, t: Ticket) -> str | None:
     for phrase in ctx.config.plain_phrases:
         folded = re.sub(re.escape(re.sub(r"\s+", " ", phrase.strip())), " ", folded, flags=re.I)
     rest = folded
-    if _URL.search(rest):
+    if _LINK.search(rest):
         return "has a link"
     if _TICKET_ID.search(rest):
         return "names another ticket"

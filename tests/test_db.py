@@ -836,6 +836,11 @@ async def test_plain_acknowledgements_send_on_adopt_and_the_rest_wait(ctx, db):
     for odd in ("rewa\u200brd", "\u0430ward", "re\u00adward", "\uff11 day"):  # zero-width, Cyrillic, ...
         assert rr(ctx, f"Thanks. The {odd} follows.", plain) == "has a character outside plain text", odd
     assert rr(ctx, "Thanks \u2014 we\u2019ve read it\u2026", plain) is None
+    # a link is a link however it is spelled, and so is an address, a handle or a bare domain
+    for way in ("Https://example.com", "[here](//example.com)", "![x](//example.com)", "<ftp://example.com>",
+                "desk@example.com", "example.com", "www.example.com", "@someone"):
+        assert rr(ctx, f"Thanks. More at {way} if needed.", plain) == "has a link", way
+    assert rr(ctx, "Thanks, e.g. for the steps.", plain) is None
     # the programme's stock lines pass whatever words they carry; the rest is still checked
     stock = (
         "Thanks for the report. We have read it against the code and it is being handled alongside"
