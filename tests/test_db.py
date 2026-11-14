@@ -830,6 +830,12 @@ async def test_plain_acknowledgements_send_on_adopt_and_the_rest_wait(ctx, db):
     assert rr(ctx, "Thanks. See https://example.com/x.", plain) == "has a link"
     assert rr(ctx, "Thanks. Fixed in 2 days.", plain) == "has a number"
     assert rr(ctx, "Thanks. The award follows the fix.", plain) == "mentions payment"
+    # the text is judged as it is sent: a control character splitting a word is gone before the check
+    # reads it, as it is gone before the reply is stored, and what is not plain text is held
+    assert rr(ctx, "Thanks. The aw\x01ard follows the fix.", plain) == "mentions payment"
+    for odd in ("rewa\u200brd", "\u0430ward", "re\u00adward", "\uff11 day"):  # zero-width, Cyrillic, ...
+        assert rr(ctx, f"Thanks. The {odd} follows.", plain) == "has a character outside plain text", odd
+    assert rr(ctx, "Thanks \u2014 we\u2019ve read it\u2026", plain) is None
     # the programme's stock lines pass whatever words they carry; the rest is still checked
     stock = (
         "Thanks for the report. We have read it against the code and it is being handled alongside"
@@ -878,6 +884,9 @@ async def test_plain_acknowledgements_send_on_adopt_and_the_rest_wait(ctx, db):
     d_again = await psvc.propose(ctx, db, agent, again, "reply_draft", "Thanks, we have read it.", "")
     await psvc.propose(ctx, db, agent, again, "duplicate_of", plain.id, "same")
     assert psvc.send_review(ctx, await psvc.pending_for(db, again), d_again, again) == "goes with a closure"
+    # a draft is cleaned where it comes in, as a reply is where it goes out
+    kept = await psvc.propose(ctx, db, agent, again, "reply_draft", "Thanks. Re\x02ad.\x00", "")
+    assert kept.value == {"value": "Thanks. Read."}
 
 
 async def test_a_family_of_duplicates_closes_in_one_ruling(ctx, db):

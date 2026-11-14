@@ -58,6 +58,10 @@ async def propose(
         value = await tsvc.fact_value(ctx, db, t, field, value)
     if field == "reply_draft" and not isinstance(value, str):
         raise HTTPException(400, "a reply draft is a string")
+    if field == "reply_draft":
+        # cleaned where it comes in, as a reply is where it goes out (`thread.add_reply`): the text a
+        # person sees on the chip, the text the check reads and the text sent are one text
+        value = tsvc.clean_text(value)
     if field == "award_xe":
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise HTTPException(400, "award_xe is a whole number of XE, 0 or more")

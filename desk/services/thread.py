@@ -355,6 +355,11 @@ def _fill_known(tpl: str, values: dict[str, str]) -> str:
 
 
 PLAIN_LIMIT = 300
+# What an unread reply is written in: printable ASCII, line breaks, and the typographic quotes, dashes
+# and ellipsis an editor puts in for them. Anything else is something the check below cannot read as
+# the reporter will: a zero-width character splitting a word it looks for, a letter of another
+# alphabet standing in for one of ours.
+_UNPLAIN = re.compile(r"[^\x20-\x7e\t\r\n\u2018\u2019\u201c\u201d\u2013\u2014\u2026]")
 _URL = re.compile(r"https?://\S+")
 _CODE = re.compile(r"`|\w+\(\)|\w+_\w+|\w+\.(go|py|js|ts|html|yaml|md)\b|\b\w+/\w+")
 _TICKET_ID = re.compile(r"\b[A-Z]{2}-\d{4,}\b")
@@ -373,11 +378,13 @@ def review_reason(ctx: Context, text: str, t: Ticket) -> str | None:
     The rule is deliberately narrow; everything it does not recognise waits in the editor."""
     from .tickets import ticket_url
 
-    body = (text or "").strip()
+    body = clean_text(text).strip()  # as `add_reply` cleans it: the text judged is the text sent
     if not body:
         return "empty"
     if len(body) > PLAIN_LIMIT:
         return f"over {PLAIN_LIMIT} characters"
+    if _UNPLAIN.search(body):
+        return "has a character outside plain text"
     own = ticket_url(ctx, t)
     rest = body.replace(own, " ").replace(t.id, " ")
     # the programme's stock lines pass whatever words they carry; the rest of the text is still checked
