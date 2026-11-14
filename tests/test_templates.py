@@ -7,6 +7,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from desk.config import lint_public_copy, strip_template
 from desk.mirror import build_llms_txt, html_to_markdown, md_path, md_target, wants_markdown
+from desk.models import CLOSED_REASONS
 
 ROOT = Path(__file__).resolve().parents[1]
 TPL = ROOT / "desk" / "templates"
@@ -45,6 +46,17 @@ def test_reply_templates_do_not_promise(config):
         # support answers land in the thread the question came from and close it as answered
         closing = name in ("invalid", "notice", "duplicate", "closed") or name.startswith("support_")
         assert "{ticket_url}" in text or closing, name
+
+
+def test_closing_replies_do_not_ask_for_a_reply(config):
+    # a closed ticket takes no more messages from whoever filed it (`reporters.reply`; on Discord the
+    # thread is locked), so no reply the desk closes with asks for one: the way back is a new filing
+    asks = re.compile(r"\b(repl(y|ies|ying)|respond|reopen(s|ed|ing)?)\b", re.I)
+    closes = [*CLOSED_REASONS, "notice", "support_answered"]
+    seen = [name for name in closes if name in config.reply_templates]
+    assert {"duplicate", "invalid", "support_answered"} <= set(seen)
+    for name in seen:
+        assert not asks.search(config.reply_templates[name]), name
 
 
 def test_md_paths():

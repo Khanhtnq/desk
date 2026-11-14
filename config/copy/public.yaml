@@ -197,10 +197,12 @@ reply_templates:
     Thanks for the report. This is fixed in {patch_refs}. The desk entry is {ticket_url}. If you can,
     re-run your reproduction against the next testnet build and say so here; if it still reproduces,
     reopen with what you saw.
+  # A closed ticket takes no more messages from whoever filed it, so no reply that goes with a close
+  # asks for one: the way back is a new report.
   duplicate: |-
     Thanks. This is the same finding as {duplicate_url}, which was filed first; the programme pays the
     first verifiable submission, so this one closes as a duplicate. If you believe it is a different
-    bug, reply with what differs and we will look again.
+    bug, file a new report that links {ticket_url} and says what differs; it is read like any other.
   accepted: |-
     Read and accepted. It is tracked internally and the fix will land in a public PR; this issue is
     updated when it does, and the tier and award follow the fix. The desk entry is {ticket_url}.
@@ -211,14 +213,16 @@ reply_templates:
   needs_info: |-
     Read, but not yet reproducible from what is here. Could you add {what}? The desk entry is {ticket_url}.
   invalid: |-
-    Read. {reason} Closing; reply here if there is a reproduction we have missed.
+    Read. {reason} Closing. If there is a reproduction we have missed, file a new report that links
+    {ticket_url} and carries it; it is read like any other.
   notice: |-
     Noted, and thank you for flagging the campaign ahead of time. Nothing to action from this one.
   # Support answers. Plain, short, no dates nobody has announced.
   support_answered: |-
     {answer}
 
-    Closing this as answered so the next person finds it; reply here if it did not resolve it for you.
+    Closing this as answered so the next person finds it. If it did not resolve it for you, ask a new
+    question and say so; it is read like any other.
   support_launch: |-
     There is no announced date. Mainnet follows the testnet, and the token exists from mainnet launch;
     when a date is set it will be on xe.network first, not in a private message or a chat. Anything
