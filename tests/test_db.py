@@ -4833,3 +4833,96 @@ async def test_stats_count_what_an_anonymous_reader_can(ctx, db):
     assert done["awards"]["top"] == [{"name": "ada", "login": "ada", "award_xe": 5_000_000_000, "tickets": 1}]
     assert done["public"]["fixed"] == 1 and sum(d["fixed"] for d in done["per_day"]) == 1
     assert json.loads(json.dumps(done)) == done  # what `/v1/stats` returns as it stands
+
+
+async def test_mailed_reports_are_filed_private_with_their_sender_and_only_once(ctx, db):
+    """A report that came by email is a private ticket with its sender as the reporter, filed once
+    however often the export is run; a mail that follows another is a note on that ticket, said to be
+    the reporter's or not; what the desk would not keep is skipped with the reason; nobody is written
+    to and nothing of it is public."""
+    from desk.services import mailbox
+
+    team = await _team(ctx, db)
+    known = await rsvc.from_email(ctx, db, "known@example.org", link_to=None)
+    spec = tsvc.NewTicket(kind="bounty", title="on the desk already", source="web")
+    onfile = await tsvc.create(ctx, db, team.actor, spec)
+    await rsvc.attach(ctx, db, team, onfile, email="known@example.org")
+
+    def mail(ref, **kw):
+        base = {"ref": ref, "from_email": "New.Sender@Example.org", "date": "2026-11-15T05:20:18Z",
+                "subject": "[Critical] a double spend", "body": "Steps.\x00\n1. grind the hash"}
+        return {**base, **kw}
+
+    items = [
+        mail("m-3", follows="m-1", subject="Re: a double spend", body="A correction."),  # before its report
+        mail("m-1", claimed_tier="Critical", attachments=["poc.zip"]),
+        mail("m-2", from_email="known@example.org", subject="a medium one", claimed_tier=None),
+        mail("m-4", follows=onfile.id, from_email="known@example.org", body="More detail."),
+        mail("m-5", follows=onfile.id, from_email="stranger@example.org", body="I retract it."),
+        mail("m-6", follows="XE-9999"),
+        mail("m-1"),
+        mail("m-7", claimed_tier="urgent"),
+        mail("m-8", from_email="not an address"),
+        mail("m-9", date="yesterday"),
+        mail("m-10", body=" \x01 "),
+        mail("m-11", date="2026-11-15T05:20:18"),
+        "not an object",
+    ]
+    oid = onfile.id
+
+    async def mailed():
+        q = select(Ticket).where(Ticket.source == "email").order_by(Ticket.id)
+        return list((await db.execute(q)).scalars().all())
+
+    def sizes(out):
+        return {k: len(v) for k, v in out.items()}
+
+    dry = await mailbox.import_emails(ctx, db, items, dry_run=True)
+    assert sizes(dry) == {"created": 2, "existing": 0, "notes": 3, "skipped": 8}
+    assert await mailed() == [] and await thread.notes_for(db, onfile) == []
+    why = {s["ref"]: s["why"] for s in dry["skipped"]}
+    assert set(why) == {"m-6", "m-1", "m-7", "m-8", "m-9", "m-10", "m-11", "item 12"}
+    assert "twice" in why["m-1"] and "not on the desk" in why["m-6"] and "claimed_tier" in why["m-7"]
+
+    out = await mailbox.import_emails(ctx, db, items)
+    assert sizes(out) == sizes(dry) and {s["ref"]: s["why"] for s in out["skipped"]} == why
+    first, second = await mailed()
+    assert [(r["ref"], r["ticket"]) for r in out["created"]] == [("m-1", first.id), ("m-2", second.id)]
+    for t in (first, second):
+        assert (t.kind, t.visibility, t.status, t.body) == ("bounty", "private", "new", "")
+        assert t.source_created_at is not None and t.told_at is None
+    assert (first.source_ref, first.claimed_tier, second.claimed_tier) == ("m-1", "critical", None)
+    assert tsvc.body_for(ctx, first) == "Steps.\n1. grind the hash"  # cleaned, sealed, the mail's text
+    sender = await rsvc.get(db, first.reporter_id)
+    assert sender.email == "new.sender@example.org" and second.reporter_id == known.id
+    notes = sorted(n.body for n in await thread.notes_for(db, first))  # the follow-up, then where from
+    assert len(notes) == 2 and "mail m-1" in notes[1] and "poc.zip" in notes[1]
+    assert "new.sender" not in "".join(notes) and "A correction." in notes[0]
+    assert "from the reporter's address" in notes[0]
+    await db.refresh(onfile)
+    theirs, not_theirs = sorted(n.body for n in await thread.notes_for(db, onfile))  # mail m-4, mail m-5
+    assert "from the reporter's address" in theirs and "More detail." in theirs
+    assert "NOT the reporter's" in not_theirs and "I retract it." in not_theirs
+    assert (onfile.status, onfile.closed_reason) == ("new", None)  # a mail moves nothing
+    # nobody was written to, and the public log has nothing of a mailed report
+    assert (await db.execute(select(Reply))).scalars().all() == []
+    for t in (first, second):
+        assert await EventLog.page(db, 0, 50, ref=t.id) == []
+        kinds = {e.kind for e in await EventLog.page(db, 0, 50, ref=t.id, public_only=False)}
+        assert {"ticket.created", "ticket.reporter", "note.added"} <= kinds
+
+    again = await mailbox.import_emails(ctx, db, items)
+    assert sizes(again) == {"created": 0, "existing": 2, "notes": 3, "skipped": 8}
+    assert {n["note"] for n in again["notes"]} == {"already there"}
+    assert len(await mailed()) == 2 and len(await thread.notes_for(db, first)) == 2
+    onfile = await tsvc.get(db, oid)
+    assert len(await thread.notes_for(db, onfile)) == 2
+
+    # the daily cap is the reporter's whichever door the report came through: a mailbox is not a way
+    # round it
+    cap = ctx.config.daily_cap
+    flood = [mail(f"f-{i}", from_email="flood@example.org", subject=f"probe {i}") for i in range(cap + 1)]
+    out = await mailbox.import_emails(ctx, db, flood)
+    assert [bool(r["queued"]) for r in out["created"]] == [False] * cap + [True]
+    last = await tsvc.get(db, out["created"][-1]["ticket"])
+    assert last.queued and last.visibility == "private"

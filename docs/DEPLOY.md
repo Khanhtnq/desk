@@ -107,6 +107,13 @@ The triage document is not in the repo (it carries the private email reports). C
 
 For the three email reports, put their bodies in a JSON file and pass `--emails /app/secrets/emails.json` (`{"E1": "...", "E2": "...", "E3": "..."}`); the bodies are sealed on write. Add payout addresses on the ticket pages when the reporters send them.
 
+Reports that arrive by email later are filed with `desk import-emails`. The desk reads no mailbox: someone goes through it, leaves out what is not a report, and writes the rest to `/opt/desk/secrets/emails.json` (never in the repo), a JSON list of `{"ref", "from_email", "date", "subject", "body", "claimed_tier", "attachments", "follows"}`. Each mail becomes a private bounty ticket with its sender attached as the reporter; one with `follows` (the `ref` of another mail, or a ticket id) becomes a team note on that ticket instead. Nothing is sent to anyone, attachments are named and not opened, and a second run over the same file files nothing twice.
+
+```sh
+docker compose exec app desk import-emails /app/secrets/emails.json --dry-run   # what would be filed, and what is refused
+docker compose exec app desk import-emails /app/secrets/emails.json
+```
+
 Then the worker's first `push` run (within a minute) puts the status labels on the issues and closes the ones the desk has closed. Check `/team/outbox`: it lists every ticket that was fixed but whose reporter has not been told. Tickets resting at `accepted`, `patched` or `closed` are sent the programme's reply by the desk: `docker compose exec app desk tell-backlog --dry-run` lists what would go, in whose words, and what is left and why (`--text` prints each reply, `--only invalid` narrows it to one status or closing reason); the same command without `--dry-run` sends it, and `--limit 20` sends the first twenty and stops. Work through the rest by hand.
 
 ## 5. Webhook

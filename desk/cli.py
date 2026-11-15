@@ -368,6 +368,47 @@ def import_triage(
     _run(go())
 
 
+@app.command("import-emails")
+def import_emails(
+    path: Path = typer.Argument(Path("/app/secrets/emails.json")),
+    dry_run: bool = typer.Option(False, help="check the file and print what would be filed; write nothing"),
+):
+    """File reports that arrived by email, from an export kept outside the repository: each a private
+    bounty ticket with its sender attached as the reporter, a follow-up as a team note on the ticket it
+    follows. Sends nothing to anyone. Re-runnable: a mail already filed is left as it is."""
+    from .services import mailbox
+
+    items = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(items, list):
+        typer.echo("the file is a JSON list of mails", err=True)
+        raise typer.Exit(1)
+
+    async def go():
+        from .db import session
+
+        ctx = _ctx()
+        async with session() as db:
+            out = await mailbox.import_emails(ctx, db, items, dry_run=dry_run)
+            if not dry_run:
+                await db.commit()
+        for row in out["created"]:
+            who = f"reporter #{row['reporter']}" if row["reporter"] else "a new reporter"
+            typer.echo(
+                f"{'would file' if dry_run else row['ticket']:10} {row['ref']:18} {row['tier'] or '-':8} "
+                f"{row['chars']:>6} chars  {who:16} {'queued ' if row.get('queued') else ''}{row['title']}"
+            )
+        for row in out["notes"]:
+            typer.echo(f"note       {row['ref']:18} on {row['ticket']}: {row['note']}")
+        for row in out["existing"]:
+            typer.echo(f"existing   {row['ref']:18} is {row['ticket']}")
+        for row in out["skipped"]:
+            typer.echo(f"SKIPPED    {row['ref']:18} {row['why']}")
+        typer.echo(json.dumps({k: len(v) for k, v in out.items()} | {"dry_run": dry_run}))
+        await ctx.aclose()
+
+    _run(go())
+
+
 @app.command("export-triage")
 def export_triage(out: Path = typer.Option(None, help="write here instead of stdout")):
     async def go():
