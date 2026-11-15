@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, literal, or_, select
+from sqlalchemy import case, func, literal_column, or_, select
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from ..authz import Principal, can, can_see, require, require_field
 from ..config import Config
@@ -396,6 +398,29 @@ class Filters:
     limit: int = 100
 
 
+def contains(needle: str) -> str:
+    """The LIKE pattern for "contains this string": `%` and `_` in it are the reader's characters, not
+    wildcards (a search for `%` matched every row)."""
+    esc = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%"
+
+
+_INDEXABLE = re.compile(r"[^\W_]{3}")
+
+
+def body_contains(needle: str):
+    """The condition "this ticket's body contains `needle`", whatever its case, or None when the
+    string is not one the body is searched for. The bodies are found through the trigram index
+    (`models.TICKET_TEXT_DDL`) and only those are opened: the condition is "the id is one of the ids
+    the index finds", so it stays an index read when it is one arm of an OR beside the title and the
+    id. The index knows runs of three letters or digits; a string without one would be answered by
+    reading every body, so it is not asked of the bodies at all."""
+    if not _INDEXABLE.search(needle):
+        return None
+    other = aliased(Ticket)
+    return Ticket.id.in_(select(other.id).where(other.body.ilike(contains(needle))))
+
+
 def _filtered(cfg: Config, p: Principal, f: Filters):
     """The rows a filter selects, before ordering and paging; shared by the list and its total."""
     q = select(Ticket)
@@ -442,11 +467,14 @@ def _filtered(cfg: Config, p: Principal, f: Filters):
         sub = select(Proposal.id).where(Proposal.ticket_id == Ticket.id, Proposal.state == "pending").exists()
         q = q.where(sub if f.pending else ~sub)
     if f.q:
-        like = f"%{f.q.strip()}%"
+        like = contains(f.q.strip())
         issue = Ticket.source_ref == f.q.strip().lstrip("#")
+        match = Ticket.title.ilike(like) | Ticket.id.ilike(like) | issue
         # the body too: two reports of one bug rarely share a title. A private body is sealed and is
         # not searchable; the title still is.
-        match = Ticket.title.ilike(like) | Ticket.id.ilike(like) | Ticket.body.ilike(like) | issue
+        in_body = body_contains(f.q.strip())
+        if in_body is not None:
+            match = match | in_body
         if full:
             match = match | (Ticket.internal_ref.ilike(like))
         q = q.where(match)
@@ -506,6 +534,10 @@ async def every_ticket(db: AsyncSession, cfg: Config, p: Principal, f: Filters) 
 # cite the same source paths, the same reporter's other reports, and anything already linked as a
 # duplicate either way. This is the floor of the duplicate check, not the ceiling; the brief says so.
 
+# `tickets.search`: the words of the title and body, parsed and indexed by the database when the row
+# is written (`models.TICKET_SEARCH`). Named here, not mapped: nothing reads the column back.
+SEARCH = literal_column("tickets.search", type_=TSVECTOR)
+
 _STOP = frozenset(
     "a an and are as at be by for from has have if in into is it its no not of on or that the this to "
     "via was when where which while with without xe bug issue report vulnerability attack attacker can "
@@ -564,11 +596,11 @@ async def similar(
     terms = _terms(t.title, " ".join((body or "")[:2000].split()))
     if terms:
         tsq = func.to_tsquery("english", " | ".join(terms))
-        doc = func.to_tsvector("english", Ticket.title + literal(" ") + Ticket.body)
-        rank = func.ts_rank_cd(doc, tsq)
-        rows = (
-            await db.execute(base.add_columns(rank).where(doc.op("@@")(tsq)).order_by(rank.desc()).limit(30))
-        ).all()
+        # the words as the database parsed them when the row was written, never parsed here: this
+        # route is anyone's to call, and parsing every body for each call was the desk's whole CPU
+        rank = func.ts_rank_cd(SEARCH, tsq)
+        wq = base.add_columns(rank).where(SEARCH.bool_op("@@")(tsq)).order_by(rank.desc()).limit(30)
+        rows = (await db.execute(wq)).all()
         if rows:
             top = max(float(r[1]) for r in rows) or 1.0
             for row, r in rows:
@@ -576,8 +608,10 @@ async def similar(
     # paths: a report that names the same file is about the same code, whatever it calls the bug
     paths = cited_paths(body)
     if paths:
-        pq = base.where(or_(*[Ticket.body.ilike(f"%{path}%") for path in paths])).limit(30)
-        for row in (await db.execute(pq)).scalars().all():
+        # found through the trigram index, not by opening every body (`body_contains`)
+        cited = [c for c in (body_contains(path) for path in paths) if c is not None]
+        pq = base.where(or_(*cited)).limit(30)
+        for row in (await db.execute(pq)).scalars().all() if cited else []:
             shared = [path for path in paths if path in (row.body or "")]
             hit(row, 0.25 + 0.1 * (len(shared) - 1), "cites " + ", ".join(shared[:3]))
     # the reporter's other reports: a run of thin ones, or the earlier filing of this one

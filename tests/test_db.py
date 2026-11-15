@@ -4926,3 +4926,81 @@ async def test_mailed_reports_are_filed_private_with_their_sender_and_only_once(
     assert [bool(r["queued"]) for r in out["created"]] == [False] * cap + [True]
     last = await tsvc.get(db, out["created"][-1]["ticket"])
     assert last.queued and last.visibility == "private"
+
+
+async def test_a_tickets_text_is_indexed_when_it_is_written_not_read_for_each_reader(ctx, db):
+    """`similar` and the list's search are anyone's to call, so what they match on is kept by the
+    database and written when the ticket is: its words match from the next read, a body that contains
+    a string is found through the trigram index, a sealed body stops matching either way, and nothing
+    under `desk/` parses or reads every body for a reader (15 Nov: a few callers a second held every
+    connection the desk has)."""
+    from desk import models
+
+    p = await _team(ctx, db)
+
+    async def mk(title, body=""):
+        spec = tsvc.NewTicket(kind="bounty", title=title, body=body, source="web")
+        return await tsvc.create(ctx, db, p.actor, spec)
+
+    async def by_words(t):
+        rows = await tsvc.similar(db, ctx.config, p, t, body=tsvc.body_for(ctx, t))
+        return {s.ticket.id for s in rows if "same words" in s.why}
+
+    async def found(q, who=authz.ANON):
+        f = tsvc.Filters(q=q, status="all")
+        rows = await tsvc.list_tickets(db, ctx.config, who, f)
+        assert len(rows) == await tsvc.count_tickets(db, ctx.config, who, f)
+        return {t.id for t in rows}
+
+    async def by_path(t):
+        rows = await tsvc.similar(db, ctx.config, p, t, body=tsvc.body_for(ctx, t))
+        return {s.ticket.id for s in rows if any(w.startswith("cites ") for w in s.why)}
+
+    a = await mk("Escrow refund after settlement", "The lease escrow is refunded twice by archiveLease.")
+    b = await mk("Unrelated title", "A second path refunds the escrow of a lease after settlement.")
+    c = await mk("Typo on the scope page", "It says 'teh'.")
+    assert await by_words(a) == {b.id}
+    # "contains", for the search box and for the paths a report cites: case is not the reader's to
+    # get right, `%` and `_` are characters, and a string the index cannot look up (no three letters
+    # or digits in a row) is not asked of the bodies at all
+    d = await mk("A 100% loss", "core/ledger.go drops the top_up; see Core/Ledger.go line 40.")
+    e = await mk("Another report", "The same branch of core/ledger.go, reached from sync; topXup too.")
+    assert await found("ARCHIVElease") == {a.id} and await found("core/ledger.go") == {d.id, e.id}
+    assert await found("top_up") == {d.id} and await found("topXup") == {e.id}
+    assert await found("100%") == {d.id} and await found("%") == {d.id}, "the one row with a percent sign"
+    assert await found("of") == set(), "two letters are looked for in titles and ids, not in bodies"
+    assert await found("an") == {e.id} and tsvc.body_contains("a/b") is None
+    assert await by_path(d) == {e.id} and await by_path(e) == {d.id}
+    # a write is what parses: the row's words follow its title and body, with nothing run for it
+    c.title = "The escrow of a lease is refunded twice"
+    await db.flush()
+    assert await by_words(a) == {b.id, c.id}
+    # a sealed body is not text the database holds, so it is not words either; the title still is
+    await tsvc.set_facts(ctx, db, p, b, {"visibility": "private"})
+    assert await by_words(a) == {c.id}
+    assert tsvc.body_for(ctx, b).startswith("A second path")
+    assert await found("second path", p) == set() and await found("Unrelated", p) == {b.id}
+    await tsvc.set_facts(ctx, db, p, e, {"visibility": "private"})
+    assert await by_path(d) == set() and await found("core/ledger.go", p) == {d.id}
+
+    # the column is the database's: generated from the row, indexed, and spelled once
+    q = "SELECT generation_expression FROM information_schema.columns WHERE table_name = 'tickets' "
+    generated = (await db.execute(text(q + "AND column_name = 'search'"))).scalar_one()
+    assert "to_tsvector" in generated
+    q = "SELECT indexdef FROM pg_indexes WHERE tablename = 'tickets' AND indexname = "
+    assert "gin (search)" in (await db.execute(text(q + "'ix_ticket_search'"))).scalar_one().lower()
+    trgm = (await db.execute(text(q + "'ix_ticket_body_trgm'"))).scalar_one().lower()
+    assert "gin (body gin_trgm_ops)" in trgm
+    assert not hasattr(Ticket, "search"), "not mapped: no list, page or write reads the words back"
+    migration = (ROOT / "alembic" / "versions" / "0013_ticket_words_indexed.py").read_text()
+    assert f'TICKET_SEARCH = "{models.TICKET_SEARCH}"' in migration
+    for stmt in models.TICKET_TEXT_DDL[2:]:  # the two indexes, as the migration spells them
+        assert stmt.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS") in migration
+    # and no reader parses or reads every body: the one place a ticket's text becomes a tsvector is
+    # that expression, and the one condition on a body is `body_contains`
+    for path in sorted((ROOT / "desk").rglob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        once = 1 if path.name == "models.py" else 0
+        assert src.count("to_tsvector") == once, f"{path.name} parses a ticket's text for a reader"
+        once = 1 if path.name == "tickets.py" and path.parent.name == "services" else 0
+        assert len(re.findall(r"\bbody\.i?like\(", src)) == once, f"{path.name} reads every body"

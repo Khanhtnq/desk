@@ -99,7 +99,8 @@ def build_agent_brief(
             "&status=all&limit=500&offset=0`, then `offset=500`, and on until `offset + count` reaches",
             "`total`. Every title, every status, every `duplicate_of` and `internal_ref`, the fixed and the",
             "closed included: that is the set a new report is a duplicate of. `status=open` is new to",
-            "fixing only and is a work queue, not a duplicate check. `q=` searches titles and public bodies;",
+            "fixing only and is a work queue, not a duplicate check. `q=` searches titles and public bodies",
+            "(a body for a run of three letters or digits, or more);",
             "`reporter=<id>` lists one reporter's filings.",
         )
     )

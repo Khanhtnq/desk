@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    DDL,
     BigInteger,
     Boolean,
     DateTime,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
@@ -394,6 +396,34 @@ class Ticket(Base):
     @property
     def is_open(self) -> bool:
         return self.status not in ("closed", "paid")
+
+
+# What a reader asks of a ticket's text is answered from an index written with the ticket, never by
+# reading every body. Two indexes, both the database's work on each write of the row:
+#
+# - `tickets.search`, the title's and body's words as a tsvector, generated and GIN-indexed.
+#   `tickets.similar` matches and ranks on it;
+# - a trigram index on `tickets.body`, which finds the bodies that contain a string (a cited path, a
+#   search box's words) without opening the rest.
+#
+# Both were done per reader instead: one call to `similar`, a route anyone can call, read every
+# ticket's body through the text parser, seconds of database time, and a few callers a second held
+# every connection the desk has (15 Nov). A private ticket's body is sealed and its `body` empty, so
+# neither index holds more of it than its title.
+#
+# `search` is the database's alone: not mapped, so no list, page or write reads it back. Queries name
+# it as `tickets.search` (`services.tickets.SEARCH`). Migration 0013 adds all of this to a database
+# that exists; the statements below add it where the tables are made from this file (the tests, and
+# the first migration on an empty database, which 0013 then finds done).
+TICKET_SEARCH = "to_tsvector('english', title || ' ' || body)"
+TICKET_TEXT_DDL = (
+    "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+    f"ALTER TABLE tickets ADD COLUMN search tsvector GENERATED ALWAYS AS ({TICKET_SEARCH}) STORED",
+    "CREATE INDEX ix_ticket_search ON tickets USING gin (search)",
+    "CREATE INDEX ix_ticket_body_trgm ON tickets USING gin (body gin_trgm_ops)",
+)
+for _stmt in TICKET_TEXT_DDL:
+    event.listen(Ticket.__table__, "after_create", DDL(_stmt))
 
 
 class Message(Base):
