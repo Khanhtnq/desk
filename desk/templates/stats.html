@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m with context %}
 {% block title %}{{ copy.labels.stats }}{% endblock %}
 {# Every number here is the same for every reader: see desk/services/stats.py for what is counted. #}
 {% macro tip(text) %}data-tip="{{ text }}"><title>{{ text }}</title>{% endmacro %}
@@ -75,7 +76,7 @@
 
 <div class="st-two">
   <section class="st-card">
-    <h2>XE awarded</h2><p class="k">{{ s.awards.xe|xe }} XE across {{ s.awards.tickets|n }} report{{ "" if s.awards.tickets == 1 else "s" }}. Awards are paid at mainnet launch; <a href="/scope">scope</a> has the terms.</p>
+    <h2>XE awarded</h2><p class="k">{{ s.awards.xe|xe }} XE across {{ s.awards.tickets|n }} report{{ "" if s.awards.tickets == 1 else "s" }}. {{ m.paid_line() }}</p>
     {{ linechart(ch.awarded, "awarded", "brand", "XE awarded, running total: " ~ s.awards.xe|xe ~ " XE, on " ~ s.awards.tickets|n ~ " of the reports.") }}
   </section>
   <section class="st-card">

@@ -36,6 +36,10 @@ cards:
   live:
     title: Live log
     line: The desk's public log as it happens.
+# How the bounty pays, in the programme's one sentence for it. It is used word for word wherever a page
+# says when awards are paid (leaderboard, stats), and it changes only when the programme's wording does.
+# The words "bounty terms" are linked to /scope where it is shown (`paid_line` in _macros.html).
+paid_line: People whose bug reports are accepted are paid in XE at mainnet launch, under the bounty terms.
 # Pointer shown on the bounty site, for people who arrived with a question rather than a bug.
 bounty_crosslink: >-
   Not a bug? Questions about XE, the launch, wallets, keys or getting started go to: {support_url}

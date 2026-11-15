@@ -173,3 +173,31 @@ def test_an_empty_desk_still_has_a_page(config):
     s["awards"] = {"xe": 0, "tickets": 0, "researchers": 0, "top": []}
     html = _page(config, s)
     assert "No public reports yet." in html and "No fixes yet." in html and "Nobody yet" in html
+
+
+def test_how_the_bounty_pays_is_one_sentence_wherever_a_page_says_it(config):
+    """The programme has one sentence for when awards are paid (`paid_line` in the public copy). A page
+    that says it says that sentence, word for word, with "bounty terms" linked to the terms; none says
+    it in words of its own, where the date or the source of the XE could drift from the programme's."""
+    from pathlib import Path
+
+    line = config.copy_public["paid_line"]
+    said = "People whose bug reports are accepted are paid in XE at mainnet launch, under the bounty terms."
+    assert line == said
+    shown = line.replace("bounty terms", '<a href="/scope">bounty terms</a>')
+    assert shown in _page(config, _snap([1, 3, 0], before=2))
+    pages = Path(__file__).resolve().parent.parent / "desk" / "templates"
+    for name in ("stats.html", "leaderboard.html"):
+        text = (pages / name).read_text()
+        assert "m.paid_line()" in text, name
+    said_twice = ("genesis", "heavy user", "bounty allocation", "of-supply", "of supply")
+    for page in sorted(pages.rglob("*.html")):
+        text = page.read_text().lower()
+        for words in said_twice:
+            assert words not in text, f"{page.name}: {words}"
+    # the terms on /scope say when and in what, and nothing about where the XE comes from
+    terms = config.copy_programme["terms"]
+    assert "Payouts are in native XE at mainnet launch." in terms
+    for term in terms:
+        for words in said_twice:
+            assert words not in term.lower(), term
