@@ -1592,6 +1592,31 @@ class _Hub:
             yield pull
 
 
+async def test_the_import_asks_nothing_of_github_with_a_transaction_open(ctx, db):
+    """The rule: nothing is awaited from GitHub while the desk holds a lock every writer waits for.
+    Writing an issue can take the log's head, held to the commit; the import wrote the issue and
+    then asked GitHub for its comments, a request a page with retries that sleep, and until it
+    answered no reader of a private ticket, no filing and no ruling could be logged."""
+    repo = ctx.config.primary_repo
+    open_at = []
+
+    class Hub(_Hub):
+        async def comments(self, repo, number, since=None):
+            open_at.append(db.in_transaction())
+            yield {
+                "id": 9000 + number, "body": "seen too", "user": {"login": "bob", "id": 8},
+                "created_at": "2026-10-20T11:00:00Z",
+            }
+
+    hub = Hub({repo: [_issue(601, "Read first", comments=1), _issue(602, "And again", comments=1)]}, {})
+    stats = await sync.import_repo(ctx, db, hub, repo)
+    assert open_at == [False, False]
+    assert [stats[k] for k in ("issues", "created", "comments", "failed")] == [2, 2, 2, 0]
+    loop = inspect.getsource(sync.import_repo)
+    assert loop.index("client.comments(") < loop.index("await upsert_issue(")
+    assert "client." not in loop[loop.index("await upsert_issue("):loop.index("await db.commit()")]
+
+
 async def test_a_poll_reads_every_repository_and_one_that_fails_stops_none(ctx, db, monkeypatch):
     """The rule (XE-1160, XE-1806): a poll reads every repository and the tracker, each to its end,
     and what fails loses only what it had not committed: a repository whose listing fails stops no

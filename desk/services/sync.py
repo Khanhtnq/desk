@@ -411,11 +411,17 @@ async def import_repo(
     newest = since or ""
     async for issue in client.issues(repo, since=since):
         try:
+            # read before the write, so that nothing is asked of GitHub with the transaction open:
+            # writing the issue can take the log's head, which every writer on the desk waits for,
+            # and the comments are a request a page that can wait on GitHub for minutes. The cost is
+            # a read for an issue that turns out to be no ticket (a blocked account's)
+            said = []
+            if comments and (issue.get("comments") or 0) > 0:
+                said = [c async for c in client.comments(repo, issue["number"], since=since)]
             t, created = await upsert_issue(ctx, db, repo, issue)
             added = 0
-            if t is not None and comments and (issue.get("comments") or 0) > 0:
-                async for c in client.comments(repo, issue["number"], since=since):
-                    added += int(await upsert_comment(ctx, db, t, c))
+            for c in said if t is not None else []:
+                added += int(await upsert_comment(ctx, db, t, c))
             await db.commit()
         except Exception as e:
             await _undo(db, f"{repo}#{issue.get('number')}", e)
