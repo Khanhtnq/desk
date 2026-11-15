@@ -3,9 +3,12 @@ who signed in with a key would have to come back and look. One rule: when the te
 account has a confirmed email, mail it. Chat-sourced tickets are told in their thread by the bot instead.
 Mail never blocks or fails the reply; a miss is logged.
 
-A route that sends a reply mails it itself once it has committed. A reply the desk sends on its own
-account inside a service (a ticket marked awarded) has no route to do that, so the service notes it on
-the session (`owe`) and the request's session dependency mails what was committed (`mail_owed`)."""
+A person's own reply is mailed by its route once it has committed. A reply written inside a service
+(a ticket marked awarded, a report closed as a duplicate, a plain acknowledgement adopted from the
+triage page, the desk's own telling) is noted on the session where it is written (`owe`), and whoever
+holds the session mails what was committed (`mail_owed`): the request's session dependency for a
+route, the worker and the CLI for theirs. So the mail does not depend on the service's caller
+getting an answer back, which a batch that failed part-way never gave."""
 
 from __future__ import annotations
 

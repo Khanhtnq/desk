@@ -472,13 +472,16 @@ def tell_backlog(
                 total = mailed = 0
                 while True:
                     room = min(tell.BATCH, limit - total) if limit else tell.BATCH
-                    told = await tell.tell_resting(ctx, db, backlog=True, only=only, limit=room)
-                    owed = notify.take_owed(db)
-                    await db.commit()  # a batch at a time: what is mailed below is what was committed
+                    try:
+                        told = await tell.tell_resting(ctx, db, backlog=True, only=only, limit=room)
+                        await db.commit()
+                    finally:
+                        # what is mailed is what was committed, a ticket at a time: also what a
+                        # run that failed part-way had told by then
+                        mailed += await notify.mail_owed(ctx, notify.take_owed(db))
                     for x in told:
                         how = f"reply {x['reply']}, {x['words']}"
                         typer.echo(f"{x['ticket']:9} {x['status']:8}  told ({how})")
-                    mailed += await notify.mail_owed(ctx, owed)
                     total += len(told)
                     if len(told) < room or (limit and total >= limit):
                         break

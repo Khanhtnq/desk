@@ -27,7 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..authz import Principal, can, can_see, require, require_field
 from ..config import Config
 from ..context import Context
+from ..db import each_committed, passed_over
 from ..models import PROPOSAL_FIELDS, AgentToken, Note, Proposal, Ticket
+from . import notify
 from . import tickets as tsvc
 from .tickets import utcnow
 
@@ -149,8 +151,9 @@ async def fill_awards(ctx: Context, db: AsyncSession, p: Principal, ids: list[st
     has proposed an amount the newest pending proposal is adopted through `decide`, so the log shows the
     adoption and the agent's reason; where none has, the amount is the named step of the tier's ceiling
     from `award_steps` in config, the same figure the agents are told to propose. Nothing is approved.
-    Each ticket is its own savepoint: one the desk refuses is reported under `skipped` and left as it
-    was. A ticket that already has an amount is left alone; this fills blanks, it does not revise."""
+    Each ticket is its own savepoint, committed before the next (`each_committed`): one the desk
+    refuses is reported under `skipped` and left as it was. A ticket that already has an amount is
+    left alone; this fills blanks, it does not revise."""
     if step not in ctx.config.award_steps:
         raise HTTPException(400, f"step must be one of {list(ctx.config.award_steps)}")
     filled: list[dict] = []
@@ -161,7 +164,7 @@ async def fill_awards(ctx: Context, db: AsyncSession, p: Principal, ids: list[st
     pending = await pending_field_for(db, ids, "award_xe")
     # ids read up front: a savepoint rollback later in the loop may expire a row (XE-0862)
     newest = {tid: (prs[0], prs[0].id) for tid, prs in pending.items() if prs}
-    for tid in ids:
+    async for tid in each_committed(db, ids):
         t = await tsvc.get(db, tid)
         if t is None or not can_see(p, t):
             skipped.append({"ticket": tid, "why": "no such ticket"})
@@ -194,6 +197,8 @@ async def fill_awards(ctx: Context, db: AsyncSession, p: Principal, ids: list[st
                 filled.append({"ticket": tid, "award_xe": xe * 1_000_000, "from": f"{step} step"})
         except HTTPException as e:
             skipped.append({"ticket": tid, "why": str(e.detail)})
+        except Exception as e:
+            skipped.append({"ticket": tid, "why": passed_over(f"filling the award of {tid}", e)})
     return {"filled": filled, "skipped": skipped}
 
 
@@ -270,7 +275,8 @@ async def decide(
     """Adopt or reject. Returns what happened, including a reply draft when that is what was adopted.
     With `send_plain`, a reply draft the desk reads as a plain acknowledgement (see `send_review`) is
     sent to the reporter under the adopter's name instead of waiting in the editor; `sent` carries the
-    reply id and `reply_text` the words, for the caller to mail. Any other draft still waits, and
+    reply id and `reply_text` the words, and the reply is owed its mail (`notify.owe`), which the
+    request's session sends once it is committed. Any other draft still waits, and
     `review` says why. A value the desk would not take as a proposal today (`value_for`) can be adopted
     by nobody, so adopting it rejects it: `adopted` is false and `refused` carries the desk's reason.
     When that was a close, the reply the same agent drafted with it is rejected with it (`with`)."""
@@ -317,6 +323,7 @@ async def decide(
             if send_plain and why is None:
                 require(p, "reply", t)
                 r = await thread.add_reply(ctx, db, p, t, text)  # clears t.draft
+                notify.owe(db, r)  # mailed once it is committed, however the request ends
                 out["sent"] = r.id
                 out["reply_text"] = text
             else:
@@ -392,8 +399,9 @@ def _closed_reason(pr: Proposal) -> str | None:
 async def tell_duplicate(ctx: Context, db: AsyncSession, p: Principal, t: Ticket, *, reason: str) -> dict:
     """The reporter of a ticket just closed as a duplicate is told, with the programme's duplicate reply
     under the person ruling. Any pending reply draft on the ticket is recorded adopted and folded into
-    it: a duplicate gets one reply, the programme's, whatever an agent drafted. Returns `sent` (the
-    reply id), `reply_text` (for the caller to mail) and `folded` (the draft proposal ids)."""
+    it: a duplicate gets one reply, the programme's, whatever an agent drafted. The reply is owed its
+    mail on the session (`notify.owe`), sent once it is committed. Returns `sent` (the reply id),
+    `reply_text` (its words) and `folded` (the draft proposal ids)."""
     from . import thread
 
     require(p, "reply", t)
@@ -404,6 +412,7 @@ async def tell_duplicate(ctx: Context, db: AsyncSession, p: Principal, t: Ticket
             folded.append(d.id)
     text = await thread.render_template(ctx, db, "duplicate", t)
     r = await thread.add_reply(ctx, db, p, t, text)
+    notify.owe(db, r)
     return {"sent": r.id, "reply_text": text, "folded": folded}
 
 
@@ -449,9 +458,9 @@ async def close_duplicates(
     """Rule a whole family at once. For every open ticket with a pending `duplicate_of` proposal naming
     `canon` (or already marked so, with the close still pending): adopt the mark, set the verdict, close
     as duplicate (walking the status path), and tell the reporter (`tell_duplicate`). Each ticket is its
-    own savepoint, so one the desk refuses (a transition, a permission) is reported and left as it was
-    while the rest go through. The decision stays a person's: one click for a family instead of four per
-    ticket."""
+    own savepoint, committed before the next (`each_committed`), so one the desk refuses (a transition,
+    a permission) is reported and left as it was while the rest go through. The decision stays a
+    person's: one click for a family instead of four per ticket."""
     if p.user is None or not can(p, "adopt"):
         raise HTTPException(403, "adopting is a reviewer's action")
     require_field(p, "duplicate_of")
@@ -468,7 +477,7 @@ async def close_duplicates(
         members = {tid for _, _, tid in family}
         outside = f"not a pending duplicate of {canon.id}"
         skipped += [{"ticket": i, "why": outside} for i in only if i not in members]
-    for t, pr, tid in family:
+    async for t, pr, tid in each_committed(db, family):
         if only is not None and tid not in only:
             continue
         try:
@@ -500,6 +509,8 @@ async def close_duplicates(
                 )
         except HTTPException as e:
             skipped.append({"ticket": tid, "why": str(e.detail)})
+        except Exception as e:
+            skipped.append({"ticket": tid, "why": passed_over(f"closing {tid} as a duplicate", e)})
     return {"canonical": canon.id, "closed": closed, "skipped": skipped}
 
 
@@ -512,9 +523,10 @@ async def decide_many(
     *,
     send_plain: bool = False,
 ) -> dict:
-    """Many decisions in one request, each its own savepoint: one the desk refuses (a transition the
-    state machine will not make, a field the role may not set) is reported in `skipped` and the rest go
-    through. A batch that stopped at the first refusal left a reviewer adopting one by one (XE-0872).
+    """Many decisions in one request, each its own savepoint and committed before the next
+    (`each_committed`), as if clicked one by one: one the desk refuses (a transition the state machine
+    will not make, a field the role may not set) is reported in `skipped` and the rest go through. A
+    batch that stopped at the first refusal left a reviewer adopting one by one (XE-0872).
     Adoptions run marks first, then status changes, then reply drafts, whatever order the ids came in: a
     close-as-duplicate needs the mark already on the ticket, and a draft needs to see the closure adopted
     beside it (`send_review`). A draft folded into a duplicate reply is reported under `decided` with
@@ -535,7 +547,7 @@ async def decide_many(
     todo += [(i, False) for i in reject]
     folded: dict[int, str] = {}
     orphaned: set[int] = set()
-    for pid, yes in todo:
+    async for pid, yes in each_committed(db, todo):
         if pid in folded:
             decided.append({"proposal": pid, "ticket": folded[pid], "field": "reply_draft", "adopted": True,
                             "folded": True})
@@ -552,6 +564,10 @@ async def decide_many(
                 out = await decide(ctx, db, p, pr, yes, send_plain=send_plain)
         except HTTPException as e:
             skipped.append({"proposal": pid, "ticket": tid, "field": field, "why": str(e.detail)})
+            continue
+        except Exception as e:
+            why = passed_over(f"deciding proposal {pid} on {tid}", e)
+            skipped.append({"proposal": pid, "ticket": tid, "field": field, "why": why})
             continue
         decided.append(out)
         for fid in out.get("folded", []):

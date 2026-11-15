@@ -99,15 +99,22 @@ class Worker:
 
     async def job_tell(self):
         """The programme's reply on tickets resting at accepted, patched or closed that nobody has
-        told. Mail goes after the commit, to what was committed."""
-        async with session() as db:
-            told = await tell.tell_resting(self.ctx, db)
-            owed = notify.take_owed(db)
-            await mark_run(db, "tell", {"told": len(told)})
-            await db.commit()
+        told. Mail goes after the commit, to what was committed: the sweep commits a ticket at a
+        time, so that is also what a run that failed part-way had told by then."""
+        owed: list[int] = []
+        told: list[dict] = []
+        try:
+            async with session() as db:
+                try:
+                    told = await tell.tell_resting(self.ctx, db)
+                finally:
+                    owed = notify.take_owed(db)
+                await mark_run(db, "tell", {"told": len(told)})
+                await db.commit()
+        finally:
+            await notify.mail_owed(self.ctx, owed)
         if told:
             log.info("told: %s", ", ".join(f"{x['ticket']} ({x['status']}, {x['words']})" for x in told))
-        await notify.mail_owed(self.ctx, owed)
 
     async def job_outbox(self):
         async with session() as db:

@@ -244,11 +244,9 @@ async def adopt(ctx: Ctx, db: Db, who: Who, request: Request, pid: int, body: De
         raise HTTPException(404, "no such proposal")
     out = await psvc.decide(ctx, db, who.principal, pr, True, reason=(body.reason if body else ""))
     await db.commit()
-    text = out.pop("reply_text", None)
-    if out.get("sent") and text:  # a close-as-duplicate told the reporter; the mail follows the commit
-        t = await tsvc.get(db, out["ticket"])
-        if t is not None:
-            out["mailed"] = await notify.reply_to_reporter(ctx, db, t, who.principal.name, text)
+    # a close-as-duplicate told the reporter: that reply is owed its mail on the session, and the
+    # request's session sends it once this has committed (`deps.request_db`), not this route
+    out.pop("reply_text", None)
     return out
 
 
@@ -299,10 +297,7 @@ async def close_duplicates(
     out = await psvc.close_duplicates(ctx, db, who.principal, canon, only=body.tickets if body else None)
     await db.commit()
     for d in out["closed"]:
-        t = await tsvc.get(db, d["ticket"])
-        text = d.pop("text")
-        if t is not None:
-            d["mailed"] = await notify.reply_to_reporter(ctx, db, t, who.principal.name, text)
+        d.pop("text")  # each reply is owed its mail on the session, as in `adopt`
     return out
 
 
@@ -319,11 +314,7 @@ async def decide_bulk(ctx: Ctx, db: Db, who: Who, request: Request, body: BulkIn
     out = await psvc.decide_many(ctx, db, who.principal, body.adopt, body.reject, send_plain=body.send_plain)
     await db.commit()
     for d in out["decided"]:
-        text = d.pop("reply_text", None)
-        if d.get("sent") and text:
-            t = await tsvc.get(db, d["ticket"])
-            if t is not None:
-                d["mailed"] = await notify.reply_to_reporter(ctx, db, t, who.principal.name, text)
+        d.pop("reply_text", None)  # each reply sent is owed its mail on the session, as in `adopt`
     return out
 
 

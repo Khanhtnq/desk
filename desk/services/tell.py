@@ -54,6 +54,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..authz import SYSTEM
 from ..context import Context
+from ..db import each_committed, passed_over
 from ..models import Event, PatchRef, Proposal, Ticket
 from . import notify, sync, thread
 from . import tickets as tsvc
@@ -311,15 +312,16 @@ async def tell_resting(
     """Send the programme's reply on every ticket `resting` has one for, at most `BATCH` in a run. Each
     ticket is its own savepoint under the ticket's row lock, re-read before anything is sent, so a
     reply, a status move or a newly adopted draft that landed a moment ago wins and one ticket the
-    desk refuses does not stop the rest. Returns what was sent, `{"ticket", "status", "reply",
-    "words"}` each; the caller commits and then mails (`notify.take_owed`). The worker's run tells
+    desk refuses does not stop the rest; and each is committed before the next (`each_committed`).
+    Returns what was sent, `{"ticket", "status", "reply", "words"}` each; the caller commits what it
+    writes itself and then mails (`notify.take_owed`). The worker's run tells
     moves made since it first ran for that status, and its first run only notes when that was;
     `backlog` is the run made by hand over everything resting, which may be narrowed to one status
     or closing reason (`only`) and stopped short (`limit`, never more than `BATCH`)."""
     now = now or tsvc.utcnow()
     since = None if backlog else await _since(db, now)
     told: list[dict] = []
-    for r in await resting(ctx, db, now=now, since=since):
+    async for r in each_committed(db, await resting(ctx, db, now=now, since=since)):
         if len(told) >= min(limit, BATCH):
             break
         if not r.text or not picked(r, only):
@@ -335,4 +337,6 @@ async def tell_resting(
                 told.append({"ticket": r.id, "status": r.status, "reply": reply.id, "words": r.words})
         except HTTPException as e:
             log.warning("%s at %s not told: %s", r.id, r.status, e.detail)
+        except Exception as e:
+            passed_over(f"telling {r.id} at {r.status}", e)
     return told

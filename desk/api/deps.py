@@ -12,13 +12,22 @@ from ..services import notify
 
 
 async def request_db() -> AsyncIterator[AsyncSession]:
-    """The request's session. When the route has returned without raising, replies the desk sent on
-    its own account during it (`notify.owe`: a ticket marked awarded) are mailed to their reporters,
-    each only if its row was committed. A route that raises mails nothing."""
-    async with sessionmaker()() as s:
-        yield s
-        owed = notify.take_owed(s)
-    await notify.mail_owed(get_context(), owed)
+    """The request's session. When the route is done, replies owed their mail during it
+    (`notify.owe`: a ticket marked awarded, a report closed as a duplicate, a plain acknowledgement
+    sent from the triage page) are mailed to their reporters, each only if its row was committed:
+    `mail_owed` reads them back through a session of its own. That holds for a route that raised as
+    well. One that rolled everything back has nothing there to mail; a batch that had committed some
+    of its items before it failed (`db.each_committed`) has those, where leaving with the error used
+    to drop the list. A request cancelled part-way, or a process stopped, still loses its list."""
+    owed: list[int] = []
+    try:
+        async with sessionmaker()() as s:
+            try:
+                yield s
+            finally:
+                owed = notify.take_owed(s)
+    finally:
+        await notify.mail_owed(get_context(), owed)
 
 
 # Body: the base of every request model

@@ -882,6 +882,7 @@ async def test_plain_acknowledgements_send_on_adopt_and_the_rest_wait(ctx, db):
     by = {d["proposal"]: d for d in out["decided"]}
     sent = by[d_plain2.id]
     assert sent["sent"] and sent["reply_text"].endswith(tsvc.ticket_url(ctx, plain) + ".")
+    assert sent["sent"] in notify.take_owed(db)  # owed its mail where it was written
     assert by[d_tier.id]["review"] == "names a tier" and "sent" not in by[d_tier.id]
     assert by[d_close.id]["review"] == "the ticket is closed" and "sent" not in by[d_close.id]
     assert by[d_told.id]["review"] == "the reporter has been written to since"
@@ -985,6 +986,7 @@ async def test_a_close_as_duplicate_tells_the_reporter_by_every_path(ctx, db):
     await psvc.decide(ctx, db, p, bm, True)
     out = await psvc.decide(ctx, db, p, bs, True)
     assert out["sent"] and canon.id in out["reply_text"] and out["folded"] == [bd.id]
+    assert {by[as_.id]["sent"], out["sent"]} <= set(notify.take_owed(db))  # both closes owe their mail
     await db.refresh(b)
     await db.refresh(bd)
     assert (b.status, b.draft, bd.state) == ("closed", "", "adopted")
@@ -2200,6 +2202,7 @@ async def test_a_closed_report_is_told_in_the_programmes_words_whoever_closed_it
     assert tell.describe(rows[coded.id]) == "tell, in stock words (draft not used: names code or a path)"
     assert tell.describe(rows[carried.id]) == f"tell, with the agent's reason (proposal:{d_carried})"
 
+    notify.take_owed(db)  # anything an adoption above owed is that adoption's, not this sweep's
     told = await tell.tell_resting(ctx, db, now=later)
     assert {x["ticket"] for x in told} == {t.id for t in (*want, hand, bare, dup)}  # not `old`
     assert sorted(notify.take_owed(db)) == sorted(x["reply"] for x in told)  # each is mailed after commit
@@ -5170,3 +5173,151 @@ async def test_authenticating_a_token_holds_nothing_for_the_length_of_the_reques
     for way in (auth.resolve, auth.token_from_bearer, auth.session_from_request,
                 auth.reporter_session_from_request):
         assert not re.search(r"^\s+\w+\.\w+ = ", inspect.getsource(way), re.M), way.__name__
+
+
+async def test_a_batch_commits_each_item_before_the_next(ctx, db, monkeypatch):
+    """The rule: a batch holds the log's head, and the rows it locks, for one item's work and never
+    for the batch's. An append holds the head until the commit and every writer waits on it; a
+    reviewer adopting a wave of proposals in one request, a savepoint each and one commit at the
+    end, stopped every logged read and write on the desk until it was done (15 Nov). Asked of a real
+    batch as another writer finds the desk between its items, of the loop every batch runs in
+    (`db.each_committed`), and of the source: a loop with a savepoint in it is that loop."""
+    from sqlalchemy import func
+
+    from desk.db import each_committed
+    from desk.models import LogHead
+    from desk.services import mailbox
+
+    p = await _team(ctx, db)
+    agent = await _agent(ctx, db, p.user)
+    asked = []
+    for title in "abc":
+        t = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=title, source="web"))
+        asked.append(await psvc.propose(ctx, db, agent, t, "verdict", "valid", "reproduced"))
+    await db.commit()
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+    head = select(LogHead).where(LogHead.id == 1).with_for_update(nowait=True)
+    adopted = select(func.count()).select_from(Proposal).where(Proposal.state == "adopted")
+    found = []
+    decide = psvc.decide
+
+    async def watched(ctx_, db_, p_, pr, yes, **kw):
+        # as another writer finds the desk when an item starts: the log's head is there to take,
+        # and every decision before this one is there to read
+        async with sm() as other:
+            assert (await other.execute(head)).scalar_one()
+            found.append((await other.execute(adopted)).scalar_one())
+        return await decide(ctx_, db_, p_, pr, yes, **kw)
+
+    monkeypatch.setattr(psvc, "decide", watched)
+    out = await psvc.decide_many(ctx, db, p, [pr.id for pr in asked], [])
+    assert len(out["decided"]) == 3 and out["skipped"] == [] and found == [0, 1, 2]
+    assert not db.in_transaction(), "the last item is committed as the ones before it are"
+    # the loop itself, however the body leaves an item: by `continue`, with its savepoint rolled
+    # back, by `break`; nothing of one item is still open when the next begins
+    began = []
+    async for i in each_committed(db, range(4)):
+        began.append(db.in_transaction())
+        if i == 3:
+            break
+        await ctx.events.append(db, "test", "desk", {"i": i})
+        if i == 0:
+            continue
+        try:
+            async with db.begin_nested():
+                await ctx.events.append(db, "test", "desk", {"i": -i})
+                if i == 1:
+                    raise HTTPException(409, "refused")
+        except HTTPException:
+            pass
+    assert began == [False] * 4 and not db.in_transaction()
+    async with sm() as other:
+        kept = await EventLog.page(other, 0, 50, kind="test")
+        assert sorted(e.payload["i"] for e in kept) == [-2, 0, 1, 2]
+    # the sites: every batch is that loop, with its savepoint inside it, and a savepoint anywhere
+    # else under desk/ is one this list does not know
+    batches = (psvc.fill_awards, psvc.close_duplicates, psvc.decide_many, tsvc.settle_many,
+               tell.tell_resting, mailbox.import_emails)
+    for fn in batches:
+        src = inspect.getsource(fn)
+        assert "each_committed(db, " in src, fn.__name__
+        assert src.index("each_committed(db, ") < src.index("begin_nested()"), fn.__name__
+    savepoints = {
+        str(path.relative_to(ROOT / "desk")): path.read_text(encoding="utf-8").count("begin_nested()")
+        for path in (ROOT / "desk").rglob("*.py")
+    }
+    assert {k: n for k, n in savepoints.items() if n} == {
+        "services/proposals.py": 3, "services/tickets.py": 1, "services/tell.py": 1,
+        "services/mailbox.py": 2, "services/sync.py": 1,  # sync's is one issue, in no loop of its own
+    }
+
+
+async def test_one_item_that_fails_does_not_stop_a_batch_or_its_mail(ctx, db, monkeypatch):
+    """The rule beside `each_committed`: a batch commits as it goes, so by the time one item fails
+    the ones before it are done and their replies are owed their mail. An item that fails in a way
+    the desk did not expect is undone, logged and passed over (`db.passed_over`), not let out of
+    the loop, where it took the list of what was done with it; and a request that does raise still
+    mails what it had committed (`deps.request_db`)."""
+    from desk.api import deps
+    from desk.db import FAILED
+
+    p = await _team(ctx, db)
+    agent = await _agent(ctx, db, p.user)
+    asked = []
+    for title in "abc":
+        t = await tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=title, source="web"))
+        asked.append(await psvc.propose(ctx, db, agent, t, "verdict", "valid", "reproduced"))
+    await db.commit()
+    ids = [pr.id for pr in asked]  # read now: the rollback below expires the rows
+    decide = psvc.decide
+
+    async def breaks_on_the_second(ctx_, db_, p_, pr, yes, **kw):
+        pid = pr.id
+        out = await decide(ctx_, db_, p_, pr, yes, **kw)
+        if pid == ids[1]:
+            raise RuntimeError("the signer went away")  # after its writes: they are undone with it
+        return out
+
+    monkeypatch.setattr(psvc, "decide", breaks_on_the_second)
+    out = await psvc.decide_many(ctx, db, p, ids, [])
+    assert [d["proposal"] for d in out["decided"]] == [ids[0], ids[2]]
+    assert [(s["proposal"], s["why"]) for s in out["skipped"]] == [(ids[1], FAILED)]
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+    async with sm() as other:
+        rows = (await other.execute(select(Proposal).order_by(Proposal.id))).scalars().all()
+        assert [r.state for r in rows] == ["adopted", "pending", "adopted"]
+    assert (await EventLog.verify(db))["ok"]
+    # every batch has the same two ways out of an item, a refusal and a failure
+    from desk.services import mailbox
+
+    for fn in (psvc.fill_awards, psvc.close_duplicates, psvc.decide_many, tsvc.settle_many,
+               tell.tell_resting, mailbox.import_emails):
+        src = inspect.getsource(fn)
+        loop = src[src.index("each_committed("):]
+        assert loop.count("except HTTPException") == loop.count("except Exception") == 1, fn.__name__
+        assert loop.count("passed_over(") == 1, fn.__name__
+    # a reply a decision sends is owed its mail where it is written, so no route mails from a
+    # batch's answer: the one call left in the team's routes is a person's own reply
+    from desk.api import team as team_api
+
+    assert inspect.getsource(team_api).count("reply_to_reporter(") == 1
+    assert inspect.getsource(psvc.tell_duplicate).count("notify.owe(db, r)") == 1
+    assert inspect.getsource(decide).count("notify.owe(db, r)") == 1  # the real one, not the stub above
+    # the request's session: what was committed before a route raised is mailed, as it is when the
+    # route returns; `mail_owed` itself reads only what is committed
+    mailed = []
+
+    async def record(_ctx, ids, opener=None):
+        mailed.append(list(ids))
+        return 0
+
+    monkeypatch.setattr(deps, "sessionmaker", lambda: sm)
+    monkeypatch.setattr(deps, "get_context", lambda: ctx)
+    monkeypatch.setattr(notify, "mail_owed", record)
+    for raised in (False, True):
+        req = deps.request_db()
+        s = await req.__anext__()
+        notify.owe(s, type("R", (), {"id": 7 + raised})())
+        with pytest.raises(RuntimeError if raised else StopAsyncIteration):
+            await (req.athrow(RuntimeError("the route failed")) if raised else req.__anext__())
+    assert mailed == [[7], [8]]

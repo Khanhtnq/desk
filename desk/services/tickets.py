@@ -20,6 +20,7 @@ from sqlalchemy.orm import aliased
 from ..authz import Principal, can, can_see, require, require_field
 from ..config import Config
 from ..context import Context
+from ..db import each_committed, passed_over
 from ..models import (
     AREAS,
     CLOSED_REASONS,
@@ -847,11 +848,12 @@ async def settle(ctx: Context, db: AsyncSession, p: Principal, t: Ticket) -> lis
 
 
 async def settle_many(ctx: Context, db: AsyncSession, p: Principal, ids: list[str]) -> dict:
-    """`settle` across tickets, each its own savepoint: one the desk refuses is reported under `skipped`
-    with the reason and left as it was; the rest go through."""
+    """`settle` across tickets, each its own savepoint and committed before the next
+    (`each_committed`): one the desk refuses is reported under `skipped` with the reason and left as
+    it was; the rest go through."""
     settled: list[dict] = []
     skipped: list[dict] = []
-    for tid in ids:
+    async for tid in each_committed(db, ids):
         t = await get(db, tid)
         if t is None or not can_see(p, t):
             skipped.append({"ticket": tid, "why": "no such ticket"})
@@ -861,6 +863,8 @@ async def settle_many(ctx: Context, db: AsyncSession, p: Principal, ids: list[st
                 settled.append({"ticket": tid, "steps": await settle(ctx, db, p, t)})
         except HTTPException as e:
             skipped.append({"ticket": tid, "why": str(e.detail)})
+        except Exception as e:
+            skipped.append({"ticket": tid, "why": passed_over(f"settling {tid}", e)})
     return {"settled": settled, "skipped": skipped}
 
 

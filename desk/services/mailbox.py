@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..authz import SYSTEM
 from ..context import Context
+from ..db import each_committed, passed_over
 from ..models import Ticket
 from . import reporters as rsvc
 from . import thread
@@ -152,8 +153,9 @@ async def _follow_up(ctx: Context, db: AsyncSession, m: Mail, t: Ticket, dry_run
 
 async def import_emails(ctx: Context, db: AsyncSession, items: list[Any], *, dry_run: bool = False) -> dict:
     """File each mail of an export. Reports first, then the mails that follow one, so a follow-up finds
-    the ticket made in the same run. Each item is its own savepoint: one the desk refuses is listed
-    under `skipped` with the reason and the rest go through. `existing` are the ones a previous run
+    the ticket made in the same run. Each item is its own savepoint, committed before the next
+    (`each_committed`): one the desk refuses is listed under `skipped` with the reason and the rest
+    go through. `existing` are the ones a previous run
     filed. With `dry_run` nothing is written and `created` says what would be."""
     out: dict[str, list[dict]] = {"created": [], "existing": [], "notes": [], "skipped": []}
     mails: list[Mail] = []
@@ -169,7 +171,7 @@ async def import_emails(ctx: Context, db: AsyncSession, items: list[Any], *, dry
         except HTTPException as e:
             out["skipped"].append({"ref": ref[:96], "why": str(e.detail)})
     planned = {m.ref for m in mails if not m.follows}  # what a dry run would have filed by then
-    for m in sorted(mails, key=lambda x: bool(x.follows)):
+    async for m in each_committed(db, sorted(mails, key=lambda x: bool(x.follows))):
         try:
             if m.follows:
                 t = await _followed(db, m)
@@ -210,4 +212,6 @@ async def import_emails(ctx: Context, db: AsyncSession, items: list[Any], *, dry
             out["created"].append(row)
         except HTTPException as e:
             out["skipped"].append({"ref": m.ref, "why": str(e.detail)})
+        except Exception as e:
+            out["skipped"].append({"ref": m.ref, "why": passed_over(f"filing mail {m.ref}", e)})
     return out
