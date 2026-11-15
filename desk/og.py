@@ -16,6 +16,7 @@ import io
 import re
 import threading
 from collections import OrderedDict
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -31,6 +32,7 @@ from .services import tickets as tsvc
 from .ui import site_for
 
 router = APIRouter(prefix="/og", include_in_schema=False)
+icons = APIRouter(include_in_schema=False)
 
 W, H = 1200, 630
 PAD = 80
@@ -136,6 +138,53 @@ def _mark(height: int, colour: tuple[int, int, int]) -> Image.Image:
     for poly in _flatten(brand.MARK_PATH):
         d.polygon([(px * scale, py * scale) for px, py in poly], fill=(*colour, 255))
     return img.resize((w // ss, height), Image.LANCZOS)
+
+
+# ---- the icon ---------------------------------------------------------------------------------------
+# What a browser tab, a bookmark and a home screen show: the mark, white on the desk's dark ground. A
+# page that names no icon leaves the browser to find one, and some draw whatever they meet first on
+# the page. Drawn from the one copy of the mark, as the header and the cards are.
+
+ICON_SIDE = 64  # the square the proportions below are given in
+ICON_MARK = 36  # the mark's height in it
+ICON_RADIUS = 14  # the corner; a home-screen icon is square, the phone rounds it
+
+
+def icon_svg() -> str:
+    vw, vh = brand.MARK_VIEWBOX
+    s = ICON_MARK / vh
+    tx, ty = (ICON_SIDE - vw * s) / 2, (ICON_SIDE - ICON_MARK) / 2
+    ground = "#%02x%02x%02x" % brand.BG
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {ICON_SIDE} {ICON_SIDE}">'
+        f'<rect width="{ICON_SIDE}" height="{ICON_SIDE}" rx="{ICON_RADIUS}" fill="{ground}"/>'
+        f'<path fill="#fff" transform="translate({tx:.3f} {ty:.3f}) scale({s:.5f})" d="{brand.MARK_PATH}"/>'
+        "</svg>"
+    )
+
+
+def draw_icon(side: int, *, rounded: bool = True) -> Image.Image:
+    """The icon rastered at `side` px, in the SVG's proportions."""
+    ss = 4
+    big = side * ss
+    ground = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    radius = round(big * ICON_RADIUS / ICON_SIDE) if rounded else 0
+    ImageDraw.Draw(ground).rounded_rectangle((0, 0, big - 1, big - 1), radius=radius, fill=(*brand.BG, 255))
+    img = ground.resize((side, side), Image.LANCZOS)
+    mark = _mark(max(1, round(side * ICON_MARK / ICON_SIDE)), brand.TEXT_HIGH)
+    img.alpha_composite(mark, ((side - mark.width) // 2, (side - mark.height) // 2))
+    return img
+
+
+@lru_cache(maxsize=None)
+def icon_bytes(kind: str) -> bytes:
+    """`ico` (16, 32 and 48 px in one file, for `/favicon.ico`) or `touch` (180 px, square, opaque)."""
+    buf = io.BytesIO()
+    if kind == "ico":
+        draw_icon(256).save(buf, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+    else:
+        draw_icon(180, rounded=False).convert("RGB").save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
 # ---- text -------------------------------------------------------------------------------------------
@@ -438,3 +487,25 @@ async def ticket_card(request: Request, tid: str):
         return draw_card(programme=_programme(site), host=host, **spec)
 
     return await run_in_threadpool(_respond, request, etag, make)
+
+
+def _icon(body: bytes, media_type: str) -> Response:
+    # the same for every reader and both sites, and it changes only with a deploy
+    headers = {"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"}
+    return Response(body, media_type=media_type, headers=headers)
+
+
+@icons.get("/favicon.svg")
+async def favicon_svg():
+    return _icon(icon_svg().encode(), "image/svg+xml")
+
+
+@icons.get("/favicon.ico")
+async def favicon_ico():
+    return _icon(await run_in_threadpool(icon_bytes, "ico"), "image/x-icon")
+
+
+@icons.get("/apple-touch-icon.png")
+@icons.get("/apple-touch-icon-precomposed.png")
+async def apple_touch_icon():
+    return _icon(await run_in_threadpool(icon_bytes, "touch"), "image/png")

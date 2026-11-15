@@ -68,3 +68,30 @@ def test_page_specs_pass_copy_lint(config):
             spec = og.page_spec(c, site, slug)
             texts += [spec["title"], spec["line"]]
     assert lint_public_copy(config, texts) == []
+
+
+def test_the_icon_is_the_mark_in_every_form_a_browser_asks_for():
+    """A tab, a bookmark and a home screen show the XE mark, white on the desk's dark ground: as SVG, as
+    `/favicon.ico` and as the touch icon, each drawn from the one copy of the mark and each named in the
+    page's head, so no browser is left to pick something off the page."""
+    from pathlib import Path
+
+    svg = og.icon_svg()
+    assert brand.MARK_PATH in svg and 'fill="#0a0a0a"' in svg and svg.startswith("<svg xmlns=")
+    icon = og.draw_icon(64)
+    assert icon.size == (64, 64)
+    assert icon.getpixel((0, 0))[3] < 16  # the corner is rounded away
+    assert icon.getpixel((32, 6)) == (*brand.BG, 255)  # the ground, above the mark
+    assert min(icon.getpixel((44, 32))[:3]) > 235  # the mark's bar, right of centre
+    ico = Image.open(io.BytesIO(og.icon_bytes("ico")))
+    assert ico.format == "ICO" and {(16, 16), (32, 32), (48, 48)} <= set(ico.info["sizes"])
+    touch = Image.open(io.BytesIO(og.icon_bytes("touch")))
+    assert (touch.format, touch.size, touch.mode) == ("PNG", (180, 180), "RGB")
+    assert max(touch.getpixel((0, 0))) < 16  # square and opaque to the corner: the phone rounds it
+    root = Path(og.__file__).parent
+    head = (root / "templates" / "base.html").read_text()
+    paths = {r.path for r in og.icons.routes}
+    for href in ("/favicon.ico", "/favicon.svg", "/apple-touch-icon.png"):
+        assert f'href="{href}"' in head and href in paths
+    main = (root / "main.py").read_text()
+    assert main.index("include_router(og.icons)") < main.index("include_router(ui_router)")

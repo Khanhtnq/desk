@@ -82,6 +82,7 @@ app.include_router(team.router)
 app.include_router(authn.router)
 app.include_router(reporter.router)
 app.include_router(og.router)
+app.include_router(og.icons)  # before the pages: `/favicon.ico` is not a page that was not found
 app.include_router(ui_router)
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 app.add_middleware(MarkdownMirror, base_url="")
