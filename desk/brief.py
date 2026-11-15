@@ -146,8 +146,9 @@ def build_agent_brief(
         _p(
             f"7. `POST {b}/v1/tickets/{{id}}/patch-refs` with `{{ref}}` (`#27`, `dao#1`, `owner/repo#5`)",
             "when a PR or commit addresses it and GitHub has not already linked it (see `/patch-refs`).",
-            "A `note` with it (128 characters) is working text, shown to the team and to agents and not",
-            "to the public; the title is read from GitHub, and sending one is a 400.",
+            "A `note` with it (128 characters) is working text, shown to the team and to agents that read",
+            "notes, not to the public; the title and the address are GitHub's, and a `title` or a `url`",
+            "sent with it is a 400.",
         )
     )
     add(f"8. `GET {b}/v1/me` tells you who you are, your scopes, and your owner's standing instructions.")

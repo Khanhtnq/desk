@@ -1438,20 +1438,32 @@ async def test_what_is_written_beside_a_patch_link_is_working_text(ctx, db):
     assert HELD_PAYLOAD_KEYS["patch.linked"] == {"note"}
     # a title is the repository's: the desk reads it from GitHub, so anyone may be shown it, and a
     # caller's is refused (the note is where a caller says something)
+    # and so are the author, the address and the state: an address is free text after its `https://`
+    theirs = ({"title": said}, {"author": said}, {"url": f"https://github.com/x/y/pull/1#{said}"},
+              {"state": "merged"})
     for caller in (linker, reads_notes, team):
-        with pytest.raises(HTTPException) as e:
-            await thread.add_patch_ref(ctx, db, caller, t, repo=repo, ref="78", title=said)
-        assert e.value.status_code == 400, caller.kind
+        for field in theirs:
+            for ref in ("78", "47aadfc0"):  # a new link, and one the ticket has
+                kind = "commit" if ref == "47aadfc0" else "pr"
+                with pytest.raises(HTTPException) as e:
+                    await thread.add_patch_ref(ctx, db, caller, t, repo=repo, ref=ref, kind=kind, **field)
+                assert e.value.status_code == 400, (caller.kind, field)
+    assert (pr.title, pr.author, pr.state, pr.url) == ("", "", "", thread.patch_url(repo, "commit", pr.ref))
     by_hand = await thread.add_patch_ref(ctx, db, linker, t, repo=repo, ref="78", note="the fix")
     assert await thread.add_patch_ref(
         ctx, db, authz.SYSTEM, t, repo=repo, ref="78", title="fix: count once", author="grace"
     )
     public = shown(authz.ANON, by_hand)
     assert (public["title"], public["author"], public["note"]) == ("fix: count once", "grace", "")
-    # and a title a caller gave before the writer refused one is held with the note
-    pr.title = said
+    # and a title or an address a caller gave before the writer refused one is held with the note:
+    # the reader is shown where the repository and the ref say the patch is
+    pr.title, pr.url = said, f"https://example.com/{said}"
     await db.flush()
-    assert shown(authz.ANON)["title"] == "" and shown(team)["title"] == said
+    for outsider in (authz.ANON, owner, linker):
+        assert shown(outsider)["title"] == "", outsider.kind
+        assert shown(outsider)["url"] == "https://github.com/xeprotocol/dao/commit/47aadfc0", outsider.kind
+        assert said not in json.dumps(shown(outsider)), outsider.kind
+    assert shown(team)["title"] == said and shown(team)["url"] == pr.url
     # the sites: each serves the view, and nothing else under desk/ reads a link's note but the triage
     # export, which is refused to a reader who does not see the assessment
     for site in (pub.get_ticket, pub.get_patches, ui.ticket_page):
