@@ -68,7 +68,13 @@ async def mail_owed(ctx: Context, ids: list[int], opener=None) -> int:
 
 async def reply_to_reporter(ctx: Context, db: AsyncSession, t: Ticket, author: str, body: str) -> bool:
     """Mail the reporter about a team reply on `t`. Private tickets get the fact and the link, not the
-    text; public ones get the text as well. Returns whether a mail went out."""
+    text; public ones get the text as well. Returns whether a mail went out.
+
+    A private ticket opens only for the account it is on, and the reader may have another: a report
+    sent by email is put on the account that holds the sender's address (`reporters.attach`), which is
+    not the one a person who signs in with GitHub or a key is in. So the mail names the account by the
+    address it was sent to and says how to get into it, where "signed in as you" sent that person to a
+    page that told them there was no such ticket."""
     if t.source in CHAT or not t.reporter_id or not ctx.settings.smtp_host:
         return False
     r = (await db.execute(select(Reporter).where(Reporter.id == t.reporter_id))).scalar_one_or_none()
@@ -82,7 +88,11 @@ async def reply_to_reporter(ctx: Context, db: AsyncSession, t: Ticket, author: s
     else:
         text = (
             f"{author} replied to your private {noun} {t.id}. The thread is only readable on the desk, "
-            f"signed in as you:\n\n{url}"
+            f"signed in to the account that holds this address ({r.email}):\n\n{url}\n\n"
+            "If the desk says there is no such ticket, you are signed in to another account, or to none. "
+            f"Sign out, then sign in by email with this address at {url.rsplit('/', 1)[0]}/signin. "
+            f"To keep your other {noun}s with it, link your usual way of signing in from the account page "
+            "afterwards: the two accounts merge."
         )
     sent = await auth.send_mail(ctx.settings, r.email, subject, text)
     if not sent:

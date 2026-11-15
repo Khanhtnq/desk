@@ -3882,6 +3882,14 @@ async def test_reporter_with_an_email_is_told_of_team_replies(ctx, db, monkeypat
     assert await notify.reply_to_reporter(ctx, db, t2, team.name, "Confirmed, fixing.") is True
     to, subject, body = sent[-1]
     assert to == "alice@example.org" and t2.id in subject and "Confirmed" not in body and t2.id in body
+    # and says which account opens it and how to get in: the reader may be signed in to another one,
+    # where the link says there is no such ticket (a report sent by email, read by a key's account)
+    assert "holds this address (alice@example.org)" in body and "no such ticket" in body
+    assert "Sign out, then sign in by email" in body and body.count("/signin") == 1
+    assert f"{tsvc.ticket_url(ctx, t2).rsplit('/', 1)[0]}/signin" in body and "signed in as you" not in body
+    # the other account is still refused, as it should be: the mail is what gets its holder in
+    assert not authz.can_see(authz.Principal(kind="reporter", reporter_id=silent.id), t2)
+    assert authz.can_see(authz.Principal(kind="reporter", reporter_id=r.id), t2)
     # a public one carries the text
     t3 = await rsvc.file_ticket(ctx, db, r, filing("Public typo", False))
     assert await notify.reply_to_reporter(ctx, db, t3, team.name, "Fixed in #27.") is True
