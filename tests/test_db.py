@@ -4928,7 +4928,7 @@ async def test_mailed_reports_are_filed_private_with_their_sender_and_only_once(
     assert last.queued and last.visibility == "private"
 
 
-async def test_a_tickets_text_is_indexed_when_it_is_written_not_read_for_each_reader(ctx, db):
+async def test_a_tickets_text_is_indexed_when_it_is_written_not_read_for_each_reader(ctx, db, monkeypatch):
     """`similar` and the list's search are anyone's to call, so what they match on is kept by the
     database and written when the ticket is: its words match from the next read, a body that contains
     a string is found through the trigram index, a sealed body stops matching either way, and nothing
@@ -4971,6 +4971,9 @@ async def test_a_tickets_text_is_indexed_when_it_is_written_not_read_for_each_re
     assert await found("of") == set(), "two letters are looked for in titles and ids, not in bodies"
     assert await found("an") == {e.id} and tsvc.body_contains("a/b") is None
     assert await by_path(d) == {e.id} and await by_path(e) == {d.id}
+    # each path is a read of the index, so one that a shorter cited path is inside is not asked for
+    cited = ["src/core/ledger.go", "core/ledger.go", "Core/Ledger.go", "net/gossip.go", "a/b.go"]
+    assert tsvc._lookups(cited) == ["core/ledger.go", "net/gossip.go"]
     # a write is what parses: the row's words follow its title and body, with nothing run for it
     c.title = "The escrow of a lease is refunded twice"
     await db.flush()
@@ -4982,6 +4985,13 @@ async def test_a_tickets_text_is_indexed_when_it_is_written_not_read_for_each_re
     assert await found("second path", p) == set() and await found("Unrelated", p) == {b.id}
     await tsvc.set_facts(ctx, db, p, e, {"visibility": "private"})
     assert await by_path(d) == set() and await found("core/ledger.go", p) == {d.id}
+    # ranking is the costly part, so it is not done for every ticket sharing a word: the tickets
+    # sharing the most words are counted from the index and only those are ranked
+    f = await mk("Notes on escrow", "Nothing else in common.")
+    assert await by_words(a) == {c.id, f.id}
+    with monkeypatch.context() as only_one:
+        only_one.setattr(tsvc, "_RANKED", 1)
+        assert await by_words(a) == {c.id}, "one word shared against four: the fuller match is read"
 
     # the column is the database's: generated from the row, indexed, and spelled once
     q = "SELECT generation_expression FROM information_schema.columns WHERE table_name = 'tickets' "

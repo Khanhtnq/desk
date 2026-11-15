@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, literal_column, or_, select
+from sqlalchemy import case, func, literal_column, or_, select, union_all
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -414,7 +414,11 @@ def body_contains(needle: str):
     (`models.TICKET_TEXT_DDL`) and only those are opened: the condition is "the id is one of the ids
     the index finds", so it stays an index read when it is one arm of an OR beside the title and the
     id. The index knows runs of three letters or digits; a string without one would be answered by
-    reading every body, so it is not asked of the bodies at all."""
+    reading every body, so it is not asked of the bodies at all.
+
+    Not the plain `body ILIKE`, even where bodies are all a query asks about: the planner does not
+    count the cost of opening a body, so under a LIMIT it reads the table instead, and for strings no
+    body holds that is every body (measured 15 Nov: 1.6 s for six paths nothing cites)."""
     if not _INDEXABLE.search(needle):
         return None
     other = aliased(Ticket)
@@ -537,6 +541,7 @@ async def every_ticket(db: AsyncSession, cfg: Config, p: Principal, f: Filters) 
 # `tickets.search`: the words of the title and body, parsed and indexed by the database when the row
 # is written (`models.TICKET_SEARCH`). Named here, not mapped: nothing reads the column back.
 SEARCH = literal_column("tickets.search", type_=TSVECTOR)
+_RANKED = 200  # how many of the tickets sharing words with a report are ranked against it
 
 _STOP = frozenset(
     "a an and are as at be by for from has have if in into is it its no not of on or that the this to "
@@ -569,6 +574,20 @@ def cited_paths(body: str, limit: int = 6) -> list[str]:
     return out
 
 
+def _lookups(paths: list[str]) -> list[str]:
+    """The cited paths the bodies are asked for. Each is one read of the trigram index, which costs
+    the same whatever it finds (some 45 ms on 14,000 tickets), so a path is not asked for when a
+    shorter cited path is inside it: every body holding `src/core/ledger.go` holds `core/ledger.go`,
+    whatever the case of either, and the shorter one finds it. Nor is a path the index cannot look up."""
+    able = [path for path in paths if _INDEXABLE.search(path)]
+    low = [path.lower() for path in able]
+
+    def covered(i: int) -> bool:
+        return any(low[j] in low[i] and (low[j] != low[i] or j < i) for j in range(len(able)) if j != i)
+
+    return [path for i, path in enumerate(able) if not covered(i)]
+
+
 @dataclass
 class Similar:
     ticket: Ticket
@@ -595,11 +614,21 @@ async def similar(
     # words: the title weighs most, the first part of the body fills in the nouns the title left out
     terms = _terms(t.title, " ".join((body or "")[:2000].split()))
     if terms:
-        tsq = func.to_tsquery("english", " | ".join(terms))
         # the words as the database parsed them when the row was written, never parsed here: this
-        # route is anyone's to call, and parsing every body for each call was the desk's whole CPU
-        rank = func.ts_rank_cd(SEARCH, tsq)
-        wq = base.add_columns(rank).where(SEARCH.bool_op("@@")(tsq)).order_by(rank.desc()).limit(30)
+        # route is anyone's to call, and parsing every body for each call was the desk's whole CPU.
+        # Ranking is the cost (cover density, some 0.2 ms a ticket), and a report's words include
+        # ones every report has ("area", "tier"), so what is ranked is not every ticket sharing a
+        # word but the `_RANKED` sharing the most of them, counted from the index.
+        ids = base.with_only_columns(Ticket.id)
+        sharing = union_all(
+            *(ids.where(SEARCH.bool_op("@@")(func.to_tsquery("english", term))) for term in terms)
+        ).subquery()
+        most = (
+            select(sharing.c.id).group_by(sharing.c.id)
+            .order_by(func.count().desc(), sharing.c.id).limit(_RANKED)
+        )
+        rank = func.ts_rank_cd(SEARCH, func.to_tsquery("english", " | ".join(terms)))
+        wq = base.add_columns(rank).where(Ticket.id.in_(most)).order_by(rank.desc()).limit(30)
         rows = (await db.execute(wq)).all()
         if rows:
             top = max(float(r[1]) for r in rows) or 1.0
@@ -609,7 +638,7 @@ async def similar(
     paths = cited_paths(body)
     if paths:
         # found through the trigram index, not by opening every body (`body_contains`)
-        cited = [c for c in (body_contains(path) for path in paths) if c is not None]
+        cited = [body_contains(path) for path in _lookups(paths)]
         pq = base.where(or_(*cited)).limit(30)
         for row in (await db.execute(pq)).scalars().all() if cited else []:
             shared = [path for path in paths if path in (row.body or "")]
