@@ -450,8 +450,8 @@
       try { await api("POST", `/v1/team/proposals/${b.dataset.rejectOne}/reject`, {}); chip.classList.add("gone"); b.remove(); settle(tr, {}); }
       catch (e) { say(tmsg, e.message, false); }
     }));
-    // adopt every unlocked proposal on a set of rows, sending the plain acknowledgements; shared by
-    // "everything shown" and "the rows whose reply sends", on every view
+    // adopt every unlocked proposal on the rows shown, sending the plain acknowledgements, on every
+    // view; the "reply goes out" filter narrows it to the rows whose reporter is told
     const adoptRows = async (rows, what) => {
       const ids = rows.flatMap(tr => idsOf(tr, "ids").filter(id => !$(`.chip[data-pid="${id}"].gone`, tr)));
       if (!ids.length) return;
@@ -468,7 +468,6 @@
       } catch (e) { say(tmsg, e.message, false); }
     };
     if ($("#adopt-shown")) $("#adopt-shown").addEventListener("click", () => adoptRows($$("tr.trow:not(.done)"), "tickets"));
-    if ($("#adopt-sending")) $("#adopt-sending").addEventListener("click", () => adoptRows($$('tr.trow:not(.done)[data-reply="sends"]'), "tickets whose reply sends"));
     $$("[data-close-family]").forEach(b => b.addEventListener("click", async () => {
       const canon = b.dataset.closeFamily, n = b.dataset.count, members = JSON.parse(b.dataset.members || "[]");
       if (!await ask({ title: `Close ${num(n)} tickets as duplicates of ${canon}?`, body: "Each is marked duplicate_of this ticket, closed, and sent the programme's duplicate reply under your name.", ok: `Close ${num(n)}` })) return;
