@@ -4444,6 +4444,120 @@ async def test_a_proposal_is_checked_as_the_fact_it_would_set(ctx, db):
     assert psvc.proposed_tier(canon, [untier]) is None
 
 
+async def test_a_value_the_desk_would_not_take_is_not_adopted_and_does_not_stay_pending(ctx, db):
+    """The rule: a proposal is adopted only as a value the desk would take as a proposal today, and
+    one it would not take does not stay pending. `value_for` is asked by `propose` and again by
+    `decide`, so a check added to it binds what was already waiting: asserted for every proposal
+    field, with a row written as it was stored before its rule landed."""
+    from desk.models import PROPOSAL_FIELDS, Proposal
+
+    p = await _team(ctx, db)
+    agent = await _agent(ctx, db, p.user)
+
+    def mk(title):
+        return tsvc.create(ctx, db, p.actor, tsvc.NewTicket(kind="bounty", title=title, source="web"))
+
+    t, other, closing = await mk("a report"), await mk("another"), await mk("closed in silence")
+    stale = {
+        "assessed_tier": "urgent",
+        "verdict": "bogus",
+        "duplicate_of": "XE-9999",
+        "internal_ref": "dao@846c56d",  # a commit, proposed as the tracker ticket before that was a key
+        "mainnet_gate": "soon",
+        "effort_eng": "s",
+        "area": "nowhere",
+        "status": {"status": "closed", "closed_reason": "withdrawn"},  # closes in silence (`tell.UNOWED`)
+        "reply_draft": 7,
+        "award_xe": -1,
+    }
+    assert set(stale) == set(PROPOSAL_FIELDS)
+    for field, value in stale.items():
+        with pytest.raises(HTTPException) as e:
+            await psvc.propose(ctx, db, agent, t, field, value, "a reason of twenty characters or more")
+        assert e.value.status_code == 400, field
+    # the close is on a ticket of its own, with the reply its agent drafted to go with it; the draft
+    # that is no draft is on another, so each is refused for what it is
+    home = {"status": closing, "reply_draft": other}
+    rows = [
+        Proposal(ticket_id=home.get(f, t).id, token_id=agent.token.id, field=f, value={"value": v})
+        for f, v in stale.items()
+    ]
+    db.add_all(rows)
+    await db.flush()
+    ack = "Thanks for the report. We have read it against the code and it is being handled."
+    rides = await psvc.propose(ctx, db, agent, closing, "reply_draft", ack, "")
+    assert psvc.send_review(ctx, [rides], rides, closing) is None  # alone, it would be sent as it stands
+    ids, rid, refs = [pr.id for pr in rows], rides.id, (t.id, closing.id, other.id)
+
+    def facts(x):
+        return (x.status, x.closed_reason, x.verdict, x.assessed_tier, x.duplicate_of, x.internal_ref,
+                x.mainnet_gate, x.effort_eng, x.area, x.award_xe, x.draft)
+
+    before = facts(t), facts(closing)
+    out = await psvc.decide_many(ctx, db, p, [rid, *ids], [], send_plain=True)
+    assert out["skipped"] == [] and sorted(d["proposal"] for d in out["decided"]) == sorted([rid, *ids])
+    assert all(d["adopted"] is False and d["refused"] for d in out["decided"])
+    for pr in (*rows, rides):
+        await db.refresh(pr)
+    assert {pr.state for pr in (*rows, rides)} == {"rejected"}
+    assert {pr.decided_by for pr in (*rows, rides)} == {p.user.id}
+    await db.refresh(t)
+    await db.refresh(closing)
+    assert (facts(t), facts(closing)) == before and (t.status, closing.status) == ("new", "new")
+    evs = [e for ref in refs for e in await EventLog.page(db, 0, 100, ref=ref, public_only=False)]
+    said = {e.payload["proposal"]: e.payload["reason"] for e in evs if e.kind == "proposal.rejected"}
+    assert set(said) == {rid, *ids} and not [e for e in evs if e.kind == "proposal.adopted"]
+    assert all(said[i].startswith("the desk does not take this value: ") for i in ids)
+    # the draft went with its close: nothing was sent to a reporter whose report is still open
+    assert said[rid] == psvc.ORPHANED and closing.told_at is None
+    assert [d["refused"] for d in out["decided"] if d["proposal"] == rid] == [psvc.ORPHANED]
+    assert not [e for e in evs if e.kind.startswith("reply.")]
+    # one click on the ticket page meets the same answer, and so does the fill on the awards page
+    # (which used to read the amount out of an adoption that had not happened)
+    one = Proposal(ticket_id=other.id, token_id=agent.token.id, field="verdict", value={"value": "bogus"})
+    amount = Proposal(ticket_id=other.id, token_id=agent.token.id, field="award_xe", value={"value": "9"})
+    db.add_all([one, amount])
+    await db.flush()
+    answer = await psvc.decide(ctx, db, p, one, True, reason="looks right")
+    assert (answer["adopted"], one.state, other.verdict) == (False, "rejected", None)
+    assert "verdict must be one of" in answer["refused"]
+    for st in ("triaging", "accepted", "patched"):
+        await tsvc.set_status(ctx, db, p, other, st)
+    other.assessed_tier = "medium"
+    oid, aid = other.id, amount.id
+    filled = await psvc.fill_awards(ctx, db, p, [oid], "standard")
+    assert filled["filled"] == [] and f"proposal #{aid} rejected" in filled["skipped"][0]["why"]
+    await db.refresh(amount)
+    await db.refresh(other)
+    assert amount.state == "rejected" and other.award_xe is None
+    # what the desk refuses for the ticket's state or the person's role is not that: it is a skip,
+    # still pending, as before; and a value the desk takes is adopted in the spelling it stores
+    again = await mk("a third")
+    for st in ("triaging", "accepted", "patched", "awarded", "paid"):
+        await tsvc.set_status(ctx, db, p, again, st, force=True)
+    no_path = await psvc.propose(ctx, db, agent, again, "status", "fixing", "no path from paid")
+    reviewer = await _team(ctx, db, roles=("reviewer",), email="rev3@xe.network")
+    no_role = await psvc.propose(ctx, db, agent, again, "assessed_tier", "high", "a reviewer lacks tier")
+    as_sent = {"value": "1064"}  # kept as sent, from before a proposal held the stored spelling
+    good = Proposal(ticket_id=again.id, token_id=agent.token.id, field="internal_ref", value=as_sent)
+    db.add(good)
+    await db.flush()
+    np, nr, gid = no_path.id, no_role.id, good.id
+    out = await psvc.decide_many(ctx, db, reviewer, [np, nr, gid], [])
+    assert {s["proposal"] for s in out["skipped"]} == {np, nr}
+    assert [(d["proposal"], d["adopted"]) for d in out["decided"]] == [(gid, True)]
+    for pr in (no_path, no_role, good):
+        await db.refresh(pr)
+    await db.refresh(again)
+    assert (no_path.state, no_role.state, good.state) == ("pending", "pending", "adopted")
+    assert again.internal_ref == "#1064"
+    # the two places the question is asked are the two that call `value_for`, and nothing else
+    # between a stored proposal and the ticket checks a value on its own
+    src = inspect.getsource(psvc)
+    assert src.count("await value_for(") == 2
+    assert "value_for(" in inspect.getsource(psvc.propose) and "value_for(" in inspect.getsource(psvc.decide)
+
+
 async def test_the_daily_note_counts_what_the_public_counts(ctx, db):
     """The rule: a public event with no ticket behind it says nothing an anonymous reader could not
     count for themselves. The daily note is the one such event that carries ticket numbers."""

@@ -312,7 +312,9 @@ async def decide_bulk(ctx: Ctx, db: Db, who: Who, request: Request, body: BulkIn
     listed under `skipped` with the reason and the rest go through. With `send_plain`, a reply draft the
     desk reads as a plain acknowledgement goes to the reporter under your name; the rest wait as drafts
     with `review` saying why. An adopted close that the desk will tell itself, once the grace period
-    is over, says `closing` (`tell.tell_resting`); a draft kept on that ticket is that reply's to use."""
+    is over, says `closing` (`tell.tell_resting`); a draft kept on that ticket is that reply's to use.
+    An adopted fact whose value the desk refuses is rejected instead, under `decided` with `adopted`
+    false and `refused` the reason: nobody could ever adopt it, so it does not stay pending."""
     _team(who, request)
     out = await psvc.decide_many(ctx, db, who.principal, body.adopt, body.reject, send_plain=body.send_plain)
     await db.commit()

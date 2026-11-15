@@ -55,13 +55,19 @@
   }
   const tell = (title, body) => ask({ title, body, ok: "OK", cancel: null }).then(() => undefined);
   const num = (n) => Number(n).toLocaleString("en-GB");  // 2,069 not 2069, everywhere a count is shown
-  // a bulk decision answers {decided, skipped}; the skipped ones are shown with the desk's reason
+  // a bulk decision answers {decided, skipped}; the skipped ones are shown with the desk's reason, and
+  // so are the ones it rejected instead of adopting because no ticket can hold their value (`refused`)
   const reportSkipped = async (r, head) => {
-    const sk = (r && r.skipped) || [];
-    if (!sk.length) return;
-    const lines = sk.map(s => `${s.ticket || ""}${s.field ? " · " + s.field : ""}${s.proposal ? " #" + s.proposal : ""}: ${s.why}`).join("\n");
-    await tell(head || `${num(sk.length)} left as they were`, lines);
+    const sk = (r && r.skipped) || [], no = ((r && r.decided) || []).filter(d => d.refused);
+    if (!sk.length && !no.length) return;
+    const line = s => `${s.ticket ? s.ticket + " · " : ""}${s.field ? s.field + " · " : ""}proposal ${s.proposal}: ${s.why || s.refused}`;
+    const parts = [];
+    if (no.length) parts.push(`Rejected, not adopted: nobody could adopt these (${num(no.length)}):\n${no.map(line).join("\n")}`);
+    if (sk.length) parts.push(`${no.length ? `Left as they were (${num(sk.length)}):\n` : ""}${sk.map(line).join("\n")}`);
+    await tell(head || (sk.length ? `${num(sk.length)} left as they were` : `${num(no.length)} rejected`), parts.join("\n\n"));
   };
+  // one adoption the desk turned into a rejection says so before the page reloads
+  const refusedNote = (r) => r && r.refused ? tell("Rejected, not adopted", `The desk does not take this value, so the proposal is rejected: ${r.refused}${(r.with || []).length ? " The reply drafted with it is rejected too." : ""}`) : undefined;
   window.desk = Object.assign(window.desk || {}, { ask, tell });
 
   // a one-line note that survives a reload: flash("Award approved.") before reload(), shown on the next page
@@ -374,7 +380,7 @@
       try {
         const r = await api("POST", `/v1/team/proposals/${b.dataset.adopt}/adopt`, {});
         if (r.reply_draft !== undefined && replyBody) { replyBody.value = r.reply_draft; replyBody.focus(); card.classList.add("adopted"); b.disabled = true; }
-        else reload();
+        else { await refusedNote(r); reload(); }
       } catch (e) { say(fmsg, e.message, false); tell("Could not adopt", e.message); }
     }));
     $$("[data-reject]").forEach(b => b.addEventListener("click", async () => {
@@ -415,7 +421,7 @@
       const d = r.decided || [];
       const sent = d.filter(x => x.sent).length;
       const closing = new Set(d.filter(x => x.closing).map(x => x.ticket));
-      const held = d.filter(x => x.field === "reply_draft" && !x.sent && !x.folded && !closing.has(x.ticket)).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
+      const held = d.filter(x => x.field === "reply_draft" && x.adopted && !x.sent && !x.folded && !closing.has(x.ticket)).map(x => `${x.ticket}: draft kept (${x.review || "review"})`);
       const parts = [];
       if (sent) parts.push(`Sent ${num(sent)} ${sent === 1 ? "reply" : "replies"} to reporters.`);
       if (closing.size) parts.push(`${num(closing.size)} closed ${closing.size === 1 ? "report is" : "reports are"} told by the desk in about fifteen minutes.`);
@@ -458,7 +464,7 @@
         rows.forEach(tr => settle(tr, r));
         const line = sentLine(r);
         if (line) say(tmsg, line, true);
-        await reportSkipped(r, `Adopted ${num((r.decided || []).length)} of ${num(ids.length)}.`);
+        await reportSkipped(r, `Adopted ${num((r.decided || []).filter(d => d.adopted).length)} of ${num(ids.length)}.`);
       } catch (e) { say(tmsg, e.message, false); }
     };
     if ($("#adopt-shown")) $("#adopt-shown").addEventListener("click", () => adoptRows($$("tr.trow:not(.done)"), "tickets"));
@@ -481,7 +487,7 @@
     const amsg = $("#awards-msg");
     showFlash(amsg);
     $$("[data-adopt-award]").forEach(b => b.addEventListener("click", async () => {
-      try { await api("POST", `/v1/team/proposals/${b.dataset.adoptAward}/adopt`, {}); reload(); }
+      try { await refusedNote(await api("POST", `/v1/team/proposals/${b.dataset.adoptAward}/adopt`, {})); reload(); }
       catch (e) { say(amsg, e.message, false); }
     }));
     $$("[data-reject-award]").forEach(b => b.addEventListener("click", async () => {

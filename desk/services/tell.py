@@ -71,6 +71,15 @@ BEFORE_ACCEPTED = ("new", "triaging", "needs-info")
 # within it too: a draft adopted later than this after the close went to a person's editor.
 TOGETHER = timedelta(minutes=10)
 CHAT = ("discord", "telegram")  # sources whose thread a person closes from, in front of the asker
+
+
+def together(a: Proposal, b: Proposal) -> bool:
+    """Whether two proposals are one reading's: the same token, made within `TOGETHER` of each other."""
+    if a.token_id != b.token_id:
+        return False
+    return not (a.created_at and b.created_at and abs(a.created_at - b.created_at) > TOGETHER)
+
+
 STOCK = "stock"  # whose words: the programme's alone
 
 

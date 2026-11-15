@@ -32,16 +32,16 @@ from . import tickets as tsvc
 from .tickets import utcnow
 
 
-async def propose(
-    ctx: Context, db: AsyncSession, p: Principal, t: Ticket, field: str, value: Any, reason: str
-) -> Proposal:
+async def value_for(ctx: Context, db: AsyncSession, t: Ticket, field: str, value: Any) -> Any:
+    """What a proposal on `field` of this ticket holds, as the desk would store it, or a 400: a value
+    no click could apply is not a proposal. The one place that is decided. `propose` keeps what this
+    returns, so the agent meets the 400 and not the person who would have adopted it (XE-1054);
+    `decide` asks again before it adopts, because a rule added here does not reach back to what was
+    pending when it landed (`dao@846c56d` as an internal_ref from before that had one spelling, a
+    close as `withdrawn` from before an agent could not propose one)."""
     if field not in PROPOSAL_FIELDS:
         raise HTTPException(400, f"field must be one of {list(PROPOSAL_FIELDS)}")
-    if p.token is None:
-        raise HTTPException(403, "proposals come from agent tokens; a person sets the fact directly")
     if field == "status":
-        # checked here, not only on adoption: a proposal the desk could never apply would otherwise sit
-        # on the ticket until a person clicked it and met the 400 the agent should have (XE-1054)
         if not isinstance(value, (str, dict)):
             raise HTTPException(400, "status proposals are a string or {status, closed_reason}")
         status = value if isinstance(value, str) else value.get("status")
@@ -65,12 +65,11 @@ async def propose(
     if field in tsvc.FACT_VOCAB:
         # a fact: checked as set_facts will check it and kept as set_facts would store it. The value is
         # a key before anyone adopts it (the family of a canonical is the pending duplicate_of proposals
-        # equal to its id), so `xe-0142` filed its ticket under a family of its own; and a value no
-        # ticket could hold waited for a person to click into the 400 (XE-1054)
+        # equal to its id), so `xe-0142` filed its ticket under a family of its own
         value = await tsvc.fact_value(ctx, db, t, field, value)
-    if field == "reply_draft" and not isinstance(value, str):
-        raise HTTPException(400, "a reply draft is a string")
     if field == "reply_draft":
+        if not isinstance(value, str):
+            raise HTTPException(400, "a reply draft is a string")
         # cleaned where it comes in, as a reply is where it goes out (`thread.add_reply`): the text a
         # person sees on the chip, the text the check reads and the text sent are one text
         value = tsvc.clean_text(value)
@@ -81,6 +80,20 @@ async def propose(
             # with no tier yet there is no ceiling to check against, and `set_award` refuses this
             # whatever the tier: it waited for a person to adopt it, summed into the proposed totals
             raise HTTPException(400, f"award_xe is at most {tsvc.AWARD_MAX // 1_000_000:,} XE")
+    return value
+
+
+async def propose(
+    ctx: Context, db: AsyncSession, p: Principal, t: Ticket, field: str, value: Any, reason: str
+) -> Proposal:
+    if field not in PROPOSAL_FIELDS:
+        raise HTTPException(400, f"field must be one of {list(PROPOSAL_FIELDS)}")
+    if p.token is None:
+        raise HTTPException(403, "proposals come from agent tokens; a person sets the fact directly")
+    value = await value_for(ctx, db, t, field, value)
+    if field == "award_xe":
+        # asked of the proposal, not of the value: the tier and the reason are as they are today, and
+        # `set_award` holds the ceiling when the amount is adopted
         ceiling = ctx.config.ceiling_micro(t.assessed_tier) // 1_000_000
         if ceiling and value > ceiling * 2:
             raise HTTPException(400, f"award_xe exceeds twice the {t.assessed_tier} ceiling ({ceiling} XE)")
@@ -162,6 +175,9 @@ async def fill_awards(ctx: Context, db: AsyncSession, p: Principal, ids: list[st
                 if tid in newest:
                     pr, pid = newest[tid]
                     out = await decide(ctx, db, p, pr, True)
+                    if "refused" in out:  # rejected, not adopted (`value_for`); the next fill takes the step
+                        skipped.append({"ticket": tid, "why": f"proposal #{pid} rejected: {out['refused']}"})
+                        continue
                     filled.append({"ticket": tid, "award_xe": out["award_xe"], "from": f"proposal #{pid}"})
                     continue
                 require(p, "award", t)
@@ -202,6 +218,7 @@ def _closes(pr: Proposal) -> bool:
 FOLDED = "the programme's duplicate reply goes instead"
 CARRIED = "the desk's closing reply carries it as the reason"
 STOCK = "the desk's closing reply goes with the stock reason"  # followed by ": " and why
+ORPHANED = "the close it was drafted for was rejected"
 
 
 def tells(why: str | None) -> bool:
@@ -254,7 +271,9 @@ async def decide(
     With `send_plain`, a reply draft the desk reads as a plain acknowledgement (see `send_review`) is
     sent to the reporter under the adopter's name instead of waiting in the editor; `sent` carries the
     reply id and `reply_text` the words, for the caller to mail. Any other draft still waits, and
-    `review` says why."""
+    `review` says why. A value the desk would not take as a proposal today (`value_for`) can be adopted
+    by nobody, so adopting it rejects it: `adopted` is false and `refused` carries the desk's reason.
+    When that was a close, the reply the same agent drafted with it is rejected with it (`with`)."""
     if p.user is None or not can(p, "adopt"):
         raise HTTPException(403, "adopting is a reviewer's action")
     await db.flush()
@@ -266,6 +285,29 @@ async def decide(
         raise HTTPException(404, "ticket is gone")
     out: dict[str, Any] = {"proposal": pr.id, "ticket": t.id, "field": pr.field, "adopted": adopt}
     value = pr.value.get("value")
+    if adopt:
+        try:
+            value = await value_for(ctx, db, t, pr.field, value)
+        except HTTPException as e:
+            if e.status_code != 400:
+                raise
+            # a value the desk would not take as a proposal today. No click will ever apply it, and
+            # left pending it sat on the triage page for good, refused on every "adopt everything".
+            # The click that meets it settles it: rejected, the desk's reason on the log
+            adopt = out["adopted"] = False
+            out["refused"] = str(e.detail)
+            reason = f"the desk does not take this value: {e.detail}"
+            if _closes(pr):
+                from . import tell
+
+                # the reply its agent drafted with this close (`tell.together`) says the report is
+                # closed. With the close gone it would be read as a reply on its own, and sent if it
+                # read as plain
+                out["with"] = []
+                for d in await pending_for(db, t):
+                    if d.state == "pending" and d.field == "reply_draft" and tell.together(d, pr):
+                        await decide(ctx, db, p, d, False, reason=ORPHANED)
+                        out["with"].append(d.id)
     if adopt:
         if pr.field == "reply_draft":
             from . import thread
@@ -434,8 +476,10 @@ async def close_duplicates(
                 require(p, "reply", t)
                 why = f"duplicate of {canon.id}"
                 via = f"family:{canon.id}"
-                if pr is not None:
-                    await decide(ctx, db, p, pr, True, reason=why)
+                if pr is not None and "refused" in await decide(ctx, db, p, pr, True, reason=why):
+                    # rejected, and that stands: said, not raised, so the savepoint keeps it
+                    skipped.append({"ticket": tid, "why": f"the mark naming {canon.id} was rejected"})
+                    continue
                 others = {o.field: o for o in await pending_for(db, t) if o.state == "pending"}
                 v = others.get("verdict")
                 if v is not None and v.value.get("value") == "duplicate":
@@ -443,9 +487,10 @@ async def close_duplicates(
                 elif t.verdict != "duplicate":
                     await tsvc.set_facts(ctx, db, p, t, {"verdict": "duplicate"}, reason=why, via=via)
                 s = others.get("status")
+                told: dict = {}
                 if s is not None and _is_dup_close(s):
                     told = await decide(ctx, db, p, s, True, reason=why)  # closes and tells
-                else:
+                if "sent" not in told:  # no close was proposed, or the desk rejected it (`value_for`)
                     await tsvc.set_status_via_path(
                         ctx, db, p, t, "closed", closed_reason="duplicate", reason=why, via=via
                     )
@@ -473,7 +518,8 @@ async def decide_many(
     Adoptions run marks first, then status changes, then reply drafts, whatever order the ids came in: a
     close-as-duplicate needs the mark already on the ticket, and a draft needs to see the closure adopted
     beside it (`send_review`). A draft folded into a duplicate reply is reported under `decided` with
-    `folded`, not under `skipped`."""
+    `folded`, not under `skipped`; so is one rejected with a close the desk would not take, with
+    `refused` (`decide`)."""
     if p.user is None or not can(p, "adopt"):
         raise HTTPException(403, "adopting is a reviewer's action")
     decided: list[dict] = []
@@ -488,10 +534,13 @@ async def decide_many(
     todo: list[tuple[int, bool]] = sorted([(i, True) for i in adopt], key=order)
     todo += [(i, False) for i in reject]
     folded: dict[int, str] = {}
+    orphaned: set[int] = set()
     for pid, yes in todo:
         if pid in folded:
             decided.append({"proposal": pid, "ticket": folded[pid], "field": "reply_draft", "adopted": True,
                             "folded": True})
+            continue
+        if pid in orphaned:  # decided, and said, with the close it rode with
             continue
         pr = await get(db, pid)
         if pr is None or pr.state != "pending":
@@ -507,6 +556,10 @@ async def decide_many(
         decided.append(out)
         for fid in out.get("folded", []):
             folded[fid] = tid
+        for fid in out.get("with", []):
+            orphaned.add(fid)
+            decided.append({"proposal": fid, "ticket": tid, "field": "reply_draft", "adopted": False,
+                            "refused": ORPHANED})
     return {"decided": decided, "skipped": skipped}
 
 
