@@ -250,12 +250,17 @@ def test_config_vocabularies_match_code(config):
     assert set(config.effort_bands) == set(EFFORTS)
     assert config.effort_hours("1-4h") == (2.5, 0.5)
     # awards land on steps of the ceiling, highest first, rounded down to the tier's grain
-    assert list(config.award_steps) == ["top", "standard", "reduced", "minimal"]
+    assert list(config.award_steps) == ["top", "standard", "reduced", "minimal", "docs"]
     assert config.award_xe("high", "top") == 5000 and config.award_xe("high", "standard") == 3500
     assert config.award_xe("severe", "standard") == 8500  # 8,750 rounded down to the 500 grain
     assert config.award_xe("medium", "standard") == 850 and config.award_xe("minor", "minimal") == 50
     assert config.award_xe("minor", "standard", area="other") == 50  # desk findings take a quarter
     assert config.award_xe("none", "top") == 0 and config.award_xe("high", "no-such-step") == 0
+    # a wrong line of documentation is one small fixed amount: no share, no grain, no area factor
+    assert config.award_xe("minor", "docs") == config.award_xe("high", "docs", area="other") == 2
+    assert config.award_xe("none", "docs") == 0
+    assert config.award_step_size("docs") == "2 XE" and config.award_step_size("reduced") == "20%"
+    assert all(("amount" in st) != ("share" in st) for st in config.award_steps.values())
     assert config.primary_repo == "xeprotocol/xe"
     assert {label["name"] for label in config.all_labels()} == config.tool_label_names
     assert config.label_for("closed", "duplicate") is not None

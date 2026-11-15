@@ -336,7 +336,8 @@ def build_agent_brief(
         _p(
             "The ceiling is the most a report in its tier can earn, not the going rate. An award is one of",
             "these steps of the ceiling, rounded down to the tier's grain, and the reason names the step and",
-            "the one fact that put it there. Highest first:",
+            "the one fact that put it there. Highest first; the last is a fixed amount, not a share, and a",
+            "report it describes takes it before any other step is considered:",
         )
     )
     add("")
@@ -346,7 +347,7 @@ def build_agent_brief(
     add("|---|---|---|" + "---|" * len(paid))
     for key, st in steps.items():
         amounts = " | ".join(f"{cfg.award_xe(k, key):,}" for k in paid)
-        add(f"| `{key}` | {int(float(st.get('share') or 0) * 100)}% | {st.get('means', '')} | {amounts} |")
+        add(f"| `{key}` | {cfg.award_step_size(key)} | {st.get('means', '')} | {amounts} |")
     add("")
     factors = {a: f for a in cfg.areas if (f := cfg.award_area_factor(a)) != 1}
     if factors:

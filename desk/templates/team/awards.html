@@ -42,7 +42,7 @@
 </table>
 
 <h2 style="margin-top:40px">Needs a number</h2>
-<p class="sub">Valid reports without an amount, and amounts set on tickets whose fix has not landed yet. An award is a step of the tier's ceiling ({% for k, st in steps.items() %}{{ st.label|lower }} {{ (st.share * 100)|int }}%{{ ", " if not loop.last }}{% endfor %}); the agents propose on the same steps.</p>
+<p class="sub">Valid reports without an amount, and amounts set on tickets whose fix has not landed yet. An award is a step of the tier's ceiling ({% for k, st in steps.items() %}{{ st.label|lower }} {{ step_size(k) }}{{ ", " if not loop.last }}{% endfor %}); the agents propose on the same steps.</p>
 {% if can_award and unset_ids %}
 <div class="row" style="margin:16px 0"><button class="mini" id="fill-awards" type="button" data-tickets='{{ unset_ids|tojson }}'>Fill the {{ unset_ids|length|n }} missing {{ "amount" if unset_ids|length == 1 else "amounts" }}</button><label class="k" style="margin-left:12px">at the <select id="fill-step">{% for k, st in steps.items() %}<option value="{{ k }}" {{ "selected" if k == "standard" }}>{{ st.label|lower }}</option>{% endfor %}</select> step where no agent has proposed one.</label><span class="k" style="margin-left:12px">A proposed amount is adopted as it stands; the rest take the step of their tier. Nothing is approved; change any row after.</span></div>
 {% endif %}

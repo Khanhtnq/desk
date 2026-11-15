@@ -65,7 +65,8 @@ effort_bands:
 
 # Where an award lands under its ceiling. The ceiling is the most a report in the tier can earn; an
 # award is one of these steps of it, rounded down to the tier's grain, so the floor is the same rule
-# for every reporter and the reason on an award names the step. Ordered highest first.
+# for every reporter and the reason on an award names the step. Ordered highest first. A step with
+# `amount` in place of `share` is that many XE in any tier, with no grain and no area factor.
 award_steps:
   top:
     label: Top
@@ -89,6 +90,14 @@ award_steps:
     means: >-
       Already ruled or known internally before it was filed; latent code with no callers; a design
       gap; a symptom-only report.
+  docs:
+    label: Docs only
+    amount: 2
+    means: >-
+      Only the text is wrong: a typo, or a sentence, example or comment in the documentation that
+      disagrees with the code, where the code is right and following the text costs a reader nothing
+      but time. One amount per report however many lines it lists, and it takes this step whatever
+      else is true of it (first filed or not, claimed high or not).
 # The step amount is rounded down to this grain, in whole XE.
 award_grain:
   critical: 1000

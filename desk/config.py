@@ -118,12 +118,21 @@ class Config:
     def award_grain(self, tier: str | None) -> int:
         return int((self.desk.get("award_grain") or {}).get(tier or "") or 1)
 
+    def award_step_size(self, step: str) -> str:
+        """How a step is written next to its name: `35%` of the ceiling, or `2 XE` for a fixed one."""
+        st = self.award_steps.get(step) or {}
+        return f"{int(st['amount'])} XE" if st.get("amount") else f"{int(float(st.get('share') or 0) * 100)}%"
+
     def award_area_factor(self, area: str | None) -> float:
         return float((self.desk.get("award_area_factor") or {}).get(area or "") or 1)
 
     def award_xe(self, tier: str | None, step: str, area: str | None = None) -> int:
-        """The whole-XE amount one step of a tier's ceiling comes to, rounded down to the tier's grain."""
-        share = float((self.award_steps.get(step) or {}).get("share") or 0)
+        """The whole-XE amount one step of a tier's ceiling comes to, rounded down to the tier's grain.
+        A step with a fixed `amount` is that amount in every tier that pays, whatever the area."""
+        st = self.award_steps.get(step) or {}
+        if st.get("amount"):
+            return int(st["amount"]) if self.ceiling_micro(tier) else 0
+        share = float(st.get("share") or 0)
         raw = (self.ceiling_micro(tier) // 1_000_000) * share * self.award_area_factor(area)
         grain = self.award_grain(tier)
         return int(raw // grain) * grain

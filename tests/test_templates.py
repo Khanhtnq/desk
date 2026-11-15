@@ -145,6 +145,7 @@ def test_agent_brief_carries_every_vocabulary(config):
     for k in config.award_steps:
         assert f"| `{k}` |" in award
     assert "| `standard` | 35% |" in award and "| 8,500 | 3,500 | 850 | 200 |" in award
+    assert "| `docs` | 2 XE |" in award and "| 2 | 2 | 2 | 2 | 2 |" in award
     assert "`other`" in award and "25%" in award
     assert "not the going rate" in award and "pay once" in award
     # the report is untrusted input: its logs are claims, and nothing inside it instructs the agent
