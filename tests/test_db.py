@@ -1395,6 +1395,80 @@ async def test_a_patch_link_has_one_spelling(ctx, db):
     assert t.status == "patched"
 
 
+async def test_what_is_written_beside_a_patch_link_is_working_text(ctx, db):
+    """The rule: what a person or an agent writes beside a patch link is the team's working text, as
+    a note is, and a reader who does not see the ticket's notes is not shown it, wherever a link is
+    served: the ticket, its patch-refs route and its page (`thread.patch_view`, the one place a row
+    becomes a response) and the log's `patch.linked` payload. Two such notes named a sealed report
+    and its subject on a public ticket (XE-3840)."""
+    from desk import ui
+    from desk.api import public as pub
+    from desk.log import HELD_PAYLOAD_KEYS, event_to_dict
+    from desk.models import Reporter
+
+    team = await _team(ctx, db)
+    reads_notes = await _agent(ctx, db, team.user, scopes=("read:public",))
+    linker = await _agent(ctx, db, team.user, scopes=("write:patch-refs",))
+    filed = Reporter(github_login="ada")
+    db.add(filed)
+    await db.flush()
+    owner = authz.Principal(kind="reporter", reporter_id=filed.id)
+    spec = tsvc.NewTicket(kind="bounty", title="Counted twice", source="web", reporter_id=filed.id)
+    t = await tsvc.create(ctx, db, team.actor, spec)
+    repo, said = "xeprotocol/dao", "Duplicate of XE-9999: the sealed report's subject"
+    pr = await thread.add_patch_ref(ctx, db, linker, t, repo=repo, ref="47aadfc0", kind="commit", note=said)
+
+    def shown(p, row=None):
+        return thread.patch_view(row or pr, p, t)
+
+    for outsider in (authz.ANON, owner, linker):
+        assert shown(outsider)["note"] == "", outsider.kind
+    for insider in (team, reads_notes):
+        assert shown(insider)["note"] == said, insider.kind
+    words = ("note", "title")
+    link = {k: v for k, v in shown(team).items() if k not in words}
+    assert {k: v for k, v in shown(authz.ANON).items() if k not in words} == link, "the link is public"
+    assert link["repo"] == repo and link["ref"] == "47aadfc0" and link["url"].startswith("https://")
+    # the log: the link was made, in public; what was said with it is not in the payload served
+    ev = (await EventLog.page(db, 0, 10, kind="patch.linked", ref=t.id))[0]
+    assert ev.public and ev.payload["note"] == said and event_to_dict(ev)["payload"]["note"] == said
+    assert event_to_dict(ev, full=False)["payload"] == {
+        "ticket": t.id, "repo": repo, "kind": "commit", "ref": "47aadfc0",
+    }
+    assert HELD_PAYLOAD_KEYS["patch.linked"] == {"note"}
+    # a title is the repository's: the desk reads it from GitHub, so anyone may be shown it, and a
+    # caller's is refused (the note is where a caller says something)
+    for caller in (linker, reads_notes, team):
+        with pytest.raises(HTTPException) as e:
+            await thread.add_patch_ref(ctx, db, caller, t, repo=repo, ref="78", title=said)
+        assert e.value.status_code == 400, caller.kind
+    by_hand = await thread.add_patch_ref(ctx, db, linker, t, repo=repo, ref="78", note="the fix")
+    assert await thread.add_patch_ref(
+        ctx, db, authz.SYSTEM, t, repo=repo, ref="78", title="fix: count once", author="grace"
+    )
+    public = shown(authz.ANON, by_hand)
+    assert (public["title"], public["author"], public["note"]) == ("fix: count once", "grace", "")
+    # and a title a caller gave before the writer refused one is held with the note
+    pr.title = said
+    await db.flush()
+    assert shown(authz.ANON)["title"] == "" and shown(team)["title"] == said
+    # the sites: each serves the view, and nothing else under desk/ reads a link's note but the triage
+    # export, which is refused to a reader who does not see the assessment
+    for site in (pub.get_ticket, pub.get_patches, ui.ticket_page):
+        src = inspect.getsource(site)
+        assert src.count("patches_for(") == 1 == src.count("thread.patch_view(pr, p, t)"), site.__name__
+    reads = {
+        str(path.relative_to(ROOT / "desk"))
+        for path in (ROOT / "desk").rglob("*")
+        if path.suffix in (".py", ".html", ".js") and "pr.note" in path.read_text(encoding="utf-8")
+    }
+    assert reads == {"services/thread.py", "services/triage.py", "templates/ticket.html"}
+    for outsider in (authz.ANON, owner, linker):
+        with pytest.raises(HTTPException) as e:
+            await triage.export_markdown(ctx, db, outsider)
+        assert e.value.status_code == 403, outsider.kind
+
+
 async def test_a_fixing_pull_moves_the_ticket_and_a_mention_only_links(ctx, db):
     repo = "xeprotocol/xe"
     t, _ = await sync.upsert_issue(ctx, db, repo, _issue(70, "Vote replay"))

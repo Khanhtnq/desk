@@ -39,7 +39,7 @@ class PatchIn(Body):
     repo: str = Field(default="", max_length=128)
     ref: str = Field(max_length=64)
     kind: str = Field(default="pr", max_length=8)
-    title: str = Field(default="", max_length=512)
+    title: str = Field(default="", max_length=512)  # refused unless empty: `thread.add_patch_ref`
     url: str = Field(default="", max_length=512)
     note: str = Field(default="", max_length=128)
 

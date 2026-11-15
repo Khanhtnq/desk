@@ -161,7 +161,7 @@ async def get_ticket(ctx: Ctx, db: Db, who: Who, tid: str):
     if t.visibility == "private":
         await ctx.events.append(db, "ticket.read", p.actor, {"ticket": t.id}, ref=t.id, public=False)
         await db.commit()
-    d["patch_refs"] = [_patch(pr) for pr in await thread.patches_for(db, t)]
+    d["patch_refs"] = [thread.patch_view(pr, p, t) for pr in await thread.patches_for(db, t)]
     d["thread"] = [_message(ctx, t, m) for m in await thread.messages_for(db, t)]
     if can(p, "read:notes", t):
         d["notes"] = [_note(n) for n in await thread.notes_for(db, t)]
@@ -201,8 +201,10 @@ async def get_thread(ctx: Ctx, db: Db, who: Who, tid: str):
 
 @router.get("/tickets/{tid}/patch-refs")
 async def get_patches(db: Db, who: Who, tid: str):
-    t = await tsvc.get_for(db, who.principal, tid)
-    return {"ticket": t.id, "patch_refs": [_patch(pr) for pr in await thread.patches_for(db, t)]}
+    p = who.principal
+    t = await tsvc.get_for(db, p, tid)
+    refs = [thread.patch_view(pr, p, t) for pr in await thread.patches_for(db, t)]
+    return {"ticket": t.id, "patch_refs": refs}
 
 
 def log_scope(p, t) -> dict:
@@ -403,22 +405,6 @@ async def github_webhook(ctx: Ctx, db: Db, request: Request):
 
 
 # ---- shapes -----------------------------------------------------------------------------------------
-
-
-def _patch(pr) -> dict:
-    return {
-        "id": pr.id,
-        "repo": pr.repo,
-        "kind": pr.kind,
-        "ref": pr.ref,
-        "title": pr.title,
-        "url": pr.url,
-        "note": pr.note,
-        "state": pr.state,
-        "author": pr.author,
-        "added_by": pr.added_by,
-        "created_at": thread.iso(pr.created_at),
-    }
 
 
 def _message(ctx, t, m) -> dict:

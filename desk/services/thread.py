@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..authz import Principal
+from ..authz import SYSTEM, Principal, can
 from ..context import Context
 from ..models import Message, Note, PatchRef, Reply, Ticket
 from .tickets import clean_text, utcnow
@@ -478,6 +478,10 @@ async def add_patch_ref(
     # beside it one line
     repo, ref = patch_key(repo, ref, kind)
     title, note, author = (clean_text(x, one_line=True) for x in (title, note, author))
+    if (title or author) and p.kind != "system":
+        # the title and author are the repository's, which the desk reads from GitHub and anyone may
+        # be shown; what a person or an agent has to say about the link is the note (`patch_view`)
+        raise HTTPException(400, "a patch ref's title and author are read from GitHub; say it in the note")
     url = url.strip()
     if url and not url.lower().startswith("https://"):
         # the page renders it as a link; nothing but https ever goes in an href here
@@ -521,6 +525,30 @@ async def add_patch_ref(
         public=t.visibility == "public",
     )
     return pr
+
+
+def patch_view(pr: PatchRef, p: Principal, t: Ticket) -> dict:
+    """A patch link as this reader is shown it; the one place a row becomes a response, for the API
+    and the page alike. What a person or an agent wrote beside the link is the team's working text,
+    as a note is: it says what the commit closes and of what the report is a duplicate, in the
+    writer's words, and a reader who does not see the ticket's notes is not shown it (XE-3840: two
+    notes named a private ticket and its subject on a public one). That is the note, and a title the
+    desk did not read from GitHub itself: before the writer refused one, a caller could give its own."""
+    working = can(p, "read:notes", t)
+    githubs = bool(pr.author) or pr.added_by == SYSTEM.actor
+    return {
+        "id": pr.id,
+        "repo": pr.repo,
+        "kind": pr.kind,
+        "ref": pr.ref,
+        "title": pr.title if working or githubs else "",
+        "url": pr.url,
+        "note": pr.note if working else "",
+        "state": pr.state,
+        "author": pr.author,
+        "added_by": pr.added_by,
+        "created_at": iso(pr.created_at),
+    }
 
 
 def patch_refs_text(prs: list[PatchRef]) -> str:

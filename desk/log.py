@@ -352,6 +352,9 @@ HELD_PAYLOAD_KEYS = {
     "proposal.adopted": frozenset({"reason"}),
     "proposal.rejected": frozenset({"reason"}),
     "ticket.internal_predates": frozenset({"internal_ref"}),
+    # what was written beside a patch link is working text, as a reason is: it says what the commit
+    # closes and of what the report is a duplicate (`thread.patch_view`, XE-3840). The link is public
+    "patch.linked": frozenset({"note"}),
     # an award is published by `awarded`, on the ticket (`tickets.shown_award`, XE-0735); the log says
     # that an award was set or changed, and neither what it is nor whether it is approved. The steps
     # are a published table, so the amount alone names the tier while it is held, and the step after

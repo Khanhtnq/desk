@@ -753,7 +753,8 @@ async def ticket_page(request: Request, tid: str):
             await c.events.append(db, "ticket.read", p.actor, {"ticket": t.id}, ref=t.id, public=False)
             await db.commit()
         messages = [(m, thread.message_body(c, t, m)) for m in await thread.messages_for(db, t)]
-        patches = await thread.patches_for(db, t)
+        # as this reader is shown them: the note beside a link is working text (`thread.patch_view`)
+        patches = [thread.patch_view(pr, p, t) for pr in await thread.patches_for(db, t)]
         notes = await thread.notes_for(db, t) if can(p, "read:notes", t) else []
         proposals = await psvc.pending_for(db, t) if can(p, "read:notes", t) else []
         # the family: tickets an agent has read as re-filings of this one, waiting for one ruling
