@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from xe.keys import KeyError_, derive_address, verify_hex_signature
 
@@ -66,6 +67,7 @@ INVITE_TTL = timedelta(days=7)
 MAGIC_TTL = timedelta(minutes=15)
 CHALLENGE_TTL = timedelta(minutes=5)
 TOKEN_PREFIX = "desk_"
+TOKEN_SEEN_EVERY_S = 60  # how often a token in use has its `last_used_at` written
 MAX_SKEW_NS = 10 * 60 * 1_000_000_000
 
 
@@ -690,8 +692,20 @@ async def token_from_bearer(db: AsyncSession, raw: str) -> AgentToken | None:
     ).scalar_one_or_none()
     if t is None or t.revoked_at is not None or t.expires_at < now():
         return None
-    if t.last_used_at is None or (now() - t.last_used_at).total_seconds() > 60:
-        t.last_used_at = now()
+    if t.last_used_at is None or (now() - t.last_used_at).total_seconds() > TOKEN_SEEN_EVERY_S:
+        # When the token was last used is bookkeeping, and it is written and committed here, before
+        # the request does anything: one statement, a row lock held for as long as it takes. Set on
+        # the row and left to the request's transaction, it was a lock on the token's row for the
+        # whole request, and gone again with every read (a read commits nothing), so each request of
+        # one token queued behind the last, each queued request held a connection, and eight readers
+        # on one token emptied the pool for every other caller (15 Nov, 524 timeouts in 25 minutes).
+        # The `stale` in the statement is for two requests arriving together: the second writes nothing
+        at, stale = now(), now() - timedelta(seconds=TOKEN_SEEN_EVERY_S)
+        unseen = or_(AgentToken.last_used_at.is_(None), AgentToken.last_used_at < stale)
+        seen = update(AgentToken).where(AgentToken.id == t.id, unseen).values(last_used_at=at)
+        await db.execute(seen.execution_options(synchronize_session=False))
+        await db.commit()
+        set_committed_value(t, "last_used_at", at)  # as the row is now, with nothing left to flush
     return t
 
 

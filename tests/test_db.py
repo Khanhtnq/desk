@@ -5088,3 +5088,40 @@ async def test_a_tickets_text_is_indexed_when_it_is_written_not_read_for_each_re
         assert src.count("to_tsvector") == once, f"{path.name} parses a ticket's text for a reader"
         once = 1 if path.name == "tickets.py" and path.parent.name == "services" else 0
         assert len(re.findall(r"\bbody\.i?like\(", src)) == once, f"{path.name} reads every body"
+
+
+async def test_authenticating_a_token_holds_nothing_for_the_length_of_the_request(ctx, db):
+    """The rule: bookkeeping written on the way in is committed on the way in; a request holds no
+    row lock for its whole length on account of who is asking. A token's `last_used_at` was set on
+    the row and left to the request's transaction, so every request of one token waited for the one
+    before it, holding a connection while it did, and a read never kept the write (15 Nov: eight
+    readers on one token, the pool empty for everyone)."""
+    team = await _team(ctx, db)
+    issuer = authz.Principal(kind="user", user=team.user, roles={"admin"})
+    tok, raw = await users.issue(ctx, db, issuer, team.user, "m", "t", ["read:public"], 30)
+    await db.commit()
+    assert tok.last_used_at is None
+    sm = async_sessionmaker(db.bind, expire_on_commit=False)
+    locked = select(AgentToken).where(AgentToken.id == tok.id).with_for_update(nowait=True)
+    async with sm() as first, sm() as second:
+        one = await auth.token_from_bearer(first, raw)
+        assert one.last_used_at is not None and not first.dirty and not first.in_transaction()
+        # the request goes on, as `resolve` does next: this read is what flushed the write
+        assert (await first.execute(select(User).where(User.id == one.owner_id))).scalar_one()
+        # a second request of the same token while the first is open: the row is free, and written
+        row = (await second.execute(locked)).scalar_one()
+        assert row.last_used_at == one.last_used_at, "committed on the way in, read or not"
+        await second.rollback()
+        two = await auth.token_from_bearer(second, raw)
+        assert two.last_used_at == one.last_used_at and not second.dirty, "within the minute: no write"
+    # a token not seen for a while is written again, once
+    await db.execute(text("UPDATE agent_tokens SET last_used_at = now() - interval '5 minutes'"))
+    await db.commit()
+    async with sm() as third, sm() as fourth:
+        late = await auth.token_from_bearer(third, raw)
+        assert (auth.now() - late.last_used_at).total_seconds() < 30 and not third.in_transaction()
+        assert (await fourth.execute(locked)).scalar_one().last_used_at == late.last_used_at
+    # no row is assigned to on the way in by any of the three ways of asking
+    for way in (auth.resolve, auth.token_from_bearer, auth.session_from_request,
+                auth.reporter_session_from_request):
+        assert not re.search(r"^\s+\w+\.\w+ = ", inspect.getsource(way), re.M), way.__name__
