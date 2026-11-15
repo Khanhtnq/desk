@@ -594,7 +594,15 @@ async def test_the_live_stream_serves_only_what_the_log_read_path_serves(ctx, db
             return calls["n"] > 2  # one read before the wait, one after the wake-up, then gone
 
     who = type("W", (), {"principal": authz.ANON})()
-    resp = await pub.events_stream(ctx, Req(), who, since=None)
+    # the request's own session, as asking who is calling leaves it: a transaction open. The stream
+    # does not keep it: a stream that did held a database connection for as long as it was open
+    async with sm() as asked:
+        assert (await asked.execute(select(User).where(User.id == team.user.id))).scalar_one()
+        assert asked.in_transaction()
+        resp = await pub.events_stream(ctx, asked, Req(), who, since=None)
+        assert not asked.in_transaction() and not asked.identity_map
+    route = inspect.getsource(pub.events_stream)
+    assert route.index("await db.close()") < route.index("async def gen")
     gen = resp.body_iterator
     got: list[dict] = []
 

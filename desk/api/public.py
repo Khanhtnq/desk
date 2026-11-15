@@ -298,10 +298,15 @@ STREAM_IDLE_S = 15  # a ping, and a re-read of the log, at least this often
 
 
 @router.get("/events/stream")
-async def events_stream(ctx: Ctx, request: Request, who: Who, since: int | None = None):
+async def events_stream(ctx: Ctx, db: Db, request: Request, who: Who, since: int | None = None):
     """Server-sent events, one `entry` per log event. `since` (or Last-Event-ID) replays from an index."""
     private_ok = can(who.principal, "read:private")
     full = who.principal.is_team
+    # Who is asking is settled, and the request's session is closed here, not when the stream ends,
+    # which is when the framework closes it. Asking whose cookie or token this is opens a transaction,
+    # and a stream that kept the session kept a database connection for as long as it stayed open:
+    # twenty streams, every connection the desk has. Each read below takes one for the read.
+    await db.close()
     start = since
     if start is None:
         start = _event_id(request.headers.get("last-event-id"))
