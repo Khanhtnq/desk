@@ -27,7 +27,7 @@
 </div>
 <p class="notice" style="margin-top:24px"><b>{{ copy.report.ask_safety }}</b> The desk never asks for your key or recovery phrase, not to sign in and not to answer a question.</p>
 {% else %}
-<p class="sub">To file a report, follow it, and be paid for it. Two ways, no passwords. One account can hold both; add the other later on your account page.</p>
+<p class="sub">To file a report, follow it, and be paid for it. Three ways, no passwords. One account can hold all three; add the others later on your account page.</p>
 
 <div class="grid">
 <div class="card">
@@ -60,6 +60,13 @@
     <div class="msg" id="xe-msg" style="display:none"></div>
   </div>
   <p class="k" style="margin-top:12px">Connecting the XE wallet itself, as on the governance site, is next; the key stays in the wallet and the desk asks it to sign.</p>
+</div>
+<div class="card">
+  <h3>Email</h3>
+  <p>Sent your report by email? It is under the address you sent it from. A one-time link, good for fifteen minutes; the team's replies go to the same address.</p>
+  <div class="row"><input type="email" id="email" placeholder="you@example.org" autocomplete="email" style="max-width:280px"><button class="mini" type="button" id="email-start">Send the link</button></div>
+  <div class="msg" id="email-msg" style="display:none"></div>
+  {% if not mail_sign_in %}<p class="k">Mail is not configured on this desk; the link is logged for the team.</p>{% endif %}
 </div>
 </div>
 <p class="k" style="margin-top:24px">Replies to a private report are only visible here. Add an email on your account page, or when you file, and the desk tells you when the team answers.</p>

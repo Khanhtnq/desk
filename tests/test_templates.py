@@ -70,6 +70,32 @@ def test_md_paths():
     assert wants_markdown("text/markdown") and not wants_markdown("text/html,text/markdown")
 
 
+def test_each_door_offers_the_sign_in_its_mail_names(config):
+    """The mail about a reply to a private report tells its reader to sign in by email on the door's own
+    sign-in page (`notify.reply_to_reporter`). So each door's page has the form: bounty had lost it, and
+    an account made from a report sent to the mailbox, which holds nothing but an address, had no way in."""
+    import inspect
+
+    from desk import authz, ui
+    from desk.services import notify
+
+    said = inspect.getsource(notify.reply_to_reporter)
+    assert "sign in by email" in said and "/signin" in said
+    copy = config.copy_public
+    for site in ("bounty", "support"):
+        ctx = {
+            "og": {"title": "t", "description": "d", "url": "u", "site_name": "n", "image": "i"},
+            "copy": copy, "cfg": config, "badge": "testnet", "network_id": "testnet-0005", "version": "0",
+            "site": site, "site_name": "XE",
+            "site_copy": copy.get("support") or {} if site == "support" else copy,
+            "bounty_url": "https://bounty.xe.network", "support_url": "https://support.xe.network",
+            "split": True, "me": None, "p": authz.ANON, "team": False, "csrf": "", "path": "/signin",
+            "next": "/my", "github_sign_in": True, "discord_sign_in": True, "mail_sign_in": True,
+        }
+        page = ui.templates.env.get_template("reporter/signin.html").render(ctx)
+        assert page.count('id="email-start"') == 1 and page.count('type="email" id="email"') == 1, site
+
+
 def test_html_to_markdown_drops_chrome_and_keeps_table():
     html = """<html><head><title>T</title></head><body><header><nav><a href="/x">nav</a></nav></header>
     <main><h1>Open tickets</h1><form><input></form><table><tr><th>#</th><th>Finding</th></tr>
